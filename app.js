@@ -757,7 +757,7 @@ const ROWS = {
     const active = DATA.rentals.filter((r) => r.customerId === c.customerId && ACTIVE_RENTAL.has(r.status) && r.status !== 'Quote');
     const unitPills = active.map((r) => { const u = IDX.unit.get(r.unitId); return u ? statusPill('rentalStatus', rentalDisplayStatus(r), { card: 'rentals', recId: r.rentalId }) : ''; }).join('');
     const isMember = /Member/.test(c.accountType || '') && c.accountType !== 'Member Incomplete';
-    const isBusiness = (c.accountType || '').includes('Business');
+    const isBusiness = /business/i.test(c.accountType || '') && !/non-?business/i.test(c.accountType || '');   // "Non-Business" must NOT match
     return `<div class="row-1"><span class="r-title">${esc(c.name)}</span><span class="r-fields"><span>${esc(c.phone || '')}</span></span></div>
       <div class="row-2">
         ${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}
@@ -1013,7 +1013,7 @@ const DETAIL = {
   customers: (c, cs) => {
     const d = c._digest || {};
     const isMember = /Member/.test(c.accountType || '') && c.accountType !== 'Member Incomplete';
-    const isBusiness = (c.accountType || '').includes('Business');
+    const isBusiness = /business/i.test(c.accountType || '') && !/non-?business/i.test(c.accountType || '');   // "Non-Business" must NOT match
     const yr = (iso) => `${fmtShortDate(iso)}, ${parseISO(iso).getFullYear()}`;
 
     // §7.1 — every contact/account detail is click-to-edit (auto-saves via the persist hook)
@@ -3022,6 +3022,11 @@ function boot() {
     if (state.pick || state.winpicker) return;
     goBack(card.dataset.card);
   });
+  // Admin / offline boot modes (opt-in via URL hash) — checked before the login gate.
+  const hash = (location.hash || '').toLowerCase();
+  if (hash.includes('local')) { return offlineBoot(); }     // #local — render from data.js, no backend
+  if (hash.includes('reseed')) { return reseedFromFile(); }  // #reseed — REPLACE live data with the file
+
   // §16 — gate on the shared password: load from the backend if we already have it
   // this session, otherwise show the login screen. The app only renders once data is in.
   if (backendPassword) {
@@ -3029,6 +3034,44 @@ function boot() {
       .catch(() => { backendPassword = ''; sessionStorage.removeItem('jactec.pw'); renderLogin('Please sign in again.'); });
   } else {
     renderLogin();
+  }
+}
+
+// #local — render straight from data.js with NO backend (offline/demo + dev smoke test).
+// saveSoon() already no-ops without a password, so edits stay in-memory only.
+function offlineBoot() { buildIndexes(); state.cascade = createCascade(DATA); booting = false; render(); }
+
+// #reseed — one-time admin: REPLACE the entire live database with the imported file (data.js).
+// Guarded by the password + an explicit confirm, and self-clears the hash so it can't re-fire.
+async function reseedFromFile() {
+  const pw = window.prompt('RESEED — this REPLACES all live data with the imported file (data.js).\nThis cannot be undone.\n\nEnter the team password to proceed:');
+  if (!pw) { renderLogin(); return; }
+  backendPassword = pw;
+  $('#app').innerHTML = '<div class="login-screen"><div class="login-box"><div class="login-title">Reseeding…</div><div class="login-sub">Uploading the imported data to the database. This can take a minute.</div></div></div>';
+  try {
+    // Safety: never let a small public/demo file overwrite a populated live database.
+    // Fetch the current backend counts (without applying) and refuse to shrink it.
+    const cur = await backendCall('load');
+    if (cur && cur.ok && cur.data) {
+      const liveCust = (cur.data.customers || []).length;
+      const fileCust = (DATA.customers || []).length;
+      if (liveCust > 0 && fileCust < liveCust) {
+        backendPassword = ''; sessionStorage.removeItem('jactec.pw');
+        alert('Reseed BLOCKED — the live database has ' + liveCust + ' customers but this file only has ' + fileCust + '.\nRefusing to overwrite real data with a smaller seed. Live data unchanged.');
+        renderLogin('Reseed blocked — live data unchanged.');
+        return;
+      }
+    }
+    const r = await backendCall('seed', { data: dataSnapshot() });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'seed-failed');
+    sessionStorage.setItem('jactec.pw', pw);
+    history.replaceState(null, '', location.pathname + location.search);   // drop #reseed so a refresh won't wipe edits
+    alert('Reseed complete — the live database now holds the imported data. Loading the app…');
+    finishLoad();
+  } catch (e) {
+    backendPassword = ''; sessionStorage.removeItem('jactec.pw');
+    alert('Reseed FAILED: ' + ((e && e.message) || e) + '\n\nThe live data was NOT changed.');
+    renderLogin('Reseed failed — live data unchanged.');
   }
 }
 boot();

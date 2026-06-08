@@ -10,6 +10,11 @@ Thumbs.db
 # public site (the served app uses the curated demo data in data.js instead).
 JacTec-handoff/
 
+# REAL customer data (PII) — generated locally, pushed ONLY to the password-gated
+# backend, NEVER committed or served as a public static file.
+data.generated.js
+data.demo-backup.js
+
 # Redundant once the live app exists (kept locally, not on the public site)
 JacTec-standalone.html
 
