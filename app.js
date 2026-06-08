@@ -1952,6 +1952,29 @@ function renderOverlay() {
         <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill c-gray js-close">Cancel</button><button class="pill c-green js-settings-save">Save</button></div>
       </div>`;
     overlay.appendChild(pop);
+  } else if (o.kind === 'newCustomer') {
+    const d = o.draft;
+    const atOpts = NC_ACCOUNT_TYPES.map((t) => `<option value="${esc(t)}"${t === d.accountType ? ' selected' : ''}>${esc(getStatus('customerAccountType', t).label)}</option>`).join('');
+    const indOpts = NC_INDUSTRIES.map((i) => `<option value="${esc(i)}"></option>`).join('');
+    const pop = el('div', 'popup'); pop.style.width = '470px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>New Customer</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        <div class="nc-grid">
+          <label class="nc-field"><span>First name *</span><input class="nc-in" data-f="firstName" value="${esc(d.firstName)}" autocomplete="off" /></label>
+          <label class="nc-field"><span>Last name</span><input class="nc-in" data-f="lastName" value="${esc(d.lastName)}" autocomplete="off" /></label>
+          <label class="nc-field nc-wide"><span>Company</span><input class="nc-in" data-f="company" value="${esc(d.company)}" autocomplete="off" /></label>
+          <label class="nc-field"><span>Phone</span><input class="nc-in" data-f="phone" value="${esc(d.phone)}" autocomplete="off" /></label>
+          <label class="nc-field"><span>Email</span><input class="nc-in" data-f="email" type="email" value="${esc(d.email)}" autocomplete="off" /></label>
+          <label class="nc-field"><span>Industry</span><input class="nc-in" data-f="industry" list="nc-industries" value="${esc(d.industry)}" autocomplete="off" /></label>
+          <label class="nc-field"><span>Account type</span><select class="nc-in" data-f="accountType">${atOpts}</select></label>
+          <label class="nc-field nc-wide"><span>Notes</span><input class="nc-in" data-f="accountNotes" value="${esc(d.accountNotes)}" autocomplete="off" /></label>
+        </div>
+        <datalist id="nc-industries">${indOpts}</datalist>
+        ${o.error ? `<div class="login-err" style="text-align:left;margin-top:10px">${esc(o.error)}</div>` : ''}
+        <div class="pillrow" style="margin-top:16px;justify-content:flex-end"><button class="pill c-gray js-close">Cancel</button><button class="pill c-green js-nc-save">Create customer</button></div>
+      </div>`;
+    overlay.appendChild(pop);
   } else if (o.kind === 'inspection') {
     // §12.8 Failure report — triggered when an inspection is marked Failed: capture a
     // photo/video + a description for the auto-created work order.
@@ -2249,6 +2272,7 @@ function onClick(e) {
   if (closest('.js-switch-user')) { e.stopPropagation(); return switchUser(); }
   if (closest('.js-open-settings')) { e.stopPropagation(); return openSettings(); }
   if (closest('.js-settings-save')) { e.stopPropagation(); return saveSettings(); }
+  if (closest('.js-nc-save')) { e.stopPropagation(); return saveNewCustomer(); }
   if (closest('.js-ring')) return openOverlay({ kind: 'role', role: closest('.js-ring').dataset.role });
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-theme')) { state.theme = state.theme === 'dark' ? 'light' : 'dark'; renderOverlay(); render(); return; }
@@ -2636,13 +2660,38 @@ async function saveSettings() {
 }
 const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
+// §7.1 — guided New Customer intake (validated). Replaces the old bare draft.
 function startNewCustomer() {
-  const id = 'C-NEW' + (state.seq++);
-  const draft = { customerId: id, name: 'New Customer', firstName: '', lastName: '', phone: '', email: '', company: '', address: '', industry: '', accountNotes: '', accountType: 'Non-Business', payStatus: 'Current', interestedCategoryIds: [], activityLog: [], usedSalesStage: 'Inbound Lead', membershipStage: 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0 }, mock: true };
-  DATA.customers.push(draft); IDX.customer.set(id, draft); reindex('customers', draft);
-  logAction(draft, 'Customer created');
+  openOverlay({ kind: 'newCustomer', error: '', draft: { firstName: '', lastName: '', company: '', phone: '', email: '', industry: '', accountType: 'Non-Business', accountNotes: '' } });
+}
+const NC_INDUSTRIES = ['Construction', 'Concrete', 'Welding', 'Electrical', 'Plumbing', 'Roofing', 'Painting', 'Landscaping', 'Trucking', 'Industrial', 'Oil & Gas', 'Real Estate', 'Entertainment', 'Agriculture'];
+const NC_ACCOUNT_TYPES = ['Non-Business', 'Business', 'Non-Business Member', 'Business Member'];
+/** Next sequential customer id (C0001 format), one past the current max. */
+function nextCustomerId() {
+  const max = DATA.customers.reduce((m, c) => { const n = /^C(\d+)$/.exec(c.customerId || ''); return n ? Math.max(m, +n[1]) : m; }, 0);
+  return 'C' + String(max + 1).padStart(4, '0');
+}
+function saveNewCustomer() {
+  const o = state.overlay; if (!o || o.kind !== 'newCustomer') return;
+  const root = document.querySelector('.overlay .popup-body'); if (!root) return;
+  root.querySelectorAll('[data-f]').forEach((i) => { o.draft[i.dataset.f] = i.value.trim(); });
+  if (!o.draft.firstName) { o.error = 'First name is required (we use it for marketing).'; renderOverlay(); document.querySelector('.overlay [data-f="firstName"]')?.focus(); return; }
+  if (o.draft.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.draft.email)) { o.error = 'That email doesn’t look valid (or leave it blank).'; renderOverlay(); return; }
+  const id = nextCustomerId();
+  const c = {
+    customerId: id, firstName: o.draft.firstName, lastName: o.draft.lastName,
+    name: `${o.draft.firstName} ${o.draft.lastName}`.trim(),
+    company: o.draft.company, phone: o.draft.phone, email: o.draft.email, address: '',
+    industry: o.draft.industry, accountType: o.draft.accountType || 'Non-Business', payStatus: 'New Customer',
+    requiresPO: false, accountNotes: o.draft.accountNotes, stripeId: '',
+    interestedCategoryIds: [], activityLog: [], usedSalesStage: 'Inbound Lead', membershipStage: 'Inbound Lead',
+    _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
+  };
+  DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
+  logAction(c, 'Customer onboarded');
+  closeOverlay();
   anchorRecord('customers', id);
-  toast('New customer — click the name to edit it.');
+  toast(`${c.name} added.`);
 }
 function startNewReceipt() {
   const id = 'E-NEW' + (state.seq++);
@@ -3253,6 +3302,7 @@ function boot() {
       if (e.key === 'Backspace' && !e.target.value && (cs.filterTerms || []).length) { e.preventDefault(); removeFilterTerm(card, cs.filterTerms.length - 1); return; }
       return;
     }
+    if (e.target.classList.contains('nc-in') && e.key === 'Enter' && e.target.tagName !== 'SELECT') { e.preventDefault(); return saveNewCustomer(); }
     if (e.key === 'Escape') { if (state.winpicker) { closeWinPicker(); } else if (state.overlay) { closeOverlay(); } else if (state.pick) cancelPick(true); }
   });
   // mouse hotkeys (§0.1): double-click a row = anchor; right-click = Back

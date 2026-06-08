@@ -560,6 +560,14 @@ input { font-family: inherit; }
 .set-row .set-input { flex: 1; height: 32px; padding: 0 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); color: var(--txt); font-size: 13px; }
 .set-row .set-input:focus { outline: none; border-color: var(--accent-line); }
 .set-row.set-admin { margin-top: 10px; padding-top: 12px; border-top: 1px dashed var(--line); }
+/* New Customer onboarding form */
+.nc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px 12px; }
+.nc-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.nc-field.nc-wide { grid-column: 1 / -1; }
+.nc-field > span { font-size: 11px; font-weight: 700; color: var(--txt-3); text-transform: uppercase; letter-spacing: .3px; }
+.nc-in { height: 34px; padding: 0 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); color: var(--txt); font-size: 13px; width: 100%; }
+.nc-in:focus { outline: none; border-color: var(--accent-line); }
+select.nc-in { cursor: pointer; }
 
 /* role KPI popup */
 .kpi-popup { width: 420px; }
