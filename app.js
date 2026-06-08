@@ -16,6 +16,7 @@ import { DATA } from './data.js';
 import { createCascade } from './cascade.js';
 import { serviceOrdersForUnit, completeService, SERVICE_TASKS } from './service-countdown.js';
 import * as CFG from './config.js';
+import { AGREEMENTS } from './agreements.js';
 import {
   getStatus, STATUS, ROLES, GRID_CARDS, BACKOFFICE_BOARDS, SORT_FIELDS,
   SHOP_TYPES, SHOP_SEGMENTS,
@@ -1086,7 +1087,8 @@ const DETAIL = {
     const title = `<span class="d-title">${esc(fullName(c)) || 'New Customer'}</span>`;
     const acctDone = !!(c.selfie && c.signature);
     const selfieThumb = c.selfie ? `<img class="cust-selfie" src="${esc(c.selfie)}" alt="" />` : '';
-    const badges = `<div class="detail-badges pillrow">${selfieThumb}${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${isMember ? badge('Member', 'purple') : ''}${statusPill('customerPayStatus', c.payStatus)}<span class="spacer"></span>${acctDone ? '' : badge('Incomplete', 'yellow')}<button class="pill ref js-edit-customer" data-rec="${c.customerId}">${acctDone ? 'Edit account' : 'Complete account'}</button></div>`;
+    const agPill = c.agreementSignedAt ? `<button class="pill c-green js-view-agreement" data-rec="${c.customerId}" title="View signed agreement">${esc(AGREEMENTS[c.agreementType]?.title || 'Agreement')} ✓</button>` : '';
+    const badges = `<div class="detail-badges pillrow">${selfieThumb}${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${isMember ? badge('Member', 'purple') : ''}${statusPill('customerPayStatus', c.payStatus)}${agPill}<span class="spacer"></span>${acctDone ? '' : badge('Incomplete', 'yellow')}<button class="pill ref js-edit-customer" data-rec="${c.customerId}">${acctDone ? 'Edit account' : 'Complete account'}</button></div>`;
     const activeBar = `<div class="active-bar wide"><div class="active-spectrum" style="clip-path:inset(0 ${100 - (d.activePct || 0)}% 0 0)"></div><span class="active-lbl">${d.activePct || 0}% Active</span></div>`;
 
     const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id }) : ''; }).join('');
@@ -1961,6 +1963,9 @@ function renderOverlay() {
     const selfieBox = d.selfie ? `<img class="nc-thumb" src="${esc(d.selfie)}" alt="selfie" />` : `<div class="nc-thumb empty">No photo</div>`;
     const sigBox = d.signature ? `<img class="nc-thumb sig" src="${esc(d.signature)}" alt="signature" />` : `<canvas class="nc-sigpad" width="400" height="120"></canvas>`;
     const cardSaved = !!(IDX.customer.get(o.editId || '')?.stripeId);
+    const agType = /member/i.test(d.accountType || '') ? 'membership' : 'rental';
+    const ag = AGREEMENTS[agType];
+    const agSigned = d.agreementSignedAt && d.agreementType === agType;
     const pop = el('div', 'popup nc-popup');
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>${isEdit ? 'Edit / Complete Account' : 'New Customer'}</h3><span class="spacer"></span>${isEdit ? `<button class="iconbtn js-nc-qr" title="Open on phone">${I.qr}</button>` : ''}<button class="x js-close">${I.x}</button></div>
@@ -1976,14 +1981,32 @@ function renderOverlay() {
           <label class="nc-field nc-wide"><span>Notes</span><input class="nc-in" data-f="accountNotes" value="${esc(d.accountNotes)}" autocomplete="off" /></label>
         </div>
         <datalist id="nc-industries">${indOpts}</datalist>
+        <div class="nc-sec-title">${esc(ag.title)}${agSigned ? ' <span class="nc-ag-ok">✓ accepted ' + esc(d.agreementSignedAt) + '</span>' : ' <span class="nc-ag-note">— sign below to accept</span>'}</div>
+        <div class="nc-agreement" tabindex="0">${esc(ag.text)}</div>
         <div class="nc-sec-title">Account packet</div>
         <div class="nc-packet">
           <div class="nc-cap"><span class="nc-cap-lbl">Selfie</span>${selfieBox}<div class="pillrow"><label class="pill ref">${d.selfie ? 'Retake' : 'Take photo'}<input type="file" accept="image/*" capture="user" class="js-nc-selfie" hidden /></label>${d.selfie ? '<button class="pill c-gray js-nc-selfie-clear">Remove</button>' : ''}</div></div>
-          <div class="nc-cap"><span class="nc-cap-lbl">Signature</span>${sigBox}<div class="pillrow">${d.signature ? '<button class="pill c-gray js-nc-sig-clear">Re-sign</button>' : '<button class="pill c-green js-nc-sig-save">Save</button><button class="pill c-gray js-nc-sig-clearpad">Clear</button>'}</div></div>
+          <div class="nc-cap"><span class="nc-cap-lbl">Signature${agSigned ? '' : ' *'}</span>${sigBox}<div class="pillrow">${d.signature ? '<button class="pill c-gray js-nc-sig-clear">Re-sign</button>' : '<button class="pill c-green js-nc-sig-save">Accept &amp; sign</button><button class="pill c-gray js-nc-sig-clearpad">Clear</button>'}</div></div>
           <div class="nc-cap"><span class="nc-cap-lbl">Card on file</span><div class="nc-thumb empty">${cardSaved ? 'Card saved ✓' : 'Stripe — Phase 2'}</div><div class="pillrow"><button class="pill ref" disabled style="opacity:.45;cursor:default">＋ Add card</button></div></div>
         </div>
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:10px">${esc(o.error)}</div>` : ''}
         <div class="pillrow" style="margin-top:16px;justify-content:flex-end"><button class="pill c-gray js-close">Cancel</button><button class="pill c-green js-nc-save">${isEdit ? 'Save account' : 'Create customer'}</button></div>
+      </div>`;
+    overlay.appendChild(pop);
+  } else if (o.kind === 'agreement') {
+    // Read-only signed-agreement viewer (from the customer card). Shows the exact
+    // agreement the customer accepted plus their signature + the date.
+    const c = IDX.customer.get(o.recId);
+    if (!c) { state.overlay = null; return; }
+    const ag = AGREEMENTS[c.agreementType] || AGREEMENTS.rental;
+    const pop = el('div', 'popup nc-popup');
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>${esc(ag.title)}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        <div class="nc-ag-meta">${esc(fullName(c))}${c.agreementSignedAt ? ` · accepted ${esc(c.agreementSignedAt)}` : ' · not yet signed'}</div>
+        <div class="nc-agreement" tabindex="0">${esc(ag.text)}</div>
+        ${c.signature ? `<div class="nc-ag-sigline"><span class="nc-cap-lbl">Signature</span><img class="nc-thumb sig" src="${esc(c.signature)}" alt="signature" /></div>` : ''}
+        <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill c-gray js-close">Close</button><button class="pill ref js-edit-customer" data-rec="${c.customerId}">Edit account</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'inspection') {
@@ -2312,11 +2335,12 @@ function onClick(e) {
   if (closest('.js-nc-save')) { e.stopPropagation(); return saveNewCustomer(); }
   if (closest('.js-nc-acct')) { const b = closest('.js-nc-acct'); e.stopPropagation(); ncSyncInputs(); state.overlay.draft.accountType = b.dataset.val; renderOverlay(); return; }
   if (closest('.js-nc-selfie-clear')) { e.stopPropagation(); ncSyncInputs(); state.overlay.draft.selfie = ''; renderOverlay(); return; }
-  if (closest('.js-nc-sig-save')) { e.stopPropagation(); const cv = document.querySelector('.overlay .nc-sigpad'); if (cv && cv.dataset.drawn) { ncSyncInputs(); state.overlay.draft.signature = cv.toDataURL('image/jpeg', 0.6); renderOverlay(); } else toast('Sign in the box first.'); return; }
+  if (closest('.js-nc-sig-save')) { e.stopPropagation(); const cv = document.querySelector('.overlay .nc-sigpad'); if (cv && cv.dataset.drawn) { ncSyncInputs(); const dr = state.overlay.draft; dr.signature = cv.toDataURL('image/jpeg', 0.6); dr.agreementType = /member/i.test(dr.accountType || '') ? 'membership' : 'rental'; dr.agreementSignedAt = TODAY_ISO; renderOverlay(); } else toast('Sign in the box first.'); return; }
   if (closest('.js-nc-sig-clearpad')) { e.stopPropagation(); const cv = document.querySelector('.overlay .nc-sigpad'); if (cv) { const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); cv.dataset.drawn = ''; } return; }
-  if (closest('.js-nc-sig-clear')) { e.stopPropagation(); ncSyncInputs(); state.overlay.draft.signature = ''; renderOverlay(); return; }
+  if (closest('.js-nc-sig-clear')) { e.stopPropagation(); ncSyncInputs(); const dr = state.overlay.draft; dr.signature = ''; dr.agreementType = ''; dr.agreementSignedAt = ''; renderOverlay(); return; }
   if (closest('.js-nc-qr')) { e.stopPropagation(); const id = state.overlay.editId; openOverlay({ kind: 'qr', title: 'Continue on phone', url: location.origin + location.pathname + '#edit=' + id, caption: 'Scan to finish this account on your phone.' }); return; }
   if (closest('.js-edit-customer')) { e.stopPropagation(); return openCustomerForm(closest('.js-edit-customer').dataset.rec); }
+  if (closest('.js-view-agreement')) { e.stopPropagation(); const cust = IDX.customer.get(closest('.js-view-agreement').dataset.rec); if (cust) openOverlay({ kind: 'agreement', recId: cust.customerId }); return; }
   if (closest('.js-ring')) return openOverlay({ kind: 'role', role: closest('.js-ring').dataset.role });
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-theme')) { state.theme = state.theme === 'dark' ? 'light' : 'dark'; renderOverlay(); render(); return; }
@@ -2729,6 +2753,7 @@ function openCustomerForm(editId) {
     firstName: f('firstName'), lastName: f('lastName'), company: f('company'), phone: f('phone'),
     email: f('email'), industry: f('industry'), accountType: f('accountType', 'Non-Business'),
     accountNotes: f('accountNotes'), selfie: f('selfie'), signature: f('signature'),
+    agreementType: f('agreementType'), agreementSignedAt: f('agreementSignedAt'),
   } });
 }
 // Downscale + JPEG-compress an image data URL so it fits inside one Sheet cell
@@ -2762,9 +2787,12 @@ function saveNewCustomer() {
   const d = o.draft;
   if (o.editId) {                                   // ── editing / completing an existing customer ──
     const c = IDX.customer.get(o.editId); if (!c) { closeOverlay(); return; }
-    Object.assign(c, { firstName: d.firstName, lastName: d.lastName, company: d.company, phone: d.phone, email: d.email, industry: d.industry, accountType: d.accountType || 'Non-Business', accountNotes: d.accountNotes, selfie: d.selfie, signature: d.signature });
+    const wasSigned = !!c.agreementSignedAt;
+    Object.assign(c, { firstName: d.firstName, lastName: d.lastName, company: d.company, phone: d.phone, email: d.email, industry: d.industry, accountType: d.accountType || 'Non-Business', accountNotes: d.accountNotes, selfie: d.selfie, signature: d.signature, agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '' });
     c.name = `${d.firstName} ${d.lastName}`.trim() || c.name;
-    reindex('customers', c); logAction(c, 'Account details updated');
+    reindex('customers', c);
+    if (c.agreementSignedAt && !wasSigned) logAction(c, `${AGREEMENTS[c.agreementType]?.title || 'Agreement'} signed`);
+    logAction(c, 'Account details updated');
     closeOverlay(); anchorRecord('customers', c.customerId); toast(`${c.name} updated.`);
     return;
   }
@@ -2774,6 +2802,7 @@ function saveNewCustomer() {
     company: d.company, phone: d.phone, email: d.email, address: '',
     industry: d.industry, accountType: d.accountType || 'Non-Business', payStatus: 'New Customer',
     requiresPO: false, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
+    agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
     interestedCategoryIds: [], activityLog: [], usedSalesStage: 'Inbound Lead', membershipStage: 'Inbound Lead',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
   };

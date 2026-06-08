@@ -26,6 +26,14 @@ export const COLOR_TOKENS = [
 export const colorVar   = (token) => `var(--${token})`;
 export const colorBgVar = (token) => `var(--${token}-bg)`;
 
+/* ── Stripe (Phase 2 — card-on-file & invoice charging) ───────────────────
+ * PUBLISHABLE test key only. Publishable keys are designed to live in client
+ * code and are safe to commit — they can only create tokens, never move money.
+ * The SECRET key (sk_test_…) lives ONLY in the Apps Script backend as a Script
+ * Property and is NEVER placed here or in any client file. Swap to the live
+ * pk_live_… key at go-live. */
+export const STRIPE_PUBLISHABLE_KEY = 'pk_test_XTWYCxKC2XmOkLqKSs5o6O2Y';
+
 /* ── Status registry (SPEC §8 canonical values + §6.2 #7 colors) ──────────
  * STATUS[set][value] = { label, color }. `slug` and `value` are derived.
  * Every set the app renders a pill for lives here. Legacy→canonical import
