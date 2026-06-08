@@ -1798,7 +1798,10 @@ function headerEl() {
     <button class="logo js-logo"><img class="logo-img" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" /></button>
     <div class="kpis">${rings}</div>
     <div class="header-right">
-      ${state.tabs.length ? `<div class="tabstrip">${tabStrip()}</div>` : ''}
+      <div class="hr-top">
+        ${state.tabs.length ? `<div class="tabstrip">${tabStrip()}</div>` : ''}
+        ${currentUser ? `<span class="hello-name"><span class="hello-greet">Hi,</span> ${esc(currentUser)}</span>` : ''}
+      </div>
       <div class="toolbar">
         <button class="iconbtn primary js-newrental">${I.plus}New</button>
         <button class="iconbtn js-dashboard">${I.grid} Dashboard</button>
