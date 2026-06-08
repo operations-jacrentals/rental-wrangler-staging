@@ -2783,7 +2783,7 @@ function openLogoMenu(anchorEl) {
   const team = `<div class="menu-sep"></div><div class="menu-team"><div class="menu-team-head">Team KPIs</div><div class="menu-team-ring">${ring3SVG(kpiTeam(), 'accent', { size: 104 })}</div><div class="kpi-list">${teamLines}</div></div>`;
   const userLine = `<div class="menu-user"><span class="mu-name">${esc(currentUser || 'Signed in')}</span>${currentRole ? `<span class="mu-role">${esc(currentRole)}</span>` : ''}</div>
     <button class="dd-item js-switch-user"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.back}</span>Switch user</button>
-    <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${currentRole === 'Admin' ? '' : ' <span class="muted" style="font-size:10px;margin-left:2px">Admin</span>'}</button>
+    <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${(currentRole === 'Admin' || currentRole === 'Owner') ? '' : ' <span class="muted" style="font-size:10px;margin-left:2px">Admin</span>'}</button>
     <div class="menu-sep"></div>`;
   openDropdown(anchorEl, userLine + boards + team);
 }
@@ -2798,7 +2798,7 @@ function switchUser() {
 // admin password; a staff role must enter it. Loads the live config, then opens the editor.
 async function openSettings() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
-  const adminPw = currentRole === 'Admin' ? backendPassword : (window.prompt('Settings is Admin-only.\nEnter the Admin password:') || '');
+  const adminPw = (currentRole === 'Admin' || currentRole === 'Owner') ? backendPassword : (window.prompt('Settings is Admin-only.\nEnter the Admin password:') || '');
   if (!adminPw) return;
   try {
     const r = await backendCall('getConfig', { password: adminPw });
@@ -2814,7 +2814,7 @@ async function saveSettings() {
   if (!admin || Object.values(roles).some((v) => !v)) { o.error = 'Passwords can\'t be empty.'; renderOverlay(); return; }
   try {
     const r = await backendCall('setConfig', { password: o.adminPw, config: { roles, admin } });
-    if (r && r.ok) { if (currentRole === 'Admin') { backendPassword = admin; sessionStorage.setItem('jactec.pw', admin); o.adminPw = admin; } closeOverlay(); toast('Logins updated.'); }
+    if (r && r.ok) { if (currentRole === 'Admin' || currentRole === 'Owner') { const myNew = currentRole === 'Admin' ? admin : (roles[currentRole] || o.adminPw); backendPassword = myNew; sessionStorage.setItem('jactec.pw', myNew); o.adminPw = myNew; } closeOverlay(); toast('Logins updated.'); }
     else { o.error = 'Save failed.'; renderOverlay(); }
   } catch (e) { o.error = 'Could not reach the database.'; renderOverlay(); }
 }
@@ -2903,7 +2903,7 @@ function getStripe() {
   return _stripe;
 }
 // Only Office/Admin take payments. In #local demo (no role) we still show the UI.
-const canMoney = () => !currentRole || currentRole === 'Admin' || currentRole === 'Office';
+const canMoney = () => !currentRole || currentRole === 'Admin' || currentRole === 'Owner' || currentRole === 'Office';
 const brandName = (b) => (b || 'Card').replace(/^./, (m) => m.toUpperCase());
 const hasCardOnFile = (c) => !!(c && c.stripeId && c.cardLast4);
 const cardLabel = (c) => hasCardOnFile(c) ? `${brandName(c.cardBrand)} ending ${c.cardLast4}${c.cardExpMonth ? ` · exp ${c.cardExpMonth}/${String(c.cardExpYear).slice(-2)}` : ''}` : '';
