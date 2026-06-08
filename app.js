@@ -39,7 +39,33 @@ const SINGULAR = { customers: 'customer', rentals: 'rental', units: 'unit', invo
    1. Indexes — built once on load (SPEC §3: never scan thousands per keystroke)
    ════════════════════════════════════════════════════════════════════════ */
 const IDX = {};
+/* Split a legacy single "name" (optionally "First Last (Company)") into parts.
+   First token = firstName, the rest = lastName; "(…)" → company if none set yet. */
+function parseCustomerName(raw, existingCompany) {
+  let s = String(raw || '').trim();
+  let company = existingCompany || '';
+  const m = s.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+  if (m) { s = m[1].trim(); if (!company) company = m[2].trim(); }
+  const parts = s.split(/\s+/).filter(Boolean);
+  return { firstName: parts.shift() || '', lastName: parts.join(' '), company };
+}
+const fullName = (c) => `${c.firstName || ''} ${c.lastName || ''}`.trim() || c.name || '';
+let migrationDirty = false;
+/* One-time, idempotent: give every customer firstName/lastName parsed from `name`,
+   then keep `name` as the derived "First Last" display. Runs on seed AND loaded data. */
+function migrateCustomers() {
+  DATA.customers.forEach((c) => {
+    if (c.firstName == null) {
+      const p = parseCustomerName(c.name, c.company);
+      c.firstName = p.firstName; c.lastName = p.lastName; if (p.company) c.company = p.company;
+      c.name = fullName(c);
+      migrationDirty = true;
+    }
+  });
+}
+
 function buildIndexes() {
+  migrateCustomers();
   IDX.unit     = new Map(DATA.units.map((u) => [u.unitId, u]));
   IDX.category = new Map(DATA.categories.map((c) => [c.categoryId, c]));
   IDX.customer = new Map(DATA.customers.map((c) => [c.customerId, c]));
@@ -74,7 +100,7 @@ function searchBlob(card, rec) {
   let p = [];
   switch (card) {
     case 'customers':
-      p = [rec.name, rec.company, rec.phone, rec.email, rec.address, rec.industry,
+      p = [rec.name, rec.firstName, rec.lastName, rec.company, rec.phone, rec.email, rec.address, rec.industry,
         rec.accountType, L('customerAccountType', rec.accountType),
         rec.payStatus, L('customerPayStatus', rec.payStatus),
         rec.membershipStage, L('funnelStage', rec.membershipStage),
@@ -990,18 +1016,20 @@ const DETAIL = {
     const isBusiness = (c.accountType || '').includes('Business');
     const yr = (iso) => `${fmtShortDate(iso)}, ${parseISO(iso).getFullYear()}`;
 
+    // §7.1 — every contact/account detail is click-to-edit (auto-saves via the persist hook)
+    const efield = (f, ph, wrap) => { const val = c[f]; return `<div class="kv"><span class="v inline-edit" data-edit="custField" data-field="${f}" data-rec="${c.customerId}" data-ph="${esc(ph)}"${wrap ? ' style="white-space:normal"' : ''}>${val ? esc(val) : `<span class="add-field">+ ${esc(ph)}</span>`}</span></div>`; };
     const contact = `<div class="section"><h4>Contact</h4><div class="fieldstack">
-      ${c.phone ? kv(c.phone) : ''}${c.email ? kv(c.email) : ''}
-      ${c.company ? kv(c.company) : ''}${c.address ? kv(c.address, { wrap: true }) : ''}
+      ${efield('firstName', 'First name')}${efield('lastName', 'Last name')}
+      ${efield('phone', 'Add phone')}${efield('email', 'Add email')}
+      ${efield('company', 'Add company')}${efield('address', 'Add address', true)}
     </div></div>`;
     const account = `<div class="section"><h4>Account</h4><div class="fieldstack">
-      ${kvPills(`${c.industry ? badge(c.industry, 'navy') : ''}${c.requiresPO ? badge('PO Required', 'yellow') : ''}` || badge('Standard', 'gray'))}
+      ${kvPills(`${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${c.requiresPO ? badge('PO Required', 'yellow') : ''}`)}
+      ${efield('industry', 'Add industry')}${efield('accountNotes', 'Add notes', true)}
       ${kv(`${money(d.totalPaid)} total · ${d.visits || 0} visits · ${d.years || 0} yrs · every ${d.avgFrequencyDays || 0} days`, { wrap: true })}
     </div></div>`;
     // name → badges → full-width activity bar → sections (Jac 2026-06-07); even .detail gaps
-    const title = c.mock
-      ? `<span class="d-title inline-edit" data-edit="customerName" data-rec="${c.customerId}">${esc(c.name)}</span>`
-      : `<span class="d-title">${esc(c.name)}</span>`;
+    const title = `<span class="d-title">${esc(fullName(c)) || 'New Customer'}</span>`;
     const badges = `<div class="detail-badges pillrow">${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${isMember ? badge('Member', 'purple') : ''}${statusPill('customerPayStatus', c.payStatus)}</div>`;
     const activeBar = `<div class="active-bar wide"><div class="active-spectrum" style="clip-path:inset(0 ${100 - (d.activePct || 0)}% 0 0)"></div><span class="active-lbl">${d.activePct || 0}% Active</span></div>`;
 
@@ -2306,6 +2334,11 @@ function startInlineEdit(span) {
     const c = IDX.customer.get(recId);
     input.value = c?.salesAction || ''; input.placeholder = 'Next action…';
     commit = () => { if (done) return; done = true; if (c) c.salesAction = input.value.trim(); render(); };
+  } else if (kind === 'custField') {
+    const c = IDX.customer.get(recId), f = span.dataset.field;
+    input.value = (c && c[f]) || ''; input.placeholder = span.dataset.ph || '';
+    if (f === 'email') input.type = 'email';
+    commit = () => { if (done) return; done = true; if (c) { c[f] = input.value.trim(); if (f === 'firstName' || f === 'lastName') c.name = fullName(c); reindex('customers', c); } render(); };
   } else { return; }
   span.replaceWith(input); input.focus(); input.select();
   input.addEventListener('keydown', (e) => {
@@ -2426,7 +2459,7 @@ const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n
 
 function startNewCustomer() {
   const id = 'C-NEW' + (state.seq++);
-  const draft = { customerId: id, name: 'New Customer', phone: '', email: '', company: '', address: '', accountType: 'Non-Business', payStatus: 'Current', interestedCategoryIds: [], activityLog: [], usedSalesStage: 'Inbound Lead', membershipStage: 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0 }, mock: true };
+  const draft = { customerId: id, name: 'New Customer', firstName: '', lastName: '', phone: '', email: '', company: '', address: '', industry: '', accountNotes: '', accountType: 'Non-Business', payStatus: 'Current', interestedCategoryIds: [], activityLog: [], usedSalesStage: 'Inbound Lead', membershipStage: 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0 }, mock: true };
   DATA.customers.push(draft); IDX.customer.set(id, draft); reindex('customers', draft);
   logAction(draft, 'Customer created');
   anchorRecord('customers', id);
@@ -2941,6 +2974,10 @@ function renderLogin(msg) {
   document.getElementById('login-form').addEventListener('submit', (e) => { e.preventDefault(); attemptLogin(); });
   document.getElementById('login-pw').focus();
 }
+function finishLoad() {
+  buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
+  if (migrationDirty) { migrationDirty = false; saveSoon(); }   // push parsed first/last names up to the Sheet
+}
 async function attemptLogin() {
   const pw = document.getElementById('login-pw')?.value || '';
   if (!pw) return;
@@ -2949,7 +2986,7 @@ async function attemptLogin() {
   try {
     await loadFromBackend();
     sessionStorage.setItem('jactec.pw', pw);
-    buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
+    finishLoad();
   } catch (e) {
     backendPassword = ''; sessionStorage.removeItem('jactec.pw');
     renderLogin(/unauthorized/i.test(String(e && e.message)) ? 'Incorrect password — please try again.' : "Couldn't reach the database. Check your connection and try again.");
@@ -2988,8 +3025,7 @@ function boot() {
   // §16 — gate on the shared password: load from the backend if we already have it
   // this session, otherwise show the login screen. The app only renders once data is in.
   if (backendPassword) {
-    loadFromBackend()
-      .then(() => { buildIndexes(); state.cascade = createCascade(DATA); booting = false; render(); })
+    loadFromBackend().then(finishLoad)
       .catch(() => { backendPassword = ''; sessionStorage.removeItem('jactec.pw'); renderLogin('Please sign in again.'); });
   } else {
     renderLogin();
@@ -2999,7 +3035,7 @@ boot();
 
 // expose for console/debugging + future DATA WIRING
 window.JT = {
-  state, DATA, IDX, render, rentalPrice, invoiceTotals,
+  state, DATA, IDX, render, rentalPrice, invoiceTotals, buildIndexes, migrateCustomers, fullName,
   // creation / mutation API (the UI calls these; exposed for scripting + wiring)
   startNewRental, startNewInspection, startNewWorkOrder, startNewInvoice, startWashRequest,
   createInvoiceForRental, addRentalLineToInvoice, addWOToInvoice, addCustomLine, addPartToWO,

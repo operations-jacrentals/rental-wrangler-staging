@@ -612,3 +612,7 @@ input { font-family: inherit; }
 .login-btn:hover { filter: brightness(1.07); }
 .login-btn:disabled { opacity: .65; cursor: default; }
 .login-err { font-size: 12px; font-weight: 600; color: var(--red); text-align: center; }
+
+/* §7.1 — "+ Add phone/email/…" placeholder for an empty click-to-edit field */
+.add-field { color: var(--txt-3); font-weight: 500; }
+.inline-edit:hover .add-field { color: var(--accent); }
