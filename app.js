@@ -1179,11 +1179,15 @@ const DETAIL = {
       ${kv(`${money(t.paid)} / ${money(t.total)}`, { sfx: 'paid' })}
       ${kv(fmtShortDate(i.dueDate), { sfx: 'due date' })}
       ${kvPills(`<span class="pill ref inline-edit" data-edit="invoicePO" data-rec="${i.invoiceId}">${esc(i.po ? 'PO ' + i.po : 'Add PO')}</span>${cust?.requiresPO && !i.po ? badge('PO required', 'yellow') : ''}`)}
-      ${t.status === 'Paid'
-        ? `<div class="pillrow"><span class="pill c-green" style="min-width:0">Paid${i.paymentMethod ? ' · ' + esc(i.paymentMethod) : ''}</span></div>`
-        : (canMoney() && t.balance > 0 && t.status !== 'Refunded' && cust
-            ? `<div class="pillrow" style="margin-top:2px"><button class="pill c-green js-pay-invoice" data-rec="${i.invoiceId}">${hasCardOnFile(cust) ? 'Pay ' + money(t.balance) : 'Take payment'}</button>${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : '<span class="muted" style="font-size:11px">no card on file</span>'}</div>`
-            : '')}
+      ${canMoney() && cust
+        ? `<div class="pillrow" style="margin-top:2px">${
+            t.status === 'Refunded'
+              ? `<span class="pill c-gray" style="min-width:0">Refunded</span><button class="pill ref js-pay-invoice" data-rec="${i.invoiceId}">Details</button>`
+              : t.balance <= 0 && t.paid > 0
+                ? `<span class="pill c-green" style="min-width:0">Paid${i.paymentMethod ? ' · ' + esc(i.paymentMethod) : ''}</span><button class="pill ref js-pay-invoice" data-rec="${i.invoiceId}">Refund</button>`
+                : `<button class="pill c-green js-pay-invoice" data-rec="${i.invoiceId}">${hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money(t.balance) : 'Take payment'}</button>${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : '<span class="muted" style="font-size:11px">no card on file</span>'}`
+          }</div>`
+        : ''}
     </div></div>`;
     const lineForm = `<div class="lineform"><input class="lf-in js-lf-label" placeholder="Custom line description" /><div class="lineform-row"><input class="lf-in js-lf-amt" type="number" min="0" placeholder="Amount $" /></div><div class="pillrow"><button class="pill c-green js-line-save" data-rec="${i.invoiceId}">Add line</button><button class="pill c-gray js-line-cancel">Cancel</button></div></div>`;
     const items = `<div class="section"><h4>Items</h4>
@@ -2099,21 +2103,29 @@ function renderOverlay() {
     const t = invoiceTotals(inv);
     const c = inv.customerId ? IDX.customer.get(inv.customerId) : null;
     const card = hasCardOnFile(c);
-    const paid = inv.paid === true || t.status === 'Paid' || t.balance <= 0;
+    const refunded = t.status === 'Refunded';
+    const refAmt = Number(inv.refundedAmount) || 0;
     const pop = el('div', 'popup'); pop.style.width = '380px';
     pop.innerHTML = `
-      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.invoices || ''}</span><h3>Pay ${esc(inv.invoiceId)}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.invoices || ''}</span><h3>${esc(inv.invoiceId)}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body">
-        <div class="pay-amount"><span class="pay-amount-num">${money(t.balance)}</span><span class="pay-amount-sfx">due${c ? ' · ' + esc(c.name) : ''}</span></div>
-        ${paid ? '<div class="pay-card-on-file good">✓ This invoice is paid.</div>'
-          : card ? `<div class="pay-card-on-file"><span class="pill c-gray" style="min-width:0">${I.qr ? '' : ''}💳</span><span>${esc(cardLabel(c))}</span></div>`
-                 : '<div class="pay-card-on-file warn">No card on file for this customer.</div>'}
+        <div class="pay-amount"><span class="pay-amount-num">${money(t.balance)}</span><span class="pay-amount-sfx">${t.balance > 0 ? 'balance due' : 'balance'}${c ? ' · ' + esc(c.name) : ''}</span></div>
+        <div class="pay-status-line">${statusPill('invoiceStatus', t.status)}<span class="muted">${money(t.paid)} of ${money(t.total)} paid${refAmt ? ` · ${money(refAmt)} refunded` : ''}</span></div>
+        ${refunded ? '<div class="pay-card-on-file">↩ This invoice was refunded.</div>'
+          : t.balance <= 0 ? `<div class="pay-card-on-file good">✓ Paid in full${inv.paymentMethod ? ' · ' + esc(inv.paymentMethod) : ''}</div>`
+            : card ? `<div class="pay-card-on-file"><span>💳 ${esc(cardLabel(c))}</span></div>`
+                   : '<div class="pay-card-on-file warn">No card on file for this customer.</div>'}
+        ${t.balance > 0 && card ? `<label class="pay-field"><span>Amount to charge</span><input class="pay-amt-in" type="number" min="0.01" max="${t.balance}" step="0.01" value="${t.balance.toFixed(2)}" ${o.busy ? 'disabled' : ''}></label>` : ''}
+        ${o.confirmRefund ? `<div class="pay-confirm">Refund ${money(t.paid)} to ${esc(inv.paymentMethod || 'the card')}?</div>` : ''}
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:10px">${esc(o.error)}</div>` : ''}
         <div class="pillrow" style="justify-content:flex-end;margin-top:16px">
-          <button class="pill c-gray js-close">Close</button>
-          ${paid ? '' : card
-            ? `<button class="pill c-green js-charge-invoice" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Charging…' : 'Charge ' + money(t.balance)}</button>`
-            : `<button class="pill ref js-pay-addcard" data-rec="${inv.customerId || ''}" data-inv="${inv.invoiceId}" ${inv.customerId ? '' : 'disabled style="opacity:.45;cursor:default"'}>Add a card</button>`}
+          ${o.confirmRefund
+            ? `<button class="pill c-gray js-refund-cancel">Cancel</button><button class="pill c-red js-refund-confirm" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Refunding…' : 'Confirm refund'}</button>`
+            : `<button class="pill c-gray js-close">Close</button>
+               ${t.paid > 0 && !refunded ? `<button class="pill ref js-refund-invoice" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>Refund</button>` : ''}
+               ${t.balance > 0 ? (card
+                 ? `<button class="pill c-green js-charge-invoice" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Charging…' : 'Charge'}</button>`
+                 : `<button class="pill ref js-pay-addcard" data-rec="${inv.customerId || ''}" data-inv="${inv.invoiceId}" ${inv.customerId ? '' : 'disabled style="opacity:.45;cursor:default"'}>Add a card</button>`) : ''}`}
         </div>
       </div>`;
     overlay.appendChild(pop);
@@ -2396,6 +2408,9 @@ function onClick(e) {
   if (closest('.js-pay-invoice')) { e.stopPropagation(); return openPayInvoice(closest('.js-pay-invoice').dataset.rec); }
   if (closest('.js-charge-invoice')) { e.stopPropagation(); return chargeInvoiceFlow(closest('.js-charge-invoice').dataset.rec); }
   if (closest('.js-pay-addcard')) { e.stopPropagation(); const b = closest('.js-pay-addcard'); return openAddCard(b.dataset.rec, { returnTo: 'payment', invoiceId: b.dataset.inv }); }
+  if (closest('.js-refund-invoice')) { e.stopPropagation(); if (state.overlay) { state.overlay.confirmRefund = true; state.overlay.error = ''; renderOverlay(); } return; }
+  if (closest('.js-refund-cancel')) { e.stopPropagation(); if (state.overlay) { state.overlay.confirmRefund = false; renderOverlay(); } return; }
+  if (closest('.js-refund-confirm')) { e.stopPropagation(); return refundInvoiceFlow(closest('.js-refund-confirm').dataset.rec); }
   if (closest('.js-ring')) return openOverlay({ kind: 'role', role: closest('.js-ring').dataset.role });
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-theme')) { state.theme = state.theme === 'dark' ? 'light' : 'dark'; if (state.overlay && state.overlay.kind !== 'addCard') renderOverlay(); render(); return; }
@@ -2895,6 +2910,8 @@ function friendlyPayErr(r) {
     'forbidden': 'Only Office/Admin can take payments.', 'stripe-not-configured': 'Payments aren’t configured on the backend yet.',
     'pm-customer-mismatch': 'That card isn’t linked to this customer.', 'setupintent-invalid': 'Card setup didn’t verify — try again.',
     'amount-mismatch': 'Amount changed during payment — flagged for review.', 'customer-mismatch': 'Payment didn’t match this customer.',
+    'nothing-to-refund': 'Nothing has been paid on this invoice.', 'no-charge-to-refund': 'No card charge found to refund.',
+    'refund-failed': 'The refund didn’t go through — try again.', 'invoice-refunded': 'This invoice was already refunded.',
     'server-error': 'Server error — try again.',
   })[code] || 'Payment failed — try again or use another card.';
 }
@@ -2955,12 +2972,16 @@ async function saveCardFlow(btn) {
 async function chargeInvoiceFlow(invoiceId) {
   const o = state.overlay; if (!o || o.kind !== 'payment') return;
   const live = () => state.overlay === o;   // bail if the overlay changed/closed mid-await
+  const amtEl = document.querySelector('.overlay .pay-amt-in');
+  const dollars = amtEl ? Number(amtEl.value) : NaN;
+  const amountCents = dollars > 0 ? Math.round(dollars * 100) : null;   // null = full balance; server caps at balance
   o.busy = true; o.error = ''; renderOverlay();
   const fail = (msg) => { if (!live()) return; o.busy = false; o.error = msg; renderOverlay(); };
+  const done = (r) => { if (!live()) return; applyPayment(invoiceId, r); o.busy = false; o.error = ''; toast(r.fullyPaid || r.alreadyPaid ? 'Paid in full ✓' : 'Payment captured ✓'); renderOverlay(); };
   try {
-    const r = await backendCall('stripeChargeInvoice', { invoiceId });
+    const r = await backendCall('stripeChargeInvoice', { invoiceId, amountCents });
     if (!live()) return;
-    if (r && r.ok && (r.status === 'succeeded' || r.alreadyPaid)) { applyInvoicePaid(invoiceId, r); toast('Payment captured ✓'); closeOverlay(); return; }
+    if (r && r.ok && (r.status === 'succeeded' || r.alreadyPaid)) { done(r); return; }
     if (r && r.requiresAction && r.clientSecret) {
       const stripe = getStripe(); if (!stripe) { fail('Payment library not ready.'); return; }
       const { paymentIntent, error } = await stripe.confirmCardPayment(r.clientSecret);
@@ -2969,7 +2990,7 @@ async function chargeInvoiceFlow(invoiceId) {
       if (paymentIntent && paymentIntent.status === 'succeeded') {
         const f = await backendCall('stripeFinalizeInvoice', { invoiceId, paymentIntentId: r.paymentIntentId });
         if (!live()) return;
-        if (f && f.ok) { applyInvoicePaid(invoiceId, f); toast('Payment captured ✓'); closeOverlay(); return; }
+        if (f && f.ok) { done(f); return; }
         fail(friendlyPayErr(f)); return;
       }
       fail('Card authentication was not completed.'); return;
@@ -2977,14 +2998,32 @@ async function chargeInvoiceFlow(invoiceId) {
     fail(friendlyPayErr(r));
   } catch (e) { fail('Network error — try again.'); }
 }
-function applyInvoicePaid(invoiceId, r) {
+// Refund the captured amount back to the card (full). Reduces amountPaid; a full
+// refund flips the invoice to Refunded. The server is authoritative.
+async function refundInvoiceFlow(invoiceId) {
+  const o = state.overlay; if (!o || o.kind !== 'payment') return;
+  const live = () => state.overlay === o;
+  o.busy = true; o.error = ''; o.confirmRefund = false; renderOverlay();
+  try {
+    const r = await backendCall('stripeRefundInvoice', { invoiceId });
+    if (!live()) return;
+    if (r && r.ok) { applyPayment(invoiceId, r); o.busy = false; toast('Refunded ✓'); renderOverlay(); return; }
+    o.busy = false; o.error = friendlyPayErr(r); renderOverlay();
+  } catch (e) { if (live()) { o.busy = false; o.error = 'Network error — try again.'; renderOverlay(); } }
+}
+// Apply a server charge/refund result to the local invoice; status is derived from amountPaid.
+function applyPayment(invoiceId, r) {
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
-  inv.paid = true; inv.status = 'Paid'; inv.paidAt = r.paidAt || TODAY_ISO;
-  if (r.paymentIntentId) inv.paymentIntentId = r.paymentIntentId;
-  if (r.chargedAmount != null) inv.chargedAmount = r.chargedAmount;
+  const before = invoiceTotals(inv).status;
   if (r.amountPaid != null) inv.amountPaid = r.amountPaid;
+  if (r.paid != null) inv.paid = r.paid;
+  if (r.paidAt) inv.paidAt = r.paidAt;
   if (r.paymentMethod) inv.paymentMethod = r.paymentMethod;
-  reindex('invoices', inv); logAction(inv, `Payment captured — ${r.paymentMethod || 'card on file'}`);
+  if (r.refunded != null) inv.refunded = r.refunded;
+  if (r.refundedAmount != null) inv.refundedAmount = r.refundedAmount;
+  reindex('invoices', inv);
+  const after = invoiceTotals(inv).status;
+  logAction(inv, r.refundedCents != null ? `Refunded ${money((r.refundedCents || 0) / 100)} — ${before} → ${after}` : `Payment — ${before} → ${after} (${r.paymentMethod || 'card'})`);
   render();
 }
 
