@@ -177,7 +177,7 @@ input { font-family: inherit; }
 /* §5.4 search filter bar — AND-narrowing term builder (type + Enter) */
 .filterbar { padding-top: 10px; gap: 8px; align-items: center; flex-wrap: wrap; }
 .filterbar-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--txt-3); }
-.filt-term { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px 0 5px; border-radius: 999px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 12px; font-weight: 700; }
+.filt-term { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px 0 5px; border-radius: 999px; background: var(--green-bg); border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); color: var(--green); font-size: 12px; font-weight: 700; }
 .filt-term .x { cursor: pointer; opacity: .7; font-weight: 800; }
 .filt-term .x:hover { opacity: 1; }
 /* leading ○ → red − "NOT" toggle inside each filter-term pill */
