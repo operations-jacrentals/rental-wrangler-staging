@@ -2163,6 +2163,10 @@ let renderCount = 0;
 function render() {
   const t0 = performance.now();
   hideTip();
+  // Preserve each card's scroll position across the DOM swap, so recording an action
+  // or editing a field doesn't dump you back at the top of a scrolled card (§0.6).
+  const scrollMemo = {};
+  document.querySelectorAll('.card[data-card]').forEach((c) => { const b = c.querySelector('.card-body'); if (b && b.scrollTop) scrollMemo[c.dataset.card] = b.scrollTop; });
   availWin = activeDraftWindow();   // §10 — recompute window availability each render
   // Build off-screen, then swap in ONE operation (replaceChildren) so there's no
   // blank frame between teardown and rebuild — kills the flash on anchor/cascade.
@@ -2178,6 +2182,8 @@ function render() {
   for (const cardDef of GRID_CARDS) grid.appendChild(cardEl(cardDef, session));
   const pb = pickBarEl();
   if (pb) $('#app').replaceChildren(header, pb, grid); else $('#app').replaceChildren(header, grid);
+  // restore the per-card scroll captured above
+  Object.keys(scrollMemo).forEach((card) => { const b = document.querySelector(`.card[data-card="${card}"] .card-body`); if (b) b.scrollTop = scrollMemo[card]; });
   document.documentElement.setAttribute('data-theme', state.theme);
   // the rental-window picker floats above the grid, anchored to its trigger (§12.2)
   if (state.winpicker) {
@@ -2498,7 +2504,7 @@ function startInlineEdit(span) {
     const c = IDX.customer.get(recId), f = span.dataset.field;
     input.value = (c && c[f]) || ''; input.placeholder = span.dataset.ph || '';
     if (f === 'email') input.type = 'email';
-    commit = () => { if (done) return; done = true; if (c) { const old = c[f]; const v = input.value.trim(); if (String(old ?? '') !== v) { c[f] = v; if (f === 'firstName' || f === 'lastName') c.name = fullName(c); reindex('customers', c); logAction(c, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
+    commit = () => { if (done) return; done = true; if (c) { const old = c[f]; const v = input.value.trim(); if (String(old ?? '') !== v) { c[f] = v; if (f === 'firstName' || f === 'lastName') c.name = fullName(c); if (f === 'company' && v && c.accountType === 'Non-Business') { c.accountType = 'Business'; logAction(c, 'Account type → Business (company added)'); } reindex('customers', c); logAction(c, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
   } else if (kind === 'field') {
     // Generic per-card field editor (text / number / date) — routes through recOf+reindex.
     const card = span.dataset.card, f = span.dataset.field, type = span.dataset.type || 'text';
@@ -2580,6 +2586,13 @@ function onInput(e) {
 
 /* change events — native <input type="date"> / <select> on draft details. */
 function onChange(e) {
+  // New Customer form: filling Company auto-promotes Non-Business → Business.
+  if (e.target.dataset && e.target.dataset.f === 'company' && state.overlay?.kind === 'newCustomer') {
+    const o = state.overlay, root = document.querySelector('.overlay .popup-body');
+    if (root) root.querySelectorAll('[data-f]').forEach((i) => { o.draft[i.dataset.f] = i.value.trim(); });
+    if (o.draft.company && o.draft.accountType === 'Non-Business') { o.draft.accountType = 'Business'; renderOverlay(); }
+    return;
+  }
   if (e.target.classList.contains('js-insp-photo')) {
     const file = e.target.files && e.target.files[0]; if (!file) return;
     const reader = new FileReader();
