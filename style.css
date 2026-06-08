@@ -109,7 +109,7 @@ input { font-family: inherit; }
 .kpis { display: flex; align-items: center; gap: 14px; }
 .kpi-ring {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 4px 6px; border-radius: 11px; border: 1px solid transparent; min-width: 54px;
+  padding: 4px 6px 0; border-radius: 11px; border: 1px solid transparent; min-width: 54px;
   transition: background .15s, border-color .15s; background: none; cursor: pointer;
 }
 .kpi-ring:hover { background: var(--panel); border-color: var(--line); }
