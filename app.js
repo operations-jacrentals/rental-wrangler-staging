@@ -628,6 +628,7 @@ function showHoverPreview(target) {
   hideHoverPreview();
   const node = el('div', 'hover-preview');
   try { node.innerHTML = DETAIL[info.ec](info.rec, { historySearch: '', backStack: [], mode: 'standard' }); } catch (e) { return; }
+  node.addEventListener('mouseleave', () => { hoverEl = null; hideHoverPreview(); });   // leaving the preview closes it
   document.body.appendChild(node); hoverNode = node;
   // anchor to the MOUSE CURSOR, clamped so no part runs off-screen (#2)
   const w = node.offsetWidth, h = node.offsetHeight, pad = 8, off = 16;
@@ -801,6 +802,12 @@ const ROW_META = {
 /* Fleet status → row-background tint (units out of active service). Active = none.
    Sold is GREEN (out of inventory, revenue realized) per Jac. */
 const FLEET_ROW_TINT = { 'Sold': 'green', 'For Sale': 'purple', 'Inactive': 'gray', 'Onboard': 'blue', 'Purchased': 'navy' };
+// Sold + Inactive units are hidden from the Units list & searches; the "Sold/Inactive"
+// sort surfaces ONLY them. (#2)
+const isSoldInactive = (u) => u.fleetStatus === 'Sold' || u.fleetStatus === 'Inactive';
+const unitsVisible = (rows, cs) => (cs && cs.sort && cs.sort.field === 'soldInactive')
+  ? rows.filter(isSoldInactive)
+  : rows.filter((u) => !isSoldInactive(u));
 function rowViz(card, rec) {
   // §10 availability tint takes precedence while a rental window is in scope
   if (availWin && availUnavailable(card, rec)) return `<div class="row-viz" style="background:var(--red-bg)"></div>`;
@@ -809,8 +816,10 @@ function rowViz(card, rec) {
   if (card === 'categories') return categoryMixViz(rec.categoryId);
   if (card === 'serviceOrders') { const s = topServiceForUnit(rec); if (s) return `<div class="row-viz" style="background:linear-gradient(90deg, var(--${s.color}-bg), transparent 60%)"></div>`; }
   if (card === 'units') {
-    if (rec.fleetStatus !== 'Active') return `<div class="row-viz" style="background:var(--${FLEET_ROW_TINT[rec.fleetStatus] || 'gray'}-bg)"></div>`;
-    if (rec.inspectionStatus === 'Failed') return `<div class="row-viz" style="background:var(--red-bg)"></div>`;
+    // colour each unit row by its INSPECTION status as a left gradient (same style as
+    // Inspection / Service / WO rows): Ready=green, Not Ready=yellow, Failed=red.
+    const c = getStatus('unitInspectionStatus', rec.inspectionStatus).color;
+    return `<div class="row-viz" style="background:linear-gradient(90deg, var(--${c}-bg), transparent 60%)"></div>`;
   }
   if (card === 'invoices') { const s = invoiceTotals(rec).status; return `<div class="row-viz" style="background:linear-gradient(90deg, var(--${getStatus('invoiceStatus', s).color}-bg), transparent 70%)"></div>`; }
   return '';
@@ -840,10 +849,7 @@ function rowEl(card, rec) {
   const id = idOf(card, rec);
   const inner = ROWS[card] ? ROWS[card](rec) : genericRow(card, rec);
   let extra = '';
-  if (card === 'units') {
-    if (rec.fleetStatus !== 'Active') extra = ' fleet-dim';        // out of active inventory → tint + dim
-    else if (rec.inspectionStatus === 'Failed') extra = ' unavailable';
-  }
+  if (card === 'units' && rec.fleetStatus !== 'Active') extra = ' fleet-dim';   // out of active inventory → dim (failed = gradient, not full red)
   if (card === 'customers' && /Blacklist/i.test(rec.accountType || '')) extra += ' unavailable';   // §9 blacklisted → red
   // §10 — under an active rental window, tint every unavailable unit/category red
   if (availWin && availUnavailable(card, rec)) extra += ' unavailable';
@@ -1568,7 +1574,7 @@ const memberIcon = (m) => (m === 'calendar' ? I.grid : (CARD_ICON[m] || ''));
 function memberCount(member, session) {
   if (member === 'calendar') return dispatchEvents().length;
   if (SHOP_TYPES.includes(member)) { try { return (shopItemsByType(session)[member] || []).length; } catch { return 0; } }
-  try { return listFor(member, session).length; } catch { return 0; }
+  try { let r = listFor(member, session); if (member === 'units') r = unitsVisible(r, session.cards.units); return r.length; } catch { return 0; }
 }
 // One column = a tab strip + the single active member's card.
 function columnEl(col, session) {
@@ -1678,6 +1684,7 @@ function listView(cardDef, session) {
   }
 
   let rows = listFor(card, session);
+  if (card === 'units') rows = unitsVisible(rows, cs);   // hide Sold/Inactive (or show only them via the sort) (#2)
   if (cs.search.trim() || (cs.filterTerms || []).length) { rows = rows.filter((rec) => blobMatches(IDX.search.get(card + ':' + idOf(card, rec)), cs.search, cs.filterTerms)); }
   rows = sortRows(card, rows, cs.sort);
   // §10 — surface available units/categories first while a rental window is in scope
@@ -2044,6 +2051,19 @@ function appendItemTabs(node, cardId) {
   node.appendChild(it);
 }
 
+// Inner markup for a Mouse-shortcuts gesture demo (mock cards/rows + cursor/mouse + rings).
+function hkDemoInner(d) {
+  const ptr = '<div class="hk-ptr"><svg class="hk-arrow" viewBox="0 0 24 24" width="14" height="14"><path d="M5 2 L5 19 L9.4 14.6 L12.4 21 L15 20 L12 13.6 L18 13.6 Z"/></svg></div>';
+  const rings2 = '<span class="hk-ring r1"></span><span class="hk-ring r2"></span>';
+  const cards = '<div class="hk-3cards"><span class="cd"></span><span class="cd sel"></span><span class="cd"></span></div>';
+  const mouse = '<span class="hk-mouse"><b></b></span>';
+  if (d === 'dbl')      return cards + rings2 + ptr;                                                          // 3 cards, one turns blue, 2 rings
+  if (d === 'dblright') return cards + rings2 + mouse;                                                        // 3 cards, blue clears, 2 rings, right mouse
+  if (d === 'ctrl')     return '<div class="hk-card"><i></i><i></i></div><span class="hk-newtab"></span><span class="hk-key">Ctrl</span>' + ptr;
+  if (d === 'right')    return '<div class="hk-morph"></div>' + mouse;                                         // card → rows + right mouse
+  return '<div class="hk-card"><i class="hit"></i><i></i></div><span class="hk-ring r1"></span>' + ptr;       // click → row lights
+}
+
 /* ── §5.3/§11 Office Dispatch Time Grid ──────────────────────────────────────
    Every transport task (Deliver at the rental's start, Pick up at its end) for
    active rentals, grouped by day so the Office sees what trucks go where/when. */
@@ -2156,7 +2176,7 @@ function renderOverlay() {
     const rows = [
       { d: 'click',    n: 'Click',              t: 'Open a record to view it — in its own card, nothing else moves.' },
       { d: 'dbl',      n: 'Double-click',       t: 'Anchor it — the other two columns cascade to related records.' },
-      { d: 'ctrl',     n: 'Ctrl / ⌘ + click',   t: 'Open it in a new item tab (keeps your current spot).', chip: '⌘' },
+      { d: 'ctrl',     n: 'Ctrl + click',        t: 'Open it in a new item tab (keeps your current spot).' },
       { d: 'right',    n: 'Right-click',        t: 'Send that card back to its List View.' },
       { d: 'dblright', n: 'Double right-click', t: 'Drop the anchor — the session goes anchor-less.' },
     ];
@@ -2164,7 +2184,7 @@ function renderOverlay() {
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${I.mouse}</span><h3>Mouse shortcuts</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body hk-body">
-        ${rows.map((r) => `<div class="hk-row"><div class="hk-demo hk-${r.d}"><div class="hk-mock"></div><div class="hk-ptr"><svg class="hk-arrow" viewBox="0 0 24 24" width="15" height="15"><path d="M5 2 L5 19 L9.4 14.6 L12.4 21 L15 20 L12 13.6 L18 13.6 Z"/></svg></div></div><div class="hk-text"><div class="hk-name">${esc(r.n)}</div><div class="hk-desc">${esc(r.t)}</div></div></div>`).join('')}
+        ${rows.map((r) => `<div class="hk-row"><div class="hk-demo hk-${r.d}">${hkDemoInner(r.d)}</div><div class="hk-text"><div class="hk-name">${esc(r.n)}</div><div class="hk-desc">${esc(r.t)}</div></div></div>`).join('')}
         <p class="muted" style="font-size:11px;margin:6px 2px 0">These work on a list row or anywhere on a card.</p>
       </div>`;
     overlay.appendChild(pop);
@@ -3916,7 +3936,8 @@ function boot() {
   document.addEventListener('mouseout', (e) => {
     if (!hoverEl) return;
     const to = e.relatedTarget;
-    if (to && hoverEl.contains && hoverEl.contains(to)) return;       // moved within the same element → keep
+    // keep it alive if the mouse moved within the row OR onto the preview itself (to scroll it)
+    if (to && ((hoverEl.contains && hoverEl.contains(to)) || (hoverNode && hoverNode.contains && hoverNode.contains(to)))) return;
     hoverEl = null; hideHoverPreview();
   });
   // Admin / offline boot modes (opt-in via URL hash) — checked before the login gate.

@@ -242,28 +242,49 @@ input { font-family: inherit; }
 .hk-row { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .hk-name { font-size: 13px; font-weight: 800; color: var(--txt); }
 .hk-desc { font-size: 11.5px; color: var(--txt-3); margin-top: 2px; }
-/* a tiny mock row + an animated cursor that performs each gesture, with the row reacting */
-.hk-demo { position: relative; width: 66px; height: 48px; flex: 0 0 auto; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); overflow: hidden; }
-.hk-mock { position: absolute; left: 8px; right: 8px; top: 18px; height: 12px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
-.hk-ptr { position: absolute; left: 0; top: 0; transform: translate(42px,3px); }
+/* animated gesture demos: mock cards/rows + cursor/mouse + expanding click rings */
+.hk-demo { position: relative; width: 94px; height: 54px; flex: 0 0 auto; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); overflow: hidden; }
+/* one mock card (click / ctrl) */
+.hk-card { position: absolute; left: 26px; right: 26px; top: 9px; bottom: 9px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+.hk-card i { height: 5px; border-radius: 2px; background: var(--line); }
+.hk-click .hk-card i.hit { animation: hkHit 2.1s ease-in-out infinite; }
+@keyframes hkHit { 0%,42% { background: var(--line) } 52%,72% { background: var(--accent) } 92%,100% { background: var(--line) } }
+/* three mock cards side by side (double-click / double-right) */
+.hk-3cards { position: absolute; inset: 9px 8px; display: flex; gap: 4px; }
+.hk-3cards .cd { flex: 1; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+.hk-dbl .hk-3cards .cd.sel { animation: hkSelBlue 2.1s ease-in-out infinite; }
+@keyframes hkSelBlue { 0%,46% { background: var(--panel-2); border-color: var(--line); box-shadow: none } 62%,100% { background: rgba(24,182,255,.2); border-color: #18b6ff; box-shadow: 0 0 0 1px #18b6ff } }
+.hk-dblright .hk-3cards .cd.sel { animation: hkClearBlue 2.1s ease-in-out infinite; }
+@keyframes hkClearBlue { 0%,30% { background: rgba(24,182,255,.2); border-color: #18b6ff } 64%,100% { background: var(--panel-2); border-color: var(--line) } }
+/* expanding click rings (two staggered = a double click) */
+.hk-ring { position: absolute; left: 47px; top: 27px; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; }
+.hk-dbl .hk-ring, .hk-dblright .hk-ring { border-color: #18b6ff; }
+@keyframes hkRing { 0% { transform: scale(.4); opacity: .9 } 60%,100% { transform: scale(3.6); opacity: 0 } }
+.hk-ring.r1 { animation: hkRing 2.1s ease-out infinite; }
+.hk-ring.r2 { animation: hkRing 2.1s ease-out infinite; animation-delay: .26s; }
+.hk-click .hk-ring.r1 { animation-delay: .95s; }
+/* cursor arrow (left-button gestures) */
+.hk-ptr { position: absolute; left: 0; top: 0; transform: translate(60px,7px); }
 .hk-arrow { display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,.55)); }
 .hk-arrow path { fill: #fff; stroke: rgba(0,0,0,.55); stroke-width: 1; }
-.hk-right .hk-arrow path, .hk-dblright .hk-arrow path { fill: #9fe2ff; }
-@keyframes hkPtr1 { 0%,8% { transform: translate(42px,3px) } 34% { transform: translate(25px,17px) } 40% { transform: translate(25px,17px) scale(.8) } 48% { transform: translate(25px,17px) } 92%,100% { transform: translate(42px,3px) } }
-@keyframes hkPtr2 { 0%,8% { transform: translate(42px,3px) } 30% { transform: translate(25px,17px) } 36% { transform: translate(25px,17px) scale(.8) } 42% { transform: translate(25px,17px) } 48% { transform: translate(25px,17px) scale(.8) } 54% { transform: translate(25px,17px) } 92%,100% { transform: translate(42px,3px) } }
-.hk-click .hk-ptr, .hk-ctrl .hk-ptr, .hk-right .hk-ptr { animation: hkPtr1 2.1s ease-in-out infinite; }
-.hk-dbl .hk-ptr, .hk-dblright .hk-ptr { animation: hkPtr2 2.1s ease-in-out infinite; }
-@keyframes hkMockO { 0%,38% { background: var(--panel-2); border-color: var(--line) } 46%,70% { background: var(--accent-soft); border-color: var(--accent-line) } 92%,100% { background: var(--panel-2) } }
-.hk-click .hk-mock { animation: hkMockO 2.1s ease-in-out infinite; }
-@keyframes hkMockBlue { 0%,40% { background: var(--panel-2); border-color: var(--line); box-shadow: none } 56%,100% { background: rgba(24,182,255,.16); border-color: #18b6ff; box-shadow: 0 0 0 1px #18b6ff } }
-.hk-dbl .hk-mock { animation: hkMockBlue 2.1s ease-in-out infinite; }
-@keyframes hkMockGray { 0%,40% { background: var(--panel-2); border-color: var(--line) } 50%,100% { background: var(--bg-2); border-color: var(--line) } }
-.hk-right .hk-mock { animation: hkMockGray 2.1s ease-in-out infinite; }
-@keyframes hkMockClear { 0%,28% { background: rgba(24,182,255,.16); border-color: #18b6ff } 60%,100% { background: var(--panel-2); border-color: var(--line) } }
-.hk-dblright .hk-mock { animation: hkMockClear 2.1s ease-in-out infinite; }
-.hk-ctrl::after { content: ''; position: absolute; left: 8px; top: 5px; width: 16px; height: 7px; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0; animation: hkTab 2.1s ease-in-out infinite; }
-@keyframes hkTab { 0%,46% { opacity: 0; transform: translateY(-3px) } 58%,100% { opacity: 1; transform: none } }
-.hk-ctrl::before { content: '⌘'; position: absolute; right: 5px; top: 3px; font-size: 9px; font-weight: 800; color: var(--accent); z-index: 2; }
+@keyframes hkPtr1 { 0%,12% { transform: translate(60px,7px) } 38% { transform: translate(45px,23px) } 44% { transform: translate(45px,23px) scale(.82) } 52% { transform: translate(45px,23px) } 92%,100% { transform: translate(60px,7px) } }
+@keyframes hkPtr2 { 0%,12% { transform: translate(60px,7px) } 32% { transform: translate(45px,23px) } 38% { transform: translate(45px,23px) scale(.82) } 44% { transform: translate(45px,23px) } 50% { transform: translate(45px,23px) scale(.82) } 56% { transform: translate(45px,23px) } 92%,100% { transform: translate(60px,7px) } }
+.hk-click .hk-ptr, .hk-ctrl .hk-ptr { animation: hkPtr1 2.1s ease-in-out infinite; }
+.hk-dbl .hk-ptr { animation: hkPtr2 2.1s ease-in-out infinite; }
+/* ctrl: a new-tab chip slides in + a "Ctrl" key */
+.hk-newtab { position: absolute; left: 28px; top: 6px; width: 18px; height: 7px; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0; animation: hkTab 2.1s ease-in-out infinite; }
+@keyframes hkTab { 0%,50% { opacity: 0; transform: translateY(-3px) } 62%,100% { opacity: 1; transform: none } }
+.hk-key { position: absolute; left: 5px; bottom: 4px; font-size: 8.5px; font-weight: 800; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 1px 5px; }
+/* right-click: a full card morphs into multiple rows + a mouse w/ the right button lit */
+.hk-morph { position: absolute; left: 22px; right: 34px; top: 9px; bottom: 9px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); }
+.hk-morph::before, .hk-morph::after { content: ''; position: absolute; left: 5px; right: 5px; height: 4px; border-radius: 2px; background: var(--line); opacity: 0; animation: hkRows 2.4s ease-in-out infinite; }
+.hk-morph::before { top: 6px; }
+.hk-morph::after { top: 14px; animation-delay: .1s; }
+@keyframes hkRows { 0%,46% { opacity: 0 } 60%,100% { opacity: 1 } }
+.hk-mouse { position: absolute; right: 8px; top: 16px; width: 15px; height: 23px; border-radius: 8px; border: 2px solid var(--txt-2); background: var(--bg-2); }
+.hk-mouse::before { content: ''; position: absolute; left: 50%; top: 2px; width: 1px; height: 8px; background: var(--txt-2); transform: translateX(-50%); }
+.hk-mouse b { position: absolute; left: calc(50% + 1px); top: 1px; right: 1px; height: 8px; border-radius: 0 5px 0 0; background: transparent; animation: hkRight 2.4s ease-in-out infinite; }
+@keyframes hkRight { 0%,46% { background: transparent } 56%,78% { background: #18b6ff } 90%,100% { background: transparent } }
 
 /* active fleet-bar filter chip on the Units list */
 .fleet-chip { display: flex; align-items: center; gap: 6px; margin: 0 0 9px; padding: 6px 10px; font-size: 12px; background: var(--panel); border: 1px solid var(--accent-line); border-radius: 9px; color: var(--txt-2); }
@@ -273,14 +294,14 @@ input { font-family: inherit; }
 /* clickable pills highlight on hover (#1.1) */
 .pill[data-pill-card], .pill.ref { cursor: pointer; }
 .pill[data-pill-card]:hover, .pill.ref:hover { filter: brightness(1.18); }
-/* hover preview popover (#1) — a glance at a record's Standard view */
-.hover-preview { position: fixed; z-index: 9000; width: 358px; max-height: 72vh; overflow: hidden;
+/* hover preview popover (#1) — a glance at a record's Standard view. Capped at 1/3 of
+   the screen; scrollable once the mouse moves over it. */
+.hover-preview { position: fixed; z-index: 9000; width: 358px; max-height: 33vh; overflow-y: auto;
   background: var(--card); border: 1px solid var(--accent-line); border-radius: 14px;
-  box-shadow: 0 20px 54px -10px rgba(0,0,0,.62); padding: 12px 13px; pointer-events: none;
+  box-shadow: 0 20px 54px -10px rgba(0,0,0,.62); padding: 12px 13px; pointer-events: auto;
   animation: hpFade .12s ease-out; }
 @keyframes hpFade { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 .hover-preview .detail { gap: 9px; }
-.hover-preview::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 34px; background: linear-gradient(transparent, var(--card)); pointer-events: none; }
 /* Calendar (dispatch grid) inside the middle column */
 .cal-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
 .cal-body .dash-stats { grid-template-columns: repeat(2, 1fr); }
