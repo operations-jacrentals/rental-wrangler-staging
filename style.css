@@ -254,6 +254,23 @@ input { font-family: inherit; }
 .hk-right .hk-cursor, .hk-dblright .hk-cursor { background: #18b6ff; }
 .hk-right .hk-cursor::after { border-color: #18b6ff; animation: hkRip 1.7s ease-out infinite; }
 .hk-dblright .hk-cursor::after { border-color: #18b6ff; animation: hkRip2 1.7s ease-out infinite; }
+
+/* active fleet-bar filter chip on the Units list */
+.fleet-chip { display: flex; align-items: center; gap: 6px; margin: 0 0 9px; padding: 6px 10px; font-size: 12px; background: var(--panel); border: 1px solid var(--accent-line); border-radius: 9px; color: var(--txt-2); }
+.fleet-chip b { color: var(--txt); }
+.fleet-chip .js-clear-fleet { margin-left: auto; display: inline-flex; }
+.fleet-chip .js-clear-fleet svg { width: 12px; height: 12px; }
+/* clickable pills highlight on hover (#1.1) */
+.pill[data-pill-card], .pill.ref { cursor: pointer; }
+.pill[data-pill-card]:hover, .pill.ref:hover { filter: brightness(1.18); }
+/* hover preview popover (#1) — a glance at a record's Standard view */
+.hover-preview { position: fixed; z-index: 9000; width: 358px; max-height: 72vh; overflow: hidden;
+  background: var(--card); border: 1px solid var(--accent-line); border-radius: 14px;
+  box-shadow: 0 20px 54px -10px rgba(0,0,0,.62); padding: 12px 13px; pointer-events: none;
+  animation: hpFade .12s ease-out; }
+@keyframes hpFade { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+.hover-preview .detail { gap: 9px; }
+.hover-preview::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 34px; background: linear-gradient(transparent, var(--card)); pointer-events: none; }
 /* Calendar (dispatch grid) inside the middle column */
 .cal-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
 .cal-body .dash-stats { grid-template-columns: repeat(2, 1fr); }

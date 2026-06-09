@@ -593,6 +593,31 @@ function rowOpen(card, recId, recType) {
   if (sess.anchor?.card === card && sess.cards[card].mode === 'list') return anchorRecord(card, recId, recType);  // browsing anchored list → re-anchor
   return openStandard(card, recId, recType);
 }
+/* Hover preview (#1): a short hover on a list row or a link pill floats a glance at
+ * that record's Standard view beside the cursor. Display-only — never anchors/cascades. */
+let hoverTimer = null, hoverEl = null, hoverNode = null;
+const hoverTarget = (n) => (n && n.closest ? n.closest('.row, [data-pill-card]') : null);
+function recForHover(target) {
+  let card, recId, recType;
+  if (target.dataset.pillCard) { card = target.dataset.pillCard; recId = target.dataset.pillRec; }
+  else { card = target.dataset.card; recId = target.dataset.rec; recType = target.dataset.type; }
+  if (recId == null) return null;
+  const ec = SHOP_TYPES.includes(card) ? card : (card === 'shop' ? recType : card);
+  const rec = recOf(ec, recId);
+  return (rec && DETAIL[ec]) ? { ec, rec } : null;
+}
+function hideHoverPreview() { if (hoverNode) { hoverNode.remove(); hoverNode = null; } clearTimeout(hoverTimer); }
+function showHoverPreview(target) {
+  const info = recForHover(target); if (!info) return;
+  hideHoverPreview();
+  const node = el('div', 'hover-preview');
+  try { node.innerHTML = DETAIL[info.ec](info.rec, { historySearch: '', backStack: [], mode: 'standard' }); } catch (e) { return; }
+  document.body.appendChild(node); hoverNode = node;
+  const r = target.getBoundingClientRect(), w = node.offsetWidth, h = node.offsetHeight;
+  let left = r.right + 12; if (left + w > window.innerWidth - 8) left = r.left - w - 12; if (left < 8) left = 8;
+  let top = r.top - 6; if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8); if (top < 8) top = 8;
+  node.style.left = left + 'px'; node.style.top = top + 'px';
+}
 function pillTo(card, recId) {
   if (recId == null) return;
   // 3-column display: a link pill forces its column to reveal the target card.
@@ -1434,10 +1459,10 @@ function listFor(card, session) {
   if (state.searchMode) {
     return collection(card).filter((rec) => matchesSearch(IDX.search.get(card + ':' + idOf(card, rec))));
   }
-  // §12.3 — mix-bar segment click filters the anchored category's units, either by
-  // inspection status (top bar) or by rental status bucket (second bar).
-  if (card === 'units' && state.fleetFilter && session.anchor?.card === 'categories' && session.anchor.recId === state.fleetFilter.categoryId) {
-    const units = session.cascade?.units || [];
+  // §12.3 — a Category fleet-bar segment click filters the UNITS list to that category
+  // + status, decoupled from anchoring so it lands you straight on the Units list view.
+  if (card === 'units' && state.fleetFilter) {
+    const units = collection('units').filter((u) => u.categoryId === state.fleetFilter.categoryId);
     return state.fleetFilter.kind === 'rental'
       ? units.filter((u) => unitRentalBucket(u) === state.fleetFilter.status)
       : units.filter((u) => u.inspectionStatus === state.fleetFilter.status);
@@ -1623,6 +1648,13 @@ function listView(cardDef, session) {
       <button class="dir js-sortdir" data-card="${card}"><span class="${cs.sort.dir === 'asc' ? 'on' : ''}">▲</span><span class="${cs.sort.dir === 'desc' ? 'on' : ''}">▼</span></button>
     </div>`;
   wrap.appendChild(bar);
+  // active Category fleet-bar filter → a removable chip so the list isn't mysteriously narrowed
+  if (card === 'units' && state.fleetFilter) {
+    const cat = IDX.category.get(state.fleetFilter.categoryId);
+    const chip = el('div', 'fleet-chip');
+    chip.innerHTML = `<span class="muted">Showing</span> <b>${esc(state.fleetFilter.status)}</b> <span class="muted">in</span> ${esc(cat?.name || 'category')} <button class="x js-clear-fleet" title="Clear filter">${I.x}</button>`;
+    wrap.appendChild(chip);
+  }
 
   let rows = listFor(card, session);
   if (cs.search.trim() || (cs.filterTerms || []).length) { rows = rows.filter((rec) => blobMatches(IDX.search.get(card + ':' + idOf(card, rec)), cs.search, cs.filterTerms)); }
@@ -2444,7 +2476,7 @@ function setFocusedCard(cardId) {
 let renderCount = 0;
 function render() {
   const t0 = performance.now();
-  hideTip();
+  hideTip(); hideHoverPreview();
   // Preserve each card's scroll position across the DOM swap, so recording an action
   // or editing a field doesn't dump you back at the top of a scrolled card (§0.6).
   const scrollMemo = {};
@@ -2587,7 +2619,7 @@ function onClick(e) {
   if (closest('.js-qr')) return openOverlay({ kind: 'qr' });
   if (closest('.js-hotkeys')) return openOverlay({ kind: 'hotkeys' });
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
-  if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
+  if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); state.fleetFilter = null; const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
   if (closest('.js-dashboard')) { e.stopPropagation(); toast('Dashboard graphs are coming soon.'); return; }   // Phase-2 per-role KPI graphs (G1/G2)
   if (closest('.js-dash-ev')) { e.stopPropagation(); state.pick = null; return anchorRecord('rentals', closest('.js-dash-ev').dataset.rec); }
   if (closest('.js-newrental')) return openNewMenu(closest('.js-newrental'));
@@ -2618,9 +2650,13 @@ function onClick(e) {
     const b = closest('.js-fleet-filter'); e.stopPropagation();
     const same = state.fleetFilter?.categoryId === b.dataset.cat && state.fleetFilter?.status === b.dataset.status && state.fleetFilter?.kind === b.dataset.kind;
     state.fleetFilter = same ? null : { categoryId: b.dataset.cat, status: b.dataset.status, kind: b.dataset.kind };
-    anchorRecord('categories', b.dataset.cat);   // §12.3 — anchor the category so Units cascades
+    // §12.3 — take the user to the Units LIST filtered to those units (left column),
+    // not the anchored category. No cascade of the other columns.
+    const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list'; s.cards.units.backStack = [];
+    render();
     return;
   }
+  if (closest('.js-clear-fleet')) { e.stopPropagation(); state.fleetFilter = null; render(); return; }
   if (closest('.js-addcat')) { e.stopPropagation(); return beginPick('customers', closest('.js-addcat').dataset.rec, undefined, 'intcat'); }
   if (closest('.js-funnel-record')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-funnel-record').dataset.rec); if (c && c.salesAction) { c.activityLog = c.activityLog || []; c.activityLog.push({ when: TODAY_ISO, text: c.salesAction }); c.salesAction = ''; toast('Logged to the Activity Log.'); render(); } else toast('Type an action in the chip first.'); return; }
   if (closest('.js-funnel-schedule')) { e.stopPropagation(); return openOverlay({ kind: 'schedule', customerId: closest('.js-funnel-schedule').dataset.rec }); }
@@ -3845,6 +3881,20 @@ function boot() {
     if (now - lastCtx.t < 450 && lastCtx.card === dc) { lastCtx = { t: 0, card: null }; return clearAnchor(); }   // double right-click
     lastCtx = { t: now, card: dc };
     cardToList(dc);                                                   // single right-click → List View
+  });
+  // hover preview (#1): float a record's Standard view after a short hover on a row/pill
+  document.addEventListener('mouseover', (e) => {
+    const t = hoverTarget(e.target);
+    if (!t || state.pick || state.overlay || state.winpicker) return;
+    if (t === hoverEl) return;
+    hoverEl = t; hideHoverPreview();
+    hoverTimer = setTimeout(() => { if (hoverEl === t) showHoverPreview(t); }, 480);
+  });
+  document.addEventListener('mouseout', (e) => {
+    if (!hoverEl) return;
+    const to = e.relatedTarget;
+    if (to && hoverEl.contains && hoverEl.contains(to)) return;       // moved within the same element → keep
+    hoverEl = null; hideHoverPreview();
   });
   // Admin / offline boot modes (opt-in via URL hash) — checked before the login gate.
   const hash = (location.hash || '').toLowerCase();
