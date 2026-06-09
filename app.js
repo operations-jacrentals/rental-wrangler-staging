@@ -2776,45 +2776,112 @@ function boardViewRecords(o, session) {
   let rows = (collection(entity) || []).filter((r) => boardMatches(cols, r, o.query));
   return boardSortRows(cols, rows, o.sort);
 }
+/* ── §13.4 Board-View formula engine — a tiny safe arithmetic evaluator (no
+   eval): + - * / ( ), unary minus, column refs by key/label, and the
+   aggregates sum/avg/min/max/count(column). Recursive-descent. ── */
+function bvTokenize(s) {
+  const t = []; let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === ' ' || ch === '\t') { i++; continue; }
+    if ('+-*/(),'.includes(ch)) { t.push({ t: ch }); i++; continue; }
+    if (/[0-9.]/.test(ch)) { let j = i + 1; while (j < s.length && /[0-9.]/.test(s[j])) j++; t.push({ t: 'num', v: parseFloat(s.slice(i, j)) }); i = j; continue; }
+    if (/[a-zA-Z_]/.test(ch)) { let j = i + 1; while (j < s.length && /[a-zA-Z0-9_]/.test(s[j])) j++; t.push({ t: 'id', v: s.slice(i, j) }); i = j; continue; }
+    throw new Error('char');
+  }
+  return t;
+}
+function bvParse(expr) {
+  const toks = bvTokenize(expr); let pos = 0;
+  const peek = () => toks[pos];
+  const eat = (x) => { const tk = toks[pos]; if (!tk || (x && tk.t !== x)) throw new Error('syntax'); pos++; return tk; };
+  function pE() { let n = pT(); while (peek() && (peek().t === '+' || peek().t === '-')) { const op = eat().t; n = { op, l: n, r: pT() }; } return n; }
+  function pT() { let n = pF(); while (peek() && (peek().t === '*' || peek().t === '/')) { const op = eat().t; n = { op, l: n, r: pF() }; } return n; }
+  function pF() {
+    const tk = peek(); if (!tk) throw new Error('eof');
+    if (tk.t === '-') { eat(); return { op: 'neg', l: pF() }; }
+    if (tk.t === '+') { eat(); return pF(); }
+    if (tk.t === 'num') { eat(); return { num: tk.v }; }
+    if (tk.t === '(') { eat('('); const n = pE(); eat(')'); return n; }
+    if (tk.t === 'id') { eat(); if (peek() && peek().t === '(') { eat('('); const a = eat('id'); eat(')'); return { fn: tk.v.toLowerCase(), arg: a.v }; } return { var: tk.v }; }
+    throw new Error('factor');
+  }
+  const ast = pE(); if (pos !== toks.length) throw new Error('trailing'); return ast;
+}
+function bvEvalAst(a, ctx) {
+  if (a.num != null) return a.num;
+  if (a.var != null) return ctx.varOf(a.var);
+  if (a.fn) return ctx.aggOf(a.fn, a.arg);
+  if (a.op === 'neg') return -bvEvalAst(a.l, ctx);
+  const l = bvEvalAst(a.l, ctx), r = bvEvalAst(a.r, ctx);
+  if (a.op === '+') return l + r; if (a.op === '-') return l - r; if (a.op === '*') return l * r; if (a.op === '/') return r === 0 ? NaN : l / r;
+  return NaN;
+}
+function bvResolver(cols) { const m = Object.create(null); for (const c of cols) { m[c.key.toLowerCase()] = c; m[c.label.toLowerCase().replace(/[^a-z0-9]/g, '')] = c; } return (name) => m[name.toLowerCase()] || m[name.toLowerCase().replace(/[^a-z0-9]/g, '')] || null; }
+function bvCompute(formula, cols, rows, rec) {
+  let ast; try { ast = bvParse(formula); } catch (e) { return { err: true }; }
+  const resolve = bvResolver(cols), cache = Object.create(null);
+  const ctx = {
+    varOf: (n) => { const c = resolve(n); if (!c || rec == null) return NaN; const v = c.get(rec); return typeof v === 'number' ? v : NaN; },
+    aggOf: (fn, n) => { const c = resolve(n); if (!c) return NaN; const a = cache[c.key] || (cache[c.key] = aggColumn(c, rows)); if (a.kind !== 'num') return NaN; if (fn === 'count') return a.count; return a[fn] != null ? a[fn] : NaN; },
+  };
+  try { return { val: bvEvalAst(ast, ctx) }; } catch (e) { return { err: true }; }
+}
+function bvFmtNum(v) { return Number.isFinite(v) ? (Math.round(v * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'; }
+
 function boardViewTable(o, session) {
   const entity = boardEntity(o.card, session);
   const cols = cardColumns(o.card, session);
+  const byKey = Object.create(null); cols.forEach((c) => { byKey[c.key] = c; });
   const rows = boardViewRecords(o, session);
-  const extraCols = o.extraCols || [], extraRows = o.extraRows || [];
+  if (!o.colOrder) o.colOrder = cols.map((c) => ({ kind: 'data', key: c.key }));   // unified, insertable column order
+  const order = o.colOrder, extraRows = (o.extraRows || []);
   const isNum = (c) => c.type === 'money' || c.type === 'num' || c.type === 'pct';
   const arrow = (key) => (o.sort && o.sort.key === key) ? (o.sort.dir === 'desc' ? ' ▼' : ' ▲') : '';
-  const head = `<tr>
-    ${cols.map((c) => `<th class="js-bv-sort${isNum(c) ? ' num' : ''}" data-col="${c.key}">${esc(c.label)}<span class="bv-arrow">${arrow(c.key)}</span></th>`).join('')}
-    ${extraCols.map((ec) => `<th><input class="bv-colname" data-col="${ec.id}" value="${esc(ec.label || '')}" placeholder="Formula…" /></th>`).join('')}
-    <th class="bv-addcol"><button class="bv-mini js-bv-addcol" title="Add a scratch column for formulas">${I.plus}Col</button></th>
-  </tr>`;
-  const body = rows.map((r) => {
-    const id = idOf(entity, r);
-    const cells = cols.map((c) => `<td${isNum(c) ? ' class="num"' : ''}>${c.cell(r)}</td>`).join('');
-    const extra = extraCols.map((ec) => `<td class="bv-scratch" contenteditable="true" data-row="${esc(id)}" data-col="${ec.id}">${esc((o.cellData?.[id]?.[ec.id]) || '')}</td>`).join('');
-    return `<tr>${cells}${extra}<td></td></tr>`;
+  const insBtn = (ci) => `<button class="bv-ins js-bv-inscol" data-after="${ci}" title="Insert column to the right">${I.plus}</button>`;
+  const calcSel = (key, calc) => `<select class="bv-calc" data-col="${key}">${AGG_CALCS.map((k) => `<option value="${k}"${k === calc ? ' selected' : ''}>${AGG_LABEL[k]}</option>`).join('')}</select>`;
+  // header
+  const headCells = order.map((co, ci) => {
+    if (co.kind === 'data') { const c = byKey[co.key]; if (!c) return ''; return `<th class="js-bv-sort${isNum(c) ? ' num' : ''}" data-col="${c.key}">${esc(c.label)}<span class="bv-arrow">${arrow(c.key)}</span>${insBtn(ci)}</th>`; }
+    return `<th class="bv-xcol"><input class="bv-colname" data-col="${co.id}" value="${esc(co.label || '')}" placeholder="=price*2 or note" /><button class="bv-xrm js-bv-rmcol" data-col="${co.id}" title="Remove column">×</button>${insBtn(ci)}</th>`;
   }).join('');
-  const scratch = extraRows.map((er) => {
-    const cells = cols.map((c, ci) => ci === 0
-      ? `<td class="bv-scratch locked">scratch</td>`
-      : `<td class="bv-scratch" contenteditable="true" data-srow="${er.id}" data-col="${c.key}">${esc(er.cells?.[c.key] || '')}</td>`).join('');
-    const extra = extraCols.map((ec) => `<td class="bv-scratch" contenteditable="true" data-srow="${er.id}" data-col="${ec.id}">${esc(er.cells?.[ec.id] || '')}</td>`).join('');
-    return `<tr class="bv-scratch-row">${cells}${extra}<td></td></tr>`;
-  }).join('');
-  const summary = `<tr class="bv-summary">
-    ${cols.map((c, ci) => {
-      if (ci === 0) return `<td class="bv-sumlabel">Σ ${rows.length} ${rows.length === 1 ? 'row' : 'rows'}</td>`;
-      const a = aggColumn(c, rows);
-      if (a.kind === 'num') {
-        const calc = (o.calc && o.calc[c.key]) || (c.agg !== 'none' ? c.agg : 'sum');
-        return `<td class="num"><select class="bv-calc" data-col="${c.key}">${AGG_CALCS.map((k) => `<option value="${k}"${k === calc ? ' selected' : ''}>${AGG_LABEL[k]}</option>`).join('')}</select> <b>${fmtAggValue(c, a, calc)}</b></td>`;
-      }
+  const head = `<tr><th class="bv-gutter"></th>${headCells}<th class="bv-addcol"><button class="bv-mini js-bv-addcol" title="Add a formula / notes column">${I.plus}Col</button></th></tr>`;
+  // body cells
+  const dataCell = (co, rec, recId) => {
+    if (co.kind === 'data') { const c = byKey[co.key]; return `<td${isNum(c) ? ' class="num"' : ''}>${c.cell(rec)}</td>`; }
+    const label = (co.label || '').trim();
+    if (label.startsWith('=')) { const r = bvCompute(label.slice(1), cols, rows, rec); return `<td class="num bv-comp">${r.err ? '<span class="bv-err">ERR</span>' : esc(bvFmtNum(r.val))}</td>`; }
+    const v = (o.cellData && o.cellData[recId] && o.cellData[recId][co.id]) || '';
+    return `<td class="bv-scratch" contenteditable="true" data-row="${esc(recId)}" data-col="${co.id}">${esc(v)}</td>`;
+  };
+  const dataRowHTML = (rec, idx) => `<tr><td class="bv-gutter"><button class="bv-rowins js-bv-insrow" data-pos="${idx + 1}" title="Insert row below">${I.plus}</button></td>${order.map((co) => dataCell(co, rec, idOf(entity, rec))).join('')}<td></td></tr>`;
+  // scratch (free) rows — every cell editable; a leading "=" evaluates (aggregate)
+  const scratchCell = (co, er) => {
+    const key = co.kind === 'data' ? co.key : co.id;
+    const raw = (er.cells && er.cells[key]) || '';
+    if (raw.trim().startsWith('=')) { const r = bvCompute(raw.trim().slice(1), cols, rows, null); return `<td class="bv-scratch bv-comp" contenteditable="true" data-srow="${er.id}" data-col="${key}" data-raw="${esc(raw)}">${r.err ? 'ERR' : esc(bvFmtNum(r.val))}</td>`; }
+    return `<td class="bv-scratch" contenteditable="true" data-srow="${er.id}" data-col="${key}">${esc(raw)}</td>`;
+  };
+  const scratchRowHTML = (er) => `<tr class="bv-scratch-row"><td class="bv-gutter"><button class="bv-rowrm js-bv-rmrow" data-row="${er.id}" title="Remove row">×</button></td>${order.map((co) => scratchCell(co, er)).join('')}<td></td></tr>`;
+  let body = '';
+  const extrasAt = (p) => extraRows.filter((er) => (er.pos || 0) === p).map(scratchRowHTML).join('');
+  for (let i = 0; i <= rows.length; i++) { body += extrasAt(i); if (i < rows.length) body += dataRowHTML(rows[i], i); }
+  // summary footer
+  const sumCell = (co) => {
+    if (co.kind === 'data') {
+      const c = byKey[co.key], a = aggColumn(c, rows);
+      if (a.kind === 'num') { const calc = (o.calc && o.calc[c.key]) || (c.agg !== 'none' ? c.agg : 'sum'); return `<td class="num">${calcSel(c.key, calc)} <b>${fmtAggValue(c, a, calc)}</b></td>`; }
       if (a.kind === 'badge') { const t = Object.values(a.counts).reduce((x, y) => x + y, 0); return `<td><span class="muted">${t} set</span></td>`; }
       return '<td></td>';
-    }).join('')}
-    ${extraCols.map(() => '<td></td>').join('')}<td></td>
-  </tr>`;
-  return `<table class="board-table bv-table"><thead>${head}</thead><tbody>${body}${scratch}</tbody><tfoot>${summary}</tfoot></table>`;
+    }
+    const label = (co.label || '').trim();
+    if (label.startsWith('=')) { const fcol = { type: 'num', agg: 'sum', get: (rec) => { const r = bvCompute(label.slice(1), cols, rows, rec); return Number.isFinite(r.val) ? r.val : NaN; } }; const a = aggColumn(fcol, rows); const calc = (o.calc && o.calc[co.id]) || 'sum'; return `<td class="num">${calcSel(co.id, calc)} <b>${fmtAggValue(fcol, a, calc)}</b></td>`; }
+    return '<td></td>';
+  };
+  const summary = `<tr class="bv-summary"><td class="bv-gutter bv-sumlabel">Σ${rows.length}</td>${order.map(sumCell).join('')}<td></td></tr>`;
+  const hasExtra = order.some((co) => co.kind === 'extra');
+  const hint = hasExtra ? `<div class="bv-fieldhint"><b>Fields:</b> ${cols.map((c) => esc(c.key)).join(', ')} &nbsp;·&nbsp; <b>functions:</b> sum() avg() min() max() count() &nbsp;·&nbsp; e.g. <code>=price*0.9</code> · <code>=total-paid</code> · <code>=hours/count(name)</code></div>` : '';
+  return hint + `<table class="board-table bv-table"><thead>${head}</thead><tbody>${body}</tbody><tfoot>${summary}</tfoot></table>`;
 }
 /** Seed a Board View from a card's current sort + search, then open the popup. */
 function openBoardView(card) {
@@ -2824,7 +2891,7 @@ function openBoardView(card) {
   const seedField = cs.sort?.field;
   const sortCol = cols.find((c) => c.sortField === seedField || c.key === seedField) || cols[0];
   const query = (state.searchMode && state.query) ? state.query : (cs.search || '');
-  openOverlay({ kind: 'boardview', card, query, sort: { key: sortCol?.key, dir: cs.sort?.dir || 'asc' }, calc: {}, extraCols: [], extraRows: [], cellData: {}, seq: 0 });
+  openOverlay({ kind: 'boardview', card, query, sort: { key: sortCol?.key, dir: cs.sort?.dir || 'asc' }, calc: {}, colOrder: null, extraRows: [], cellData: {}, seq: 0 });
 }
 /** The "List rows" customiser inside Board View: choose which registry columns
  *  appear in List-View row 1 (details) vs row 2 (badges). Saved per device. */
@@ -3089,9 +3156,13 @@ function onClick(e) {
   if (closest('.js-hotkeys')) return openOverlay({ kind: 'hotkeys' });
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
   if (closest('.js-boardview')) { e.stopPropagation(); return openBoardView(closest('.js-boardview').dataset.card); }
-  if (closest('.js-bv-sort')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const key = closest('.js-bv-sort').dataset.col; if (o.sort?.key === key) o.sort.dir = o.sort.dir === 'asc' ? 'desc' : 'asc'; else o.sort = { key, dir: 'asc' }; renderOverlay(); } return; }
-  if (closest('.js-bv-addcol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.extraCols = o.extraCols || []; o.seq = (o.seq || 0) + 1; o.extraCols.push({ id: 'xc' + o.seq, label: '' }); renderOverlay(); } return; }
-  if (closest('.js-bv-addrow')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.extraRows = o.extraRows || []; o.seq = (o.seq || 0) + 1; o.extraRows.push({ id: 'xr' + o.seq, cells: {} }); renderOverlay(); } return; }
+  if (closest('.js-bv-sort') && !closest('.js-bv-inscol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const key = closest('.js-bv-sort').dataset.col; if (o.sort?.key === key) o.sort.dir = o.sort.dir === 'asc' ? 'desc' : 'asc'; else o.sort = { key, dir: 'asc' }; renderOverlay(); } return; }
+  if (closest('.js-bv-addcol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.colOrder = o.colOrder || []; o.colOrder.push({ kind: 'extra', id: 'xc' + (++o.seq), label: '' }); renderOverlay(); } return; }
+  if (closest('.js-bv-inscol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const after = Number(closest('.js-bv-inscol').dataset.after); o.colOrder.splice(after + 1, 0, { kind: 'extra', id: 'xc' + (++o.seq), label: '' }); renderOverlay(); } return; }
+  if (closest('.js-bv-rmcol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const id = closest('.js-bv-rmcol').dataset.col; o.colOrder = o.colOrder.filter((c) => !(c.kind === 'extra' && c.id === id)); renderOverlay(); } return; }
+  if (closest('.js-bv-addrow')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.extraRows = o.extraRows || []; o.extraRows.push({ id: 'xr' + (++o.seq), pos: boardViewRecords(o, activeSession()).length, cells: {} }); renderOverlay(); } return; }
+  if (closest('.js-bv-insrow')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.extraRows = o.extraRows || []; o.extraRows.push({ id: 'xr' + (++o.seq), pos: Number(closest('.js-bv-insrow').dataset.pos), cells: {} }); renderOverlay(); } return; }
+  if (closest('.js-bv-rmrow')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const id = closest('.js-bv-rmrow').dataset.row; o.extraRows = (o.extraRows || []).filter((er) => er.id !== id); renderOverlay(); } return; }
   if (closest('.js-bv-customize')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.customize = !o.customize; renderOverlay(); } return; }
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); state.fleetFilter = null; const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
@@ -3406,9 +3477,9 @@ function onInput(e) {
     if (state.overlay?.kind === 'boardview') { state.overlay.query = e.target.value; const sel = e.target.selectionStart; renderOverlay(); const q = document.querySelector('.bv-query'); if (q) { q.focus(); q.setSelectionRange(sel, sel); } }
     return;
   }
-  // Board View formula-column header rename (store only — no re-render, keep focus).
+  // Board View formula/notes-column header (store only — no re-render, keep focus).
   if (e.target.classList.contains('bv-colname')) {
-    const o = state.overlay; if (o?.kind === 'boardview') { const ec = (o.extraCols || []).find((x) => x.id === e.target.dataset.col); if (ec) ec.label = e.target.value; }
+    const o = state.overlay; if (o?.kind === 'boardview') { const ec = (o.colOrder || []).find((x) => x.kind === 'extra' && x.id === e.target.dataset.col); if (ec) ec.label = e.target.value; }
     return;
   }
   // Board View scratch cell (contenteditable) → persist into the overlay's formula store.
@@ -4401,6 +4472,15 @@ function boot() {
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
+  // Board View formula cells: reveal the raw "=…" on focus, recompute on blur.
+  document.addEventListener('focusin', (e) => {
+    const t = e.target; if (t && t.classList && t.classList.contains('bv-scratch') && t.dataset.raw) t.textContent = t.dataset.raw;
+  });
+  document.addEventListener('focusout', (e) => {
+    const t = e.target; if (!t || !t.classList || state.overlay?.kind !== 'boardview') return;
+    if (t.classList.contains('bv-scratch')) { const v = (t.textContent || '').trim(); if (v.startsWith('=') || t.dataset.raw) renderOverlay(); return; }
+    if (t.classList.contains('bv-colname') && (t.value || '').trim().startsWith('=')) renderOverlay();
+  });
   document.addEventListener('keydown', (e) => {
     // §5.4 — the search bar IS the filter builder: Enter locks the current text in as
     // an AND-narrowing pill (clearing the input), Backspace-on-empty pops the last pill.

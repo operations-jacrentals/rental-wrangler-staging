@@ -704,6 +704,29 @@ input { font-family: inherit; }
 .bv-pick.locked { color: var(--txt-3); cursor: default; }
 .bv-pick input { width: 15px; height: 15px; accent-color: var(--accent); }
 .bv-customize .js-bv-resetlayout { align-self: center; }
+/* formula / positional-insert chrome */
+.bv-fieldhint { padding: 8px 14px; font-size: 11.5px; color: var(--txt-2); background: var(--panel); border-bottom: 1px solid var(--line); }
+.bv-fieldhint code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; color: var(--accent); font-size: 11px; }
+.bv-table th { position: relative; }
+.bv-table th.js-bv-sort, .bv-table th.bv-xcol { padding-right: 22px; }
+.bv-ins { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; background: var(--panel-2); color: var(--txt-3); opacity: 0; transition: opacity .12s; }
+.bv-table th:hover .bv-ins { opacity: 1; }
+.bv-ins:hover { color: var(--accent); background: var(--accent-soft); }
+.bv-ins svg { width: 11px; height: 11px; }
+.bv-table th.bv-xcol { background: color-mix(in srgb, var(--accent) 8%, var(--card-head)); }
+.bv-xrm { color: var(--txt-3); font-weight: 700; padding: 0 2px; margin-left: 2px; }
+.bv-xrm:hover { color: var(--red); }
+.bv-gutter { width: 26px; text-align: center; padding: 0 !important; background: var(--card-head); position: sticky; left: 0; z-index: 1; }
+.bv-rowins, .bv-rowrm { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; color: var(--txt-3); opacity: 0; transition: opacity .12s; }
+.bv-table tbody tr:hover .bv-rowins, .bv-table tbody tr:hover .bv-rowrm { opacity: 1; }
+.bv-rowins:hover { color: var(--accent); background: var(--accent-soft); }
+.bv-rowrm:hover { color: var(--red); background: var(--panel-2); }
+.bv-rowins svg { width: 11px; height: 11px; }
+.bv-comp { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+.bv-err { color: var(--red); font-size: 11px; font-weight: 700; }
+.bv-table tbody .bv-scratch-row td { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.bv-table tfoot .bv-summary .bv-sumlabel { text-align: center; }
 
 /* logo menu popup (§0.4) */
 .menu { width: 300px; align-self: flex-start; margin: 60px 0 0 16px; }
