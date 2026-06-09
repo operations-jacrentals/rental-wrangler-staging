@@ -240,20 +240,30 @@ input { font-family: inherit; }
 .hk-popup { width: 470px; }
 .hk-body { display: flex; flex-direction: column; gap: 10px; }
 .hk-row { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.hk-demo { position: relative; width: 64px; height: 46px; flex: 0 0 auto; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
-.hk-cursor { width: 13px; height: 13px; border-radius: 50%; background: var(--accent); position: relative; }
-.hk-cursor::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; }
-.hk-chip { position: absolute; left: 5px; top: 5px; font-size: 9px; font-weight: 800; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 1px 4px; }
 .hk-name { font-size: 13px; font-weight: 800; color: var(--txt); }
 .hk-desc { font-size: 11.5px; color: var(--txt-3); margin-top: 2px; }
-@keyframes hkRip  { 0% { transform: scale(.5); opacity: .85 } 70%, 100% { transform: scale(2.4); opacity: 0 } }
-@keyframes hkRip2 { 0% { transform: scale(.5); opacity: .85 } 18% { transform: scale(2.1); opacity: 0 } 24% { transform: scale(.5); opacity: .85 } 42%, 100% { transform: scale(2.1); opacity: 0 } }
-.hk-click .hk-cursor::after,
-.hk-ctrl  .hk-cursor::after { animation: hkRip 1.7s ease-out infinite; }
-.hk-dbl   .hk-cursor::after { animation: hkRip2 1.7s ease-out infinite; }
-.hk-right .hk-cursor, .hk-dblright .hk-cursor { background: #18b6ff; }
-.hk-right .hk-cursor::after { border-color: #18b6ff; animation: hkRip 1.7s ease-out infinite; }
-.hk-dblright .hk-cursor::after { border-color: #18b6ff; animation: hkRip2 1.7s ease-out infinite; }
+/* a tiny mock row + an animated cursor that performs each gesture, with the row reacting */
+.hk-demo { position: relative; width: 66px; height: 48px; flex: 0 0 auto; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); overflow: hidden; }
+.hk-mock { position: absolute; left: 8px; right: 8px; top: 18px; height: 12px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+.hk-ptr { position: absolute; left: 0; top: 0; transform: translate(42px,3px); }
+.hk-arrow { display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,.55)); }
+.hk-arrow path { fill: #fff; stroke: rgba(0,0,0,.55); stroke-width: 1; }
+.hk-right .hk-arrow path, .hk-dblright .hk-arrow path { fill: #9fe2ff; }
+@keyframes hkPtr1 { 0%,8% { transform: translate(42px,3px) } 34% { transform: translate(25px,17px) } 40% { transform: translate(25px,17px) scale(.8) } 48% { transform: translate(25px,17px) } 92%,100% { transform: translate(42px,3px) } }
+@keyframes hkPtr2 { 0%,8% { transform: translate(42px,3px) } 30% { transform: translate(25px,17px) } 36% { transform: translate(25px,17px) scale(.8) } 42% { transform: translate(25px,17px) } 48% { transform: translate(25px,17px) scale(.8) } 54% { transform: translate(25px,17px) } 92%,100% { transform: translate(42px,3px) } }
+.hk-click .hk-ptr, .hk-ctrl .hk-ptr, .hk-right .hk-ptr { animation: hkPtr1 2.1s ease-in-out infinite; }
+.hk-dbl .hk-ptr, .hk-dblright .hk-ptr { animation: hkPtr2 2.1s ease-in-out infinite; }
+@keyframes hkMockO { 0%,38% { background: var(--panel-2); border-color: var(--line) } 46%,70% { background: var(--accent-soft); border-color: var(--accent-line) } 92%,100% { background: var(--panel-2) } }
+.hk-click .hk-mock { animation: hkMockO 2.1s ease-in-out infinite; }
+@keyframes hkMockBlue { 0%,40% { background: var(--panel-2); border-color: var(--line); box-shadow: none } 56%,100% { background: rgba(24,182,255,.16); border-color: #18b6ff; box-shadow: 0 0 0 1px #18b6ff } }
+.hk-dbl .hk-mock { animation: hkMockBlue 2.1s ease-in-out infinite; }
+@keyframes hkMockGray { 0%,40% { background: var(--panel-2); border-color: var(--line) } 50%,100% { background: var(--bg-2); border-color: var(--line) } }
+.hk-right .hk-mock { animation: hkMockGray 2.1s ease-in-out infinite; }
+@keyframes hkMockClear { 0%,28% { background: rgba(24,182,255,.16); border-color: #18b6ff } 60%,100% { background: var(--panel-2); border-color: var(--line) } }
+.hk-dblright .hk-mock { animation: hkMockClear 2.1s ease-in-out infinite; }
+.hk-ctrl::after { content: ''; position: absolute; left: 8px; top: 5px; width: 16px; height: 7px; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0; animation: hkTab 2.1s ease-in-out infinite; }
+@keyframes hkTab { 0%,46% { opacity: 0; transform: translateY(-3px) } 58%,100% { opacity: 1; transform: none } }
+.hk-ctrl::before { content: '⌘'; position: absolute; right: 5px; top: 3px; font-size: 9px; font-weight: 800; color: var(--accent); z-index: 2; }
 
 /* active fleet-bar filter chip on the Units list */
 .fleet-chip { display: flex; align-items: center; gap: 6px; margin: 0 0 9px; padding: 6px 10px; font-size: 12px; background: var(--panel); border: 1px solid var(--accent-line); border-radius: 9px; color: var(--txt-2); }

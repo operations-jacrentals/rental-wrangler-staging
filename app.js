@@ -2164,7 +2164,7 @@ function renderOverlay() {
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${I.mouse}</span><h3>Mouse shortcuts</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body hk-body">
-        ${rows.map((r) => `<div class="hk-row"><div class="hk-demo hk-${r.d}"><span class="hk-cursor"></span>${r.chip ? `<span class="hk-chip">${r.chip}</span>` : ''}</div><div class="hk-text"><div class="hk-name">${esc(r.n)}</div><div class="hk-desc">${esc(r.t)}</div></div></div>`).join('')}
+        ${rows.map((r) => `<div class="hk-row"><div class="hk-demo hk-${r.d}"><div class="hk-mock"></div><div class="hk-ptr"><svg class="hk-arrow" viewBox="0 0 24 24" width="15" height="15"><path d="M5 2 L5 19 L9.4 14.6 L12.4 21 L15 20 L12 13.6 L18 13.6 Z"/></svg></div></div><div class="hk-text"><div class="hk-name">${esc(r.n)}</div><div class="hk-desc">${esc(r.t)}</div></div></div>`).join('')}
         <p class="muted" style="font-size:11px;margin:6px 2px 0">These work on a list row or anywhere on a card.</p>
       </div>`;
     overlay.appendChild(pop);
