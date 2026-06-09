@@ -553,6 +553,22 @@ function goBack(card) {
 }
 /** Universal pill rule (§0.2): clicking any pill forces its target card into
  *  standard mode. WO/Inspection/Service pills now resolve to the Shop card. */
+// Resolve the record a mouse hotkey (dbl-click=anchor, ctrl-click=new tab) should act on:
+// a clicked list row, OR — when the card shows a detail — that card's open record. This
+// makes a REAL double-click work even after the first click flips the row into a detail
+// (the row is gone by the 2nd click, but the card now holds that record), and gives the
+// "works anywhere on a card" behavior.
+function cardRecordAt(target) {
+  const row = target.closest && target.closest('.row');
+  if (row && row.dataset.rec) return { card: row.dataset.card, recId: row.dataset.rec, recType: row.dataset.type || null };
+  const cardNode = target.closest && target.closest('.card');
+  if (cardNode) {
+    const dc = cardNode.dataset.card;
+    const cs = activeSession().cards[dc];
+    if (cs && cs.mode === 'standard' && cs.recId != null) return { card: dc, recId: cs.recId, recType: cs.recType || null };
+  }
+  return null;
+}
 function pillTo(card, recId) {
   if (recId == null) return;
   // 3-column display: a link pill forces its column to reveal the target card.
@@ -1498,7 +1514,8 @@ function colTabsEl(col, active, session) {
     const n = memberCount(m, session);
     return `<button class="coltab js-coltab${on ? ' on' : ''}${compact ? ' compact' : ''}" data-col="${col.id}" data-member="${m}" data-tip="${esc(MEMBER_TITLE[m])}">`
       + `<span class="ct-ico">${memberIcon(m)}</span>`
-      + (compact ? '' : `<span class="ct-lbl">${esc(MEMBER_TITLE[m])}</span><span class="ct-n">${n}</span>`)
+      + (compact ? '' : `<span class="ct-lbl">${esc(MEMBER_TITLE[m])}</span>`)
+      + `<span class="ct-n">${n}</span>`
       + `</button>`;
   }).join('');
   return bar;
@@ -1879,7 +1896,7 @@ function headerEl() {
   // One band: logo + rings on the left; a right column with the item tabs (single
   // row) above the toolbar (New / Dashboard / theme / QR / search / close-all).
   h.innerHTML = `
-    <button class="logo js-logo"><img class="logo-img" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" /></button>
+    <button class="logo js-logo" aria-label="Jac Rentals"></button>
     <div class="kpis">${rings}</div>
     <div class="header-right">
       <div class="hr-top">
@@ -2432,6 +2449,13 @@ function onClick(e) {
   // independent of whatever else this click does — anchor stays a separate action)
   const fc = closest('.card');
   setFocusedCard(fc ? fc.dataset.card : state.focusedCard);
+
+  // mouse hotkey (§0.1): Ctrl/Cmd+click anywhere on a card (or a list row) opens that
+  // record in a new background tab. Resolved from the row OR the card's open detail.
+  if ((e.ctrlKey || e.metaKey) && !closest('input, textarea, select, .inline-edit')) {
+    const r = cardRecordAt(t);
+    if (r) { e.preventDefault(); e.stopPropagation(); return openInNewTab(r.card, r.recId, r.recType); }
+  }
 
   // §0.3 — while a rental window is in scope, clicking a Category filters the Units
   // (KEEP the calendar open; works whether or not the unit-pick slot is set yet)
@@ -3730,9 +3754,10 @@ function boot() {
   // mouse hotkeys (§0.1): double-click a row = anchor; right-click = Back
   const hotkeyGuard = (e) => e.target.closest('.inline-edit, input, textarea, select, .pill, button, .x') || state.pick || state.winpicker;
   document.addEventListener('dblclick', (e) => {
-    const row = e.target.closest('.row'); if (!row || hotkeyGuard(e)) return;
+    if (hotkeyGuard(e)) return;
+    const r = cardRecordAt(e.target); if (!r) return;     // row OR the card's open detail
     e.preventDefault(); window.getSelection()?.removeAllRanges();
-    anchorRecord(row.dataset.card, row.dataset.rec, row.dataset.type);
+    anchorRecord(r.card, r.recId, r.recType);
   });
   document.addEventListener('contextmenu', (e) => {
     const card = e.target.closest('.card'); if (!card) return;        // right-click anywhere in a card = Back

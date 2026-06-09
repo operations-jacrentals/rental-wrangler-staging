@@ -95,14 +95,15 @@ input { font-family: inherit; }
 .toolbar > .iconbtn, .toolbar .searchwrap { height: 36px; }
 
 /* logo / menu button (§0.4) */
+/* Logo as a CSS background (not an <img>) so re-rendering the header repaints it
+   instantly from cache — no flash on every render/tab-switch. Chip == KPI ring height. */
 .logo {
-  display: flex; align-items: center; gap: 9px; padding: 6px 12px; border-radius: 11px;
-  background: var(--panel); border: 1px solid var(--line); font-weight: 700; letter-spacing: .2px;
-  transition: background .15s, border-color .15s;
+  width: 71px; height: 71px; flex: 0 0 auto; padding: 0; border-radius: 11px; overflow: hidden;
+  border: 1px solid var(--line); background: url('assets/jac-rentals-logo.jpg') center/cover no-repeat;
+  transition: border-color .15s;
 }
-.logo { padding: 0; overflow: hidden; }                 /* square chip, rounded corners kept */
 .logo:hover { border-color: var(--accent-line); }
-.logo-img { height: 71px; width: 71px; object-fit: cover; display: block; }   /* chip height == KPI rings */
+.logo-img { height: 71px; width: 71px; object-fit: cover; display: block; }   /* (login screen still uses an <img>) */
 
 /* KPI rings (§5.2/§11) — Apple-style concentric progress rings, each colored by
    its own value band; number + role label below. */
@@ -211,7 +212,7 @@ input { font-family: inherit; }
   grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr;   /* 3 columns, one row */
   overflow: hidden; min-height: 0;
 }
-.col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow: hidden; }
+.col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow: visible; }   /* visible so the active-tab glow isn't clipped */
 .col > .card { flex: 1 1 auto; min-height: 0; }                     /* the active card fills under the tab strip */
 .col-tabs { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; }
 .coltab {
