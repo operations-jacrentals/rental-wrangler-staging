@@ -89,7 +89,12 @@ input { font-family: inherit; }
 .header { flex: 0 0 auto; background: transparent; display: flex; align-items: flex-end; gap: 12px; padding: 12px 12px 0; }
 .header-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .hr-top { display: flex; align-items: center; gap: 10px; min-height: 0; }
-.hr-top > .iconbtn { height: 34px; }
+.hr-top > .iconbtn, .new-split > .iconbtn { height: 34px; }
+/* wide screens: split +New into individual buttons (+Rental / +Customer + icon-only rest);
+   narrower: collapse back to the single +New menu */
+.new-split { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 1500px) { .new-split { display: none; } }
+@media (min-width: 1501px) { .new-menu-btn { display: none; } }
 .hello-name { margin-left: auto; font-size: 24px; font-weight: 800; color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; letter-spacing: .2px; line-height: 1; padding-right: 4px; }
 .toolbar { display: flex; align-items: center; gap: 10px; }
 .toolbar .closeall { flex: 0 0 auto; }

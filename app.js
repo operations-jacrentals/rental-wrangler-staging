@@ -630,13 +630,13 @@ function showHoverPreview(target) {
   try { node.innerHTML = DETAIL[info.ec](info.rec, { historySearch: '', backStack: [], mode: 'standard' }); } catch (e) { return; }
   node.addEventListener('mouseleave', () => { hoverEl = null; hideHoverPreview(); });   // leaving the preview closes it
   document.body.appendChild(node); hoverNode = node;
-  // anchor to the MOUSE CURSOR, clamped so no part runs off-screen (#2)
-  const w = node.offsetWidth, h = node.offsetHeight, pad = 8, off = 16;
+  // anchor to the TOP-RIGHT of the cursor (preview sits above-right), clamped on-screen.
+  const w = node.offsetWidth, h = node.offsetHeight, pad = 8, off = 14;
   let left = lastMouse.x + off;
   if (left + w > window.innerWidth - pad) left = lastMouse.x - w - off;   // flip to the cursor's left
   left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
-  let top = lastMouse.y + off;
-  if (top + h > window.innerHeight - pad) top = lastMouse.y - h - off;    // flip above the cursor
+  let top = lastMouse.y - h - off;                                       // above the cursor
+  if (top < pad) top = lastMouse.y + off;                                // no room above → drop below
   top = Math.max(pad, Math.min(top, window.innerHeight - h - pad));
   node.style.left = left + 'px'; node.style.top = top + 'px';
 }
@@ -1474,14 +1474,16 @@ function listFor(card, session) {
   if (state.pick && card === PICK_SRC[state.pick.slot]) {
     // adding a rental to an invoice → scope to that invoice's customer (§7.5)
     if (state.pick.slot === 'rental') { const inv = IDX.invoice.get(state.pick.recId); if (inv?.customerId) return collection('rentals').filter((r) => r.customerId === inv.customerId); }
-    // windowed unit pick → optionally narrow to a clicked category (§0.3 cascade)
-    if (card === 'units' && availWin && state.pick.catFilter) return collection('units').filter((u) => u.categoryId === state.pick.catFilter);
+    // unit pick → optionally narrow to a clicked category (§0.3 cascade), with or without dates
+    if (card === 'units' && state.pick.catFilter) return collection('units').filter((u) => u.categoryId === state.pick.catFilter);
     return collection(card);
   }
-  // §10 — while a rental window is in scope, Categories AND Units show every record
-  // with its window-availability (not the empty draft cascade), live as dates change.
-  if (availWin && card === 'categories') return collection('categories');
-  if (availWin && card === 'units') { return state.pick?.catFilter ? collection('units').filter((u) => u.categoryId === state.pick.catFilter) : collection('units'); }
+  // §10 — in +Rental mode (window open, even before dates), Categories / Units / Customers
+  // list every record so they can be picked, rather than the empty draft cascade.
+  const rentalMode = availWin || state.winpicker;
+  if (rentalMode && card === 'categories') return collection('categories');
+  if (rentalMode && card === 'units') { return state.pick?.catFilter ? collection('units').filter((u) => u.categoryId === state.pick.catFilter) : collection('units'); }
+  if (rentalMode && card === 'customers') return collection('customers');
   // search mode → filtered across all; anchored (cascade) → cascade subset; else → all
   if (state.searchMode) {
     return collection(card).filter((rec) => matchesSearch(IDX.search.get(card + ':' + idOf(card, rec))));
@@ -1631,7 +1633,6 @@ function cardEl(cardDef, session) {
   // it, i.e. when anchored) + the row actions. (#2.3 / §0.6)
   if (inStandard) {
     const stdRec = recOf(card, cs.recId);
-    const anchoredHere = !!(session.anchor && session.anchor.card === card && String(session.anchor.recId) === String(cs.recId));
     const titleHtml = stdRec
       ? (card === 'rentals' ? `<span class="c-title inline-edit" data-edit="field" data-card="rentals" data-field="rentalName" data-rec="${esc(cs.recId)}" data-ph="Rental name">${esc(detailTitle(card, stdRec))}</span>`
         : card === 'units' ? `<span class="c-title inline-edit" data-edit="field" data-card="units" data-field="name" data-rec="${esc(cs.recId)}" data-ph="Unit name">${esc(detailTitle(card, stdRec))}</span>`
@@ -1639,7 +1640,7 @@ function cardEl(cardDef, session) {
       : '';
     const head = el('div', 'card-head');
     head.innerHTML = `
-      <span class="c-titlecard">${anchoredHere ? '' : `<span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}`}</span>
+      <span class="c-titlecard"><span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}</span>
       <div class="c-head-right"><div class="c-actions"><button class="hbtn js-tolist" title="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}" title="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}" title="New tab (+)">${I.plus}</button></div></div>`;
     node.appendChild(head);
   }
@@ -1683,12 +1684,26 @@ function listView(cardDef, session) {
     wrap.appendChild(chip);
   }
 
+  // +New Customer is normally header-only, but +Rental mode offers it inline (the app
+  // is "in rental mode" and takes some control of the flow).
+  if (card === 'customers' && (availWin || state.winpicker)) {
+    const nb = el('div', 'pillrow'); nb.style.margin = '0 0 9px';
+    nb.innerHTML = `<button class="pill ref js-new-cust-rental">${I.plus} New Customer</button>`;
+    wrap.appendChild(nb);
+  }
   let rows = listFor(card, session);
   if (card === 'units') rows = unitsVisible(rows, cs);   // hide Sold/Inactive (or show only them via the sort) (#2)
   if (cs.search.trim() || (cs.filterTerms || []).length) { rows = rows.filter((rec) => blobMatches(IDX.search.get(card + ':' + idOf(card, rec)), cs.search, cs.filterTerms)); }
   rows = sortRows(card, rows, cs.sort);
-  // §10 — surface available units/categories first while a rental window is in scope
-  if (availWin && (card === 'units' || card === 'categories')) rows = [...rows].sort((a, b) => (availUnavailable(card, a) ? 1 : 0) - (availUnavailable(card, b) ? 1 : 0));
+  // §10 — while a rental window is in scope, order Units: available+Ready, available+Not
+  // Ready, available+Failed, then anything unavailable. Categories: available first.
+  if (availWin && card === 'units') {
+    const INSP = { 'Ready': 0, 'Not Ready': 1, 'Failed': 2 };
+    const rank = (u) => (availUnavailable('units', u) ? 10 : 0) + (INSP[u.inspectionStatus] != null ? INSP[u.inspectionStatus] : 3);
+    rows = [...rows].sort((a, b) => rank(a) - rank(b));
+  } else if (availWin && card === 'categories') {
+    rows = [...rows].sort((a, b) => (availUnavailable('categories', a) ? 1 : 0) - (availUnavailable('categories', b) ? 1 : 0));
+  }
 
   const list = el('div', 'list');
   if (!rows.length) {
@@ -1784,11 +1799,10 @@ function shopCardEl(cardDef, session, forcedSeg) {
   // (hidden when anchored, since the item tab shows it) + actions. (#2.3)
   if (inStandard) {
     const rec = recOf(cs.recType, cs.recId);
-    const anchoredHere = !!(session.anchor && session.anchor.card === 'shop' && String(session.anchor.recId) === String(cs.recId));
     const nm = rec ? esc(detailTitle(cs.recType, rec) || MEMBER_TITLE[cs.recType] || cardDef.title) : '';
     const head = el('div', 'card-head');
     head.innerHTML = `
-      <span class="c-titlecard">${anchoredHere ? '' : `<span class="c-icon">${CARD_ICON[cs.recType] || CARD_ICON.shop}</span><span class="c-title">${nm}</span>`}</span>
+      <span class="c-titlecard"><span class="c-icon">${CARD_ICON[cs.recType] || CARD_ICON.shop}</span><span class="c-title">${nm}</span></span>
       <div class="c-head-right"><div class="c-actions"><button class="hbtn js-tolist" title="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}" data-type="${esc(cs.recType)}" title="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}" data-type="${esc(cs.recType)}" title="New tab (+)">${I.plus}</button></div></div>`;
     node.appendChild(head);
   }
@@ -2008,7 +2022,15 @@ function headerEl() {
     <div class="kpis">${rings}</div>
     <div class="header-right">
       <div class="hr-top">
-        <button class="iconbtn primary js-newrental">${I.plus}New</button>
+        <div class="new-split">
+          <button class="iconbtn primary js-newitem" data-new="rental">${I.plus}Rental</button>
+          <button class="iconbtn js-newitem" data-new="customer">${I.plus}Customer</button>
+          <button class="iconbtn js-newitem" data-new="inspection" data-tip="New Inspection">${CARD_ICON.inspections}</button>
+          <button class="iconbtn js-newitem" data-new="workOrder" data-tip="New Work Order">${CARD_ICON.workOrders}</button>
+          <button class="iconbtn js-newitem" data-new="invoice" data-tip="New Invoice">${CARD_ICON.invoices}</button>
+          <button class="iconbtn js-newitem" data-new="receipt" data-tip="New Receipt">${CARD_ICON.expenses}</button>
+        </div>
+        <button class="iconbtn primary js-newrental new-menu-btn">${I.plus}New</button>
         <button class="iconbtn js-dashboard">${I.grid} Dashboard</button>
         <button class="iconbtn js-theme" title="${state.theme === 'dark' ? 'Light' : 'Dark'} mode">${state.theme === 'dark' ? I.sun : I.moon}</button>
         <button class="iconbtn js-qr" title="Share session (QR)">${I.qr}</button>
@@ -2609,19 +2631,32 @@ function onClick(e) {
 
   // §0.3 — while a rental window is in scope, clicking a Category filters the Units
   // (KEEP the calendar open; works whether or not the unit-pick slot is set yet)
-  if (availWin) {
+  if (availWin || state.winpicker) {
+    if (closest('.js-new-cust-rental')) { e.stopPropagation(); return startNewCustomer(); }   // +New Customer in rental mode
+    const draftRid = state.winpicker?.rentalId || (state.pick && state.pick.slot === 'unit' ? state.pick.recId : null) || availWin?.selfId;
     const crow = closest('.row');
     if (crow && crow.dataset.card === 'categories') {
       e.stopPropagation();
-      if (!state.pick || state.pick.slot !== 'unit') state.pick = { card: 'rentals', recId: availWin.selfId, recType: undefined, slot: 'unit' };
+      if (!state.pick || state.pick.slot !== 'unit') state.pick = { card: 'rentals', recId: draftRid, recType: undefined, slot: 'unit' };
       state.pick.catFilter = state.pick.catFilter === crow.dataset.rec ? null : crow.dataset.rec;
+      const cs = activeSession(); if (cs.cols && state.pick.catFilter) cs.cols.left = 'units';   // → the units of that category
       render();
+      return;
+    }
+    if (crow && crow.dataset.card === 'customers') {   // pick a customer for the new rental
+      e.stopPropagation();
+      const r = draftRid ? recOf('rentals', draftRid) : null;
+      if (r) { r.customerId = crow.dataset.rec; const c = IDX.customer.get(crow.dataset.rec); if (c && /^New Rental/.test(r.rentalName || '')) r.rentalName = `New Rental — ${c.name}`; reindex('rentals', r); render(); }
       return;
     }
   }
 
-  // close the floating window-picker on any click outside it / its trigger
-  if (state.winpicker && !closest('.winpicker') && !closest('.js-open-winpicker')) { state.winpicker = null; render(); }
+  // keep the window open through Category/Unit/Customer picking; close it only when the
+  // user clicks the Rentals card itself (and continue handling that click) or Done.
+  if (state.winpicker && !closest('.winpicker') && !closest('.js-open-winpicker')) {
+    const onRentalCard = closest('.card') && closest('.card').dataset.card === 'rentals';
+    if (onRentalCard) state.winpicker = null;   // fall through to handle the rental-card click
+  }
 
   // §0.3 pick mode — a click in the highlighted source card assigns to the draft
   if (state.pick) {
@@ -3331,7 +3366,10 @@ function startNewRental(customerId) {
   DATA.rentals.push(draft); IDX.rental.set(id, draft); reindex('rentals', draft);
   logAction(draft, cust ? `Rental created for ${cust.name}` : 'Rental created');
   anchorRecord('rentals', id);
-  toast('New rental — pick the window, then a Unit (§0.3).');
+  // +Rental mode columns: left → Categories (pick one to filter Units), right → Customers
+  // (all, to pick or add), middle → the new rental + its window.
+  const s = activeSession(); if (s.cols) { s.cols.left = 'categories'; s.cols.right = 'customers'; s.cols.middle = 'rentals'; s.cards.categories.mode = 'list'; s.cards.customers.mode = 'list'; }
+  toast('New rental — pick the window + a Category, then a Unit; pick or add a Customer.');
   beginPick('rentals', id, undefined, 'unit');   // opens the window picker first (customer auto-advances after)
 }
 
