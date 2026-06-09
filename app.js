@@ -776,6 +776,7 @@ const I = {
   video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="m15 10 6-3v10l-6-3z"/></svg>',
   droplet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3s6 6.4 6 10.5a6 6 0 0 1-12 0C6 9.4 12 3 12 3z"/></svg>',
   table: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.5h18M3 15h18M9 4v16"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0M16 18h4"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="14" cy="18" r="2"/></svg>',
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>',
   doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/></svg>',
   chev: '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>',
@@ -902,7 +903,7 @@ function categoryMixViz(catId) {
    ════════════════════════════════════════════════════════════════════════ */
 function rowEl(card, rec) {
   const id = idOf(card, rec);
-  const inner = ROWS[card] ? ROWS[card](rec) : genericRow(card, rec);
+  const inner = rowInnerHTML(card, rec);
   let extra = '';
   if (card === 'units' && rec.fleetStatus !== 'Active') extra = ' fleet-dim';   // out of active inventory → dim (failed = gradient, not full red)
   if (card === 'customers' && /Blacklist/i.test(rec.accountType || '')) extra += ' unavailable';   // §9 blacklisted → red
@@ -1215,6 +1216,55 @@ function listTotalsEl(card, rows, session) {
   const node = el('div', 'list-totals');
   node.innerHTML = `<span class="tot-count">${rows.length}</span>${chips.join('')}`;
   return node;
+}
+
+/* ── §13.3 LIST-VIEW LAYOUT — per-device choice of which registry columns show in
+   row 1 (details, non-badge, Name always first) vs row 2 (badges). Saved to
+   localStorage; when absent a card uses its hand-tuned ROWS renderer. ── */
+const LIST_LAYOUT_KEY = (card) => `jactec.listLayout.${card}`;
+const LIST_LAYOUTS = Object.create(null);
+const DEFAULT_LAYOUT = {
+  units:         { row1: ['name', 'category', 'hours'],    row2: ['inspection', 'fleet', 'rental'] },
+  rentals:       { row1: ['name', 'category', 'price'],    row2: ['status', 'invoice'] },
+  customers:     { row1: ['name', 'phone', 'rentals'],     row2: ['account', 'pay'] },
+  categories:    { row1: ['name', 'rate1', 'avgHours'],    row2: [] },
+  invoices:      { row1: ['id', 'customer', 'balance'],    row2: ['status'] },
+  workOrders:    { row1: ['name', 'date', 'price'],        row2: ['type', 'phase', 'bill'] },
+  inspections:   { row1: ['name', 'date'],                 row2: ['result', 'wash', 'bill'] },
+  serviceOrders: { row1: ['name', 'service', 'countdown'], row2: [] },
+};
+function defaultLayoutFor(card) { const d = DEFAULT_LAYOUT[card]; if (d) return { row1: [...d.row1], row2: [...d.row2] }; const c0 = (CARD_COLUMNS[card] || [{ key: 'name' }])[0]; return { row1: [c0.key], row2: [] }; }
+function loadListLayout(card) {
+  if (card in LIST_LAYOUTS) return LIST_LAYOUTS[card];
+  let v = null;
+  try { const raw = localStorage.getItem(LIST_LAYOUT_KEY(card)); if (raw) v = JSON.parse(raw); } catch { v = null; }
+  if (v && (Array.isArray(v.row1) || Array.isArray(v.row2))) {
+    const keys = new Set((CARD_COLUMNS[card] || []).map((c) => c.key));
+    v = { row1: (v.row1 || []).filter((k) => keys.has(k)).slice(0, 6), row2: (v.row2 || []).filter((k) => keys.has(k)).slice(0, 6) };
+    if (!v.row1.length && !v.row2.length) v = null;
+  } else v = null;
+  LIST_LAYOUTS[card] = v; return v;
+}
+function saveListLayout(card, layout) {
+  LIST_LAYOUTS[card] = layout || undefined;
+  try { if (layout) localStorage.setItem(LIST_LAYOUT_KEY(card), JSON.stringify(layout)); else localStorage.removeItem(LIST_LAYOUT_KEY(card)); } catch (e) { /* private mode */ }
+}
+/** A list row's inner HTML from a saved layout: Name is the locked title, the
+ *  rest of row 1 are non-badge values, row 2 are badge pills. */
+function customRowHTML(card, rec, layout) {
+  const cols = CARD_COLUMNS[card] || []; if (!cols.length) return ROWS[card] ? ROWS[card](rec) : genericRow(card, rec);
+  const map = Object.create(null); cols.forEach((c) => { map[c.key] = c; });
+  const nameCol = cols[0];
+  const rest = (layout.row1 || []).filter((k) => k !== nameCol.key).map((k) => map[k]).filter((c) => c && !c.badge);
+  const r2 = (layout.row2 || []).map((k) => map[k]).filter((c) => c && c.badge);
+  const row1 = `<div class="row-1"><span class="r-title">${nameCol.cell(rec)}</span>${rest.length ? `<span class="r-fields">${rest.map((c) => `<span${(c.type === 'money' || c.type === 'num' || c.type === 'pct') ? ' class="r-key"' : ''}>${c.cell(rec)}</span>`).join('')}</span>` : ''}</div>`;
+  const row2 = r2.length ? `<div class="row-2">${r2.map((c) => c.cell(rec)).join('')}</div>` : '';
+  return row1 + row2;
+}
+/** Inner HTML for a list row — custom layout if the user set one, else the ROWS default. */
+function rowInnerHTML(card, rec) {
+  const layout = loadListLayout(card);
+  return layout ? customRowHTML(card, rec, layout) : (ROWS[card] ? ROWS[card](rec) : genericRow(card, rec));
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -2108,7 +2158,7 @@ function shopRowEl(type, rec) {
       <button class="rbtn js-anchor" data-type="${type}" data-rec="${id}" title="Anchor (⊞)">${I.circle}</button>
       <button class="rbtn js-newtab" data-type="${type}" data-rec="${id}" title="Open in new tab (+)">${I.plus}</button>
     </div>
-    <div class="row-content">${ROWS[type](rec)}</div>`;
+    <div class="row-content">${rowInnerHTML(type, rec)}</div>`;
   return node;
 }
 
@@ -2453,8 +2503,9 @@ function renderOverlay() {
         <span class="c-count">${n}</span>
         <div class="bv-searchwrap"><span class="s-icon">${I.search}</span><input class="bv-query" placeholder="Search…" value="${esc(o.query || '')}" /></div>
         <button class="bv-mini js-bv-addrow" title="Add a scratch row for formulas">${I.plus}Row</button>
+        <button class="bv-mini${o.customize ? ' on' : ''} js-bv-customize" title="Choose which values show in the card's List View">${I.sliders} List rows</button>
         <span class="spacer"></span><button class="x js-close">${I.x}</button></div>
-      <div class="popup-body board-body bv-body">${boardViewTable(o, session)}</div>`;
+      <div class="popup-body board-body bv-body">${o.customize ? bvCustomizePanel(o.card) : ''}${boardViewTable(o, session)}</div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'settings') {
     const cfg = o.config || { roles: {}, admin: '' };
@@ -2775,6 +2826,23 @@ function openBoardView(card) {
   const query = (state.searchMode && state.query) ? state.query : (cs.search || '');
   openOverlay({ kind: 'boardview', card, query, sort: { key: sortCol?.key, dir: cs.sort?.dir || 'asc' }, calc: {}, extraCols: [], extraRows: [], cellData: {}, seq: 0 });
 }
+/** The "List rows" customiser inside Board View: choose which registry columns
+ *  appear in List-View row 1 (details) vs row 2 (badges). Saved per device. */
+function bvCustomizePanel(card) {
+  const cols = CARD_COLUMNS[card] || []; if (!cols.length) return '';
+  const layout = loadListLayout(card) || defaultLayoutFor(card);
+  const nameKey = cols[0].key;
+  const nonBadge = cols.filter((c) => !c.badge && c.key !== nameKey);
+  const badges = cols.filter((c) => c.badge);
+  const box = (c, row, on, locked) => `<label class="bv-pick${locked ? ' locked' : ''}"><input type="checkbox" class="js-bv-pick" data-card="${card}" data-row="${row}" data-col="${c.key}"${on ? ' checked' : ''}${locked ? ' disabled' : ''}/> ${esc(c.label)}</label>`;
+  return `<div class="bv-customize">
+    <div class="bv-pick-group"><h4>List row 1 — details <span class="muted">(${(layout.row1 || []).length}/6)</span></h4>
+      ${box(cols[0], 'row1', true, true)}${nonBadge.map((c) => box(c, 'row1', layout.row1.includes(c.key), false)).join('')}</div>
+    <div class="bv-pick-group"><h4>List row 2 — badges <span class="muted">(${(layout.row2 || []).length}/6)</span></h4>
+      ${badges.length ? badges.map((c) => box(c, 'row2', layout.row2.includes(c.key), false)).join('') : '<span class="muted">No badge columns on this card.</span>'}</div>
+    <button class="bv-mini js-bv-resetlayout" data-card="${card}">Reset to default rows</button>
+  </div>`;
+}
 
 /* ════════════════════════════════════════════════════════════════════════
    12. Status dropdown (pill-rule exception — the record's own status pill)
@@ -3024,6 +3092,8 @@ function onClick(e) {
   if (closest('.js-bv-sort')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const key = closest('.js-bv-sort').dataset.col; if (o.sort?.key === key) o.sort.dir = o.sort.dir === 'asc' ? 'desc' : 'asc'; else o.sort = { key, dir: 'asc' }; renderOverlay(); } return; }
   if (closest('.js-bv-addcol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.extraCols = o.extraCols || []; o.seq = (o.seq || 0) + 1; o.extraCols.push({ id: 'xc' + o.seq, label: '' }); renderOverlay(); } return; }
   if (closest('.js-bv-addrow')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.extraRows = o.extraRows || []; o.seq = (o.seq || 0) + 1; o.extraRows.push({ id: 'xr' + o.seq, cells: {} }); renderOverlay(); } return; }
+  if (closest('.js-bv-customize')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.customize = !o.customize; renderOverlay(); } return; }
+  if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); state.fleetFilter = null; const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
   if (closest('.js-dashboard')) { e.stopPropagation(); toast('Dashboard graphs are coming soon.'); return; }   // Phase-2 per-role KPI graphs (G1/G2)
   if (closest('.js-dash-ev')) { e.stopPropagation(); state.pick = null; return anchorRecord('rentals', closest('.js-dash-ev').dataset.rec); }
@@ -3357,6 +3427,21 @@ function onChange(e) {
   // Board View summary aggregation calc (Sum/Avg/Min/Max/Count) per column.
   if (e.target.classList.contains('bv-calc')) {
     const o = state.overlay; if (o?.kind === 'boardview') { o.calc = o.calc || {}; o.calc[e.target.dataset.col] = e.target.value; renderOverlay(); }
+    return;
+  }
+  // Board View "List rows" picker → toggle a column into/out of List-View row1/row2.
+  if (e.target.classList.contains('js-bv-pick')) {
+    const card = e.target.dataset.card, row = e.target.dataset.row, col = e.target.dataset.col;
+    const layout = loadListLayout(card) || defaultLayoutFor(card);
+    layout.row1 = (layout.row1 || []).slice(); layout.row2 = (layout.row2 || []).slice();
+    const arr = layout[row];
+    if (e.target.checked) {
+      if (!arr.includes(col)) { if (arr.length >= 6) { e.target.checked = false; toast('Max 6 per row.'); return; } arr.push(col); }
+    } else { const i = arr.indexOf(col); if (i >= 0) arr.splice(i, 1); }
+    const nameKey = (CARD_COLUMNS[card] || [])[0]?.key;   // Name stays as the locked title
+    if (nameKey && !layout.row1.includes(nameKey)) layout.row1.unshift(nameKey);
+    saveListLayout(card, layout);
+    render(); renderOverlay();
     return;
   }
   // Customer form selfie: capture (phone camera via capture="user", or upload) → compress → store.

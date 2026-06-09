@@ -695,6 +695,15 @@ input { font-family: inherit; }
 .bv-table tfoot .bv-summary td { background: var(--accent-soft); border-top: 2px solid var(--accent-line); font-weight: 700; color: var(--txt); }
 .bv-table tfoot .bv-sumlabel { color: var(--accent); font-weight: 800; }
 .bv-calc { background: var(--panel); color: var(--txt-2); border: 1px solid var(--line); border-radius: 6px; font-size: 11px; padding: 1px 3px; }
+.bv-mini.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+/* List-rows customiser panel */
+.bv-customize { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: flex-start; padding: 14px 16px; background: var(--accent-soft); border-bottom: 1px solid var(--accent-line); }
+.bv-pick-group { min-width: 190px; }
+.bv-pick-group h4 { margin: 0 0 8px; font-size: 12px; font-weight: 800; color: var(--txt); text-transform: uppercase; letter-spacing: .4px; }
+.bv-pick { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--txt); padding: 3px 0; cursor: pointer; }
+.bv-pick.locked { color: var(--txt-3); cursor: default; }
+.bv-pick input { width: 15px; height: 15px; accent-color: var(--accent); }
+.bv-customize .js-bv-resetlayout { align-self: center; }
 
 /* logo menu popup (§0.4) */
 .menu { width: 300px; align-self: flex-start; margin: 60px 0 0 16px; }
