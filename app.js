@@ -88,6 +88,48 @@ function cardFlag(c) {
   const def = defaultCard(c); return (def && cardExpiringSoon(def)) ? 'expiring' : 'ok';
 }
 const CARD_FLAG_META = { ok: { label: 'Card OK', color: 'green' }, expiring: { label: 'Card Expiring', color: 'yellow' }, none: { label: 'No Card', color: 'red' } };
+function setCardDefault(custId, cardId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  const k = customerCards(c).find((x) => x.id === cardId); if (!k) return;
+  customerCards(c).forEach((x) => { x.isDefault = x.id === cardId; });
+  c.cardBrand = k.brand; c.cardLast4 = k.last4; c.cardExpMonth = k.expMonth; c.cardExpYear = k.expYear;   // legacy mirror
+  reindex('customers', c); logAction(c, `Default card → ${brandName(k.brand)} ••${k.last4}`);
+  if (backendPassword && k.stripePmId) backendCall('stripeSetDefault', { customerId: custId, paymentMethodId: k.stripePmId }).catch(() => {});
+  render();
+}
+function removeCard(custId, cardId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  const k = (c.cards || []).find((x) => x.id === cardId); if (!k) return;
+  k.status = 'removed'; if (k.isDefault) { k.isDefault = false; const next = customerCards(c)[0]; if (next) next.isDefault = true; }
+  const def = defaultCard(c);
+  if (def) { c.cardBrand = def.brand; c.cardLast4 = def.last4; c.cardExpMonth = def.expMonth; c.cardExpYear = def.expYear; }
+  else { c.cardBrand = null; c.cardLast4 = null; c.cardExpMonth = null; c.cardExpYear = null; c.stripeId = c.stripeId; }
+  reindex('customers', c); logAction(c, `Card removed — ${brandName(k.brand)} ••${k.last4}`);
+  if (backendPassword && k.stripePmId) backendCall('stripeRemoveCard', { customerId: custId, paymentMethodId: k.stripePmId }).catch(() => {});
+  render();
+}
+/** The "Cards on File" section in a customer's standard view: list each card with
+ *  default / nickname / remove + an Add-card button (which runs the consent packet). */
+function cardsSection(c) {
+  const cards = customerCards(c);
+  const consent = !!(c.signature && c.selfie);
+  const rows = cards.length ? cards.map((k) => {
+    const exp = cardExpired(k), soon = cardExpiringSoon(k);
+    return `<div class="card-row">
+      <span class="cr-brand">${esc(brandName(k.brand))} ••${esc(k.last4)}</span>
+      <span class="cr-exp${exp ? ' bad' : soon ? ' warn' : ''}">${k.expMonth ? esc(k.expMonth + '/' + String(k.expYear).slice(-2)) : ''}${exp ? ' · expired' : ''}</span>
+      <span class="cr-nick inline-edit" data-edit="cardNick" data-rec="${c.customerId}" data-card="${k.id}">${k.nickname ? esc(k.nickname) : '<span class="add-field">+ name</span>'}</span>
+      ${k.agreement ? badge('Agreement ✓', 'green') : ''}
+      ${k.isDefault ? badge('Default', 'blue') : `<button class="pill ref js-card-default" data-rec="${c.customerId}" data-card="${k.id}">Make default</button>`}
+      <button class="x js-card-remove" data-rec="${c.customerId}" data-card="${k.id}" title="Remove card">${I.x}</button>
+    </div>`;
+  }).join('') : '<span class="muted" style="font-size:12px">No cards on file.</span>';
+  const flag = cardFlag(c), fm = CARD_FLAG_META[flag];
+  return `<div class="section"><h4>Cards on File ${flag !== 'ok' ? badge(fm.label, fm.color) : ''}</h4>
+    <div class="cards-list">${rows}</div>
+    ${consent ? `<button class="bigbtn js-add-card" data-rec="${c.customerId}" style="margin-top:10px">${I.plus} Add card</button>`
+              : '<span class="muted" style="font-size:11px">Capture a selfie + signature (Edit account) before adding a card.</span>'}</div>`;
+}
 
 function buildIndexes() {
   migrateCustomers();
@@ -1537,6 +1579,7 @@ const DETAIL = {
       ${badges}
       ${activeBar}
       <div class="detail-cols">${contact}${account}</div>
+      ${cardsSection(c)}
       <div class="detail-cols">${usedSales}${membership}</div>
       ${activity}
       ${historySection('customers', c, cs)}
@@ -2756,7 +2799,7 @@ function renderOverlay() {
         <div class="pay-status-line">${statusPill('invoiceStatus', t.status)}<span class="muted">${money(t.paid)} of ${money(t.total)} paid${refAmt ? ` · ${money(refAmt)} refunded` : ''}</span></div>
         ${refunded ? '<div class="pay-card-on-file">↩ This invoice was refunded.</div>'
           : t.balance <= 0 ? `<div class="pay-card-on-file good">✓ Paid in full${inv.paymentMethod ? ' · ' + esc(inv.paymentMethod) : ''}</div>`
-            : card ? `<div class="pay-card-on-file"><span>💳 ${esc(cardLabel(c))}</span></div>`
+            : card ? `<div class="pay-cards">${customerCards(c).map((k) => `<button class="pay-card${(o.selectedCardId || defaultCard(c)?.id) === k.id ? ' on' : ''} js-pay-pick" data-card="${k.id}" ${o.busy ? 'disabled' : ''}>💳 ${esc(cardOneLabel(k))}${k.isDefault ? ' · default' : ''}${cardExpired(k) ? ' · expired' : ''}</button>`).join('')}</div>`
                    : '<div class="pay-card-on-file warn">No card on file for this customer.</div>'}
         ${t.balance > 0 && card ? `<label class="pay-field"><span>Amount to charge</span><input class="pay-amt-in" type="number" min="0.01" max="${t.balance}" step="0.01" value="${t.balance.toFixed(2)}" ${o.busy ? 'disabled' : ''}></label>` : ''}
         ${o.confirmRefund ? `<div class="pay-confirm">Refund ${money(t.paid)} to ${esc(inv.paymentMethod || 'the card')}?</div>` : ''}
@@ -3238,8 +3281,11 @@ function onClick(e) {
   if (closest('.js-edit-customer')) { e.stopPropagation(); return openCustomerForm(closest('.js-edit-customer').dataset.rec); }
   if (closest('.js-view-agreement')) { e.stopPropagation(); const cust = IDX.customer.get(closest('.js-view-agreement').dataset.rec); if (cust) openOverlay({ kind: 'agreement', recId: cust.customerId }); return; }
   if (closest('.js-add-card')) { e.stopPropagation(); return openAddCard(closest('.js-add-card').dataset.rec); }
+  if (closest('.js-card-default')) { e.stopPropagation(); const b = closest('.js-card-default'); return setCardDefault(b.dataset.rec, b.dataset.card); }
+  if (closest('.js-card-remove')) { e.stopPropagation(); const b = closest('.js-card-remove'); return removeCard(b.dataset.rec, b.dataset.card); }
   if (closest('.js-card-save')) { e.stopPropagation(); return saveCardFlow(closest('.js-card-save')); }
   if (closest('.js-pay-invoice')) { e.stopPropagation(); return openPayInvoice(closest('.js-pay-invoice').dataset.rec); }
+  if (closest('.js-pay-pick')) { e.stopPropagation(); if (state.overlay) { state.overlay.selectedCardId = closest('.js-pay-pick').dataset.card; renderOverlay(); } return; }
   if (closest('.js-charge-invoice')) { e.stopPropagation(); return chargeInvoiceFlow(closest('.js-charge-invoice').dataset.rec); }
   if (closest('.js-pay-addcard')) { e.stopPropagation(); const b = closest('.js-pay-addcard'); return openAddCard(b.dataset.rec, { returnTo: 'payment', invoiceId: b.dataset.inv }); }
   if (closest('.js-refund-invoice')) { e.stopPropagation(); if (state.overlay) { state.overlay.confirmRefund = true; state.overlay.error = ''; renderOverlay(); } return; }
@@ -3494,6 +3540,10 @@ function startInlineEdit(span) {
     input.value = (c && c[f]) || ''; input.placeholder = span.dataset.ph || '';
     if (f === 'email') input.type = 'email';
     commit = () => { if (done) return; done = true; if (c) { const old = c[f]; const v = input.value.trim(); if (String(old ?? '') !== v) { c[f] = v; if (f === 'firstName' || f === 'lastName') c.name = fullName(c); if (f === 'company' && v && c.accountType === 'Non-Business') { c.accountType = 'Business'; logAction(c, 'Account type → Business (company added)'); } reindex('customers', c); logAction(c, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
+  } else if (kind === 'cardNick') {
+    const c = IDX.customer.get(recId), k = c && (c.cards || []).find((x) => x.id === span.dataset.card);
+    input.value = (k && k.nickname) || ''; input.placeholder = 'Card name';
+    commit = () => { if (done) return; done = true; if (k) { const old = k.nickname, v = input.value.trim(); if ((old || '') !== v) { k.nickname = v; reindex('customers', c); logAction(c, `Card name: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
   } else if (kind === 'field') {
     // Generic per-card field editor (text / number / date) — routes through recOf+reindex.
     const card = span.dataset.card, f = span.dataset.field, type = span.dataset.type || 'text';
@@ -3939,7 +3989,9 @@ async function chargeInvoiceFlow(invoiceId) {
   const fail = (msg) => { if (!live()) return; o.busy = false; o.error = msg; renderOverlay(); };
   const done = (r) => { if (!live()) return; applyPayment(invoiceId, r); o.busy = false; o.error = ''; toast(r.fullyPaid || r.alreadyPaid ? 'Paid in full ✓' : 'Payment captured ✓'); renderOverlay(); };
   try {
-    const r = await backendCall('stripeChargeInvoice', { invoiceId, amountCents });
+    const c = IDX.customer.get(IDX.invoice.get(invoiceId)?.customerId);
+    const pick = (o.selectedCardId && customerCards(c).find((k) => k.id === o.selectedCardId)) || defaultCard(c);
+    const r = await backendCall('stripeChargeInvoice', { invoiceId, amountCents, paymentMethodId: pick?.stripePmId || undefined });
     if (!live()) return;
     if (r && r.ok && (r.status === 'succeeded' || r.alreadyPaid)) { done(r); return; }
     if (r && r.requiresAction && r.clientSecret) {

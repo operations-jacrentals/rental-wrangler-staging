@@ -268,6 +268,16 @@ input { font-family: inherit; }
 .g-right { right: -42px; top: 50%; transform: translateY(-50%); }
 @keyframes gbob { 0%,100% { opacity:.6; transform: translate(var(--gx,0), var(--gy,0)) scale(1);} 50% { opacity:1; } }
 .blank-col { background: transparent !important; border-color: transparent !important; box-shadow: none !important; }
+/* §14 cards-on-file list + payment card picker */
+.cards-list { display: flex; flex-direction: column; gap: 7px; }
+.card-row { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+.card-row .cr-brand { font-weight: 700; font-size: 13px; }
+.card-row .cr-exp { font-size: 11px; color: var(--txt-3); } .card-row .cr-exp.warn { color: var(--yellow); } .card-row .cr-exp.bad { color: var(--red); }
+.card-row .cr-nick { font-size: 12px; color: var(--txt-2); }
+.card-row .x { margin-left: auto; color: var(--txt-3); } .card-row .x:hover { color: var(--red); }
+.pay-cards { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+.pay-card { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; font-weight: 600; text-align: left; }
+.pay-card.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 /* item tabs hosted at the top of each card (collapses when no tabs are open) */
 .card-itemtabs { padding: 7px 9px 0; flex: 0 0 auto; }
 .card-itemtabs .tab { flex: 0 0 auto; }
