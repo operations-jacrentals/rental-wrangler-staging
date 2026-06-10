@@ -4892,7 +4892,7 @@ function boot() {
     clearTimeout(hoverGrace);            // re-entering a row cancels a pending close
     if (t === hoverEl) return;
     hoverEl = t; hideHoverPreview();
-    hoverTimer = setTimeout(() => { if (hoverEl === t) showHoverPreview(t); }, 672);
+    hoverTimer = setTimeout(() => { if (hoverEl === t) showHoverPreview(t); }, 1008);   // hover delay, slowed +50% (was 672)
   });
   document.addEventListener('mouseout', (e) => {
     if (!hoverEl) return;
