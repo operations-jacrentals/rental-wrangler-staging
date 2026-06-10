@@ -894,15 +894,15 @@ function refPill(card, recId, label, { x, xData } = {}) {
   // customer-name pills get long — clip to ~9 chars (full name stays in the tooltip)
   const tip = (card === 'customers' && label && label.length > 9) ? ` data-tip="${esc(label)}"` : '';
   const shown = (card === 'customers' && label && label.length > 9) ? label.slice(0, 9).trimEnd() + '…' : label;
-  return `<span class="pill ref" data-pill-card="${card}" data-pill-rec="${esc(recId)}"${tip}>${esc(shown)}${xb}</span>`;
+  return `<span class="pill ref link" data-pill-card="${card}" data-pill-rec="${esc(recId)}"${tip}>${CARD_ICON[card] || ''}${esc(shown)}${xb}</span>`;
 }
-/** A Unit pill — colored by the unit's Inspection Status (Jac, 2026-06-07). */
+/** A Unit pill — a LINKED record: orange outline + tag icon (rule 10). The Ready/Failed
+ *  signal now lives in the adjacent inspection-status badge, not on this pill. */
 function unitPill(unitId, { x } = {}) {
   const u = IDX.unit.get(unitId);
   if (!u) return '<span class="pill c-gray">No unit</span>';
-  const color = getStatus('unitInspectionStatus', u.inspectionStatus).color;
   const xb = x ? `<span class="x" data-x="${esc(x)}">✕</span>` : '';
-  return `<span class="pill c-${color}" data-pill-card="units" data-pill-rec="${esc(unitId)}">${esc(u.name)}${xb}</span>`;
+  return `<span class="pill ref link" data-pill-card="units" data-pill-rec="${esc(unitId)}">${CARD_ICON.units}${esc(u.name)}${xb}</span>`;
 }
 const badge = (label, color = 'gray') => `<span class="pill c-${color}">${esc(label)}</span>`;
 /** A funnel-stage pill (§7.1) — clickable to change stage via a dropdown. */
@@ -2505,7 +2505,7 @@ function tabStrip(tabs) {
     const rec = recOf(ec, t.recId);
     const b = rec ? tabBadge(ec, rec) : '';
     return `<div class="tab ${t.id === state.activeTabId ? 'active' : ''} js-tab" data-tab="${t.id}">
-      <span class="tab-name">${esc(t.label)}</span>${b}</div>`;
+      <span class="tab-ico">${CARD_ICON[ec] || ''}</span><span class="tab-name">${esc(t.label)}</span>${b}</div>`;
   }).join('');
 }
 // Inner markup for a Mouse-shortcuts gesture demo (mock cards/rows + cursor/mouse + rings).

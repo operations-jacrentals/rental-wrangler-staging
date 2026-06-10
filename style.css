@@ -163,6 +163,8 @@ input { font-family: inherit; }
 .tab.active .tab-name { color: var(--on-orange); }
 .tab.active .pill { background: rgba(0,0,0,.16); color: var(--on-orange); border-color: transparent; box-shadow: none; }
 .tab.active .pill .dot { background: var(--on-orange); }
+.tab .tab-ico { display: inline-flex; align-items: center; }   /* rule 2: entity icon on item tabs */
+.tab .tab-ico svg { width: 14px; height: 14px; }
 .tab .tab-name { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
 .tab .pill { flex: 0 0 auto; }
 
