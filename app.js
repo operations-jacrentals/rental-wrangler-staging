@@ -4364,11 +4364,22 @@ function positionGuide(node) {
   const mid = document.querySelector('.col[data-col="middle"]'); if (!mid) return;
   const r = mid.getBoundingClientRect();
   const left = Math.max(10, Math.round(r.left + r.width / 2 - node.offsetWidth / 2));
-  // when the up-arrow points at the window button, sit just BELOW the button (don't cover it)
-  const btn = (!state.winpicker && rentalDraft()) ? mid.querySelector('.js-open-winpicker') : null;
-  const top = btn ? Math.round(btn.getBoundingClientRect().bottom + 34)
-                  : Math.round(r.top + Math.max(120, r.height * 0.30));
-  node.style.left = left + 'px'; node.style.top = top + 'px';
+  const gh = node.offsetHeight;
+  let top;
+  const wpFloat = state.winpicker ? document.querySelector('.winpicker-float') : null;
+  if (wpFloat) {
+    // the rental-window calendar is open — keep the guide clear of it (don't clash)
+    const wr = wpFloat.getBoundingClientRect();
+    if (window.innerHeight - wr.bottom >= gh + 24) top = wr.bottom + 16;   // below the calendar
+    else if (wr.top >= gh + 24) top = wr.top - gh - 16;                    // above the calendar
+    else top = window.innerHeight - gh - 12;                              // pin near viewport foot
+  } else {
+    // when the up-arrow points at the window button, sit just BELOW the button (don't cover it)
+    const btn = (!state.winpicker && rentalDraft()) ? mid.querySelector('.js-open-winpicker') : null;
+    top = btn ? btn.getBoundingClientRect().bottom + 56
+              : r.top + Math.max(120, r.height * 0.30);
+  }
+  node.style.left = left + 'px'; node.style.top = Math.max(12, Math.round(top)) + 'px';
 }
 
 /* ── draft mutations driven from the detail view ── */
