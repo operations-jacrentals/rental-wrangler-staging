@@ -61,9 +61,16 @@
 
 /* ── Reset / base ────────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body {
-  height: 100%; overflow: hidden;          /* §0: page never scrolls */
-  min-width: 1180px;                         /* §4.4 desktop only */
+/* §0: the page never scrolls VERTICALLY, but pans HORIZONTALLY on screens narrower
+   than the 1180px floor. The viewport (html) stays at the real width and scrolls;
+   body holds the 1180px floor so the 3 columns never squish below it. */
+html {
+  height: 100%; overflow-x: auto; overflow-y: hidden;
+  background: var(--bg);
+}
+body {
+  height: 100%; overflow: hidden;            /* body fills the 1180px floor; html scrolls it */
+  min-width: 1180px;                         /* §4.4 desktop floor — below this you side-scroll instead of squishing */
   background: var(--bg); color: var(--txt);
   font-family: var(--font); font-size: 14px; line-height: 1.4;
   -webkit-font-smoothing: antialiased;
@@ -79,7 +86,7 @@ input { font-family: inherit; }
 *::-webkit-scrollbar-track { background: transparent; }
 
 /* ── App frame ───────────────────────────────────────────────────────────── */
-#app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+#app { display: flex; flex-direction: column; height: 100%; overflow: hidden; }   /* height:100% (not 100vh) so the bottom bar clears the horizontal scrollbar when it appears */
 
 /* ── Header (fixed, 2 rows — §5.1) — every element FLOATS (Apple style): no band,
    no separating line; chips sit on the page background. */
