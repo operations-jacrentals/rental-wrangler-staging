@@ -269,6 +269,37 @@ function rentalTransport(r) {
   const unlimited = !!cust?.unlimitedTransport;
   return transportPrice(r.transportType, r.deliveryAddress, { unlimitedTransport: unlimited });
 }
+/* ── Transport journey-picker (Our yard · Truck · Customer site) — like the rental-
+   window picker, but for transport. Click an endpoint then a second: store→truck =
+   Delivery, truck→store = Recovery, store→store = Round-Trip, a single store = Self.
+   Shown only when a delivery address exists; setting it syncs the invoice line. ── */
+const ICO_STORE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9.5L5.2 5h13.6L20 9.5M5 9.5V20h14V9.5M5 9.5h14"/><path d="M9.5 20v-4.5h5V20"/></svg>';
+const ICO_TRUCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2.5" y="6.5" width="11" height="9" rx="1"/><path d="M13.5 9.5h3.6l3.4 3.2v2.8h-7z"/><circle cx="7" cy="17.5" r="1.7"/><circle cx="17" cy="17.5" r="1.7"/></svg>';
+const TRANSPORT_NODES = { Self: [0], Delivery: [0, 1], Recovery: [1, 2], 'Round-Trip': [0, 1, 2] };
+const TRANSPORT_LINES = { Self: [], Delivery: [0], Recovery: [1], 'Round-Trip': [0, 1] };
+function transportPicker(r, tr) {
+  const type = r.transportType || 'Self';
+  const onN = TRANSPORT_NODES[type] || [0];
+  const onL = TRANSPORT_LINES[type] || [];
+  const isAnchor = (i) => state.tAnchor && state.tAnchor.rec === r.rentalId && state.tAnchor.node === i;
+  const node = (i, ic, title) => `<button class="tnode${onN.includes(i) ? ' on' : ''}${isAnchor(i) ? ' anchor' : ''} js-tnode" data-node="${i}" data-rec="${esc(r.rentalId)}" title="${title}">${ic}</button>`;
+  const line = (i) => `<span class="tline${onL.includes(i) ? ' on' : ''}"></span>`;
+  const priceTxt = type === 'Self' ? '$0' : (tr.price == null ? '— (city not found)' : money(tr.price) + (type === 'Round-Trip' ? ' · round-trip' : ' · one-way'));
+  return `<div class="transport">${node(0, ICO_STORE, 'Our yard')}${line(0)}${node(1, ICO_TRUCK, 'Transport')}${line(1)}${node(2, ICO_STORE, 'Customer site')}</div>
+    <div class="kv"><b>${esc(type)}</b> · <span class="v derived">${priceTxt}</span></div>`;
+}
+/** Keep the invoice's auto Transport line in sync with the rental's transport type/address.
+ *  (Also fixes a latent bug: transport was only set at invoice creation, never re-synced.) */
+function syncTransportLine(r) {
+  if (!r || !r.invoiceId) return;
+  const inv = IDX.invoice.get(r.invoiceId); if (!inv) return;
+  inv.lineItems = (inv.lineItems || []).filter((li) => !(li.kind === 'transport' && li.ref === r.rentalId));
+  const tr = rentalTransport(r);
+  if (r.transportType && r.transportType !== 'Self' && tr && tr.price) {
+    inv.lineItems.push({ kind: 'transport', ref: r.rentalId, label: `Transport · ${r.transportType}`, amount: tr.price });
+  }
+  reindex('invoices', inv);
+}
 
 /** Invoice subtotal / tax / total / paid / balance / derived status (§10 + aging). */
 const TAX_RATE = 0.1075;   // §10 sales tax — 10.75% (Jac 2026-06-07); honors exemptions
@@ -1455,16 +1486,12 @@ const DETAIL = {
     // Label-free, stacked (§6.2 #3): Unit + Category pills sit adjacent; transport
     // pill carries its cost as a /one-way (or /round-trip) suffix; address + drive
     // time need no labels.
-    const transportPill = `<span class="pill c-${getStatus('transportType', r.transportType).color} js-transport-pill" data-rec="${r.rentalId}">${esc(getStatus('transportType', r.transportType).label)} ${I.chev}</span>`;
-    const transportLine = (r.transportType && r.transportType !== 'Self')
-      ? `<div class="kv">${transportPill}<span class="v">${tr.price == null ? '-' : money(tr.price)}<span class="sfx">/${r.transportType === 'Round-Trip' ? 'round-trip' : 'one-way'}</span></span></div>`
-      : kvPills(transportPill);
     const rentalCol = `<div class="section"><h4>Rental</h4>
       <div class="fieldstack">
         ${kvPills(`${unit ? unitPill(unit.unitId, { x: 'unit-swap' }) : (r.mock ? pickUnitBtn : '<span class="pill c-gray">No unit</span>')}${cat ? refPill('categories', cat.categoryId, cat.name) : ''}`)}
-        ${transportLine}
-        ${kvPills(`<span class="pill ref inline-edit" data-edit="rentalAddress" data-rec="${r.rentalId}">${r.deliveryAddress ? esc(r.deliveryAddress) : '+ Add address'}</span>`)}
-        ${tr.driveMin != null ? kv(`${tr.driveMin} min`, { sfx: '/one-way' }) : ''}
+        ${kvPills(`<span class="pill ref inline-edit" data-edit="rentalAddress" data-rec="${r.rentalId}">${r.deliveryAddress ? esc(r.deliveryAddress) : '+Address'}</span>`)}
+        ${r.deliveryAddress ? transportPicker(r, tr) : ''}
+        ${(r.deliveryAddress && tr.driveMin != null) ? kv(`${tr.driveMin} min`, { sfx: '/one-way', derived: true }) : ''}
       </div></div>`;
 
     const invPill = inv
@@ -1474,8 +1501,8 @@ const DETAIL = {
       <div class="fieldstack">
         ${kvPills(cust ? refPill('customers', r.customerId, cust.name, { x: 'cust-swap' }) : (r.mock ? pickCustBtn : '<span class="pill c-gray">No customer</span>'))}
         ${kvPills(invPill)}
-        ${invT ? kv(money(invT.balance), { sfx: 'due', big: true }) : ''}
-        ${price ? kv(money(price.price), { sfx: `· ${price.rate}` }) : ''}
+        ${invT ? kv(money(invT.balance), { sfx: 'due', big: true, derived: true }) : ''}
+        ${price ? kv(money(price.price), { sfx: `· ${price.rate}`, derived: true }) : ''}
         ${efld('rentals', r, 'rentalId', 'po', 'Add PO', { fmt: (v) => 'PO ' + v })}
       </div></div>`;
 
@@ -1484,12 +1511,12 @@ const DETAIL = {
     const fcLive = unit && ACTIVE_RENTAL.has(r.status) && r.status !== 'Quote';
     const fcRow = r.fieldCall
       ? `<button class="pill c-red js-clear-fc" data-rec="${r.rentalId}">Field Call active — clear</button>`
-      : (fcLive ? `<button class="pill ref js-field-call" data-rec="${r.rentalId}">${I.video} Mark Field Call</button>` : '');
+      : (fcLive ? `<button class="req js-field-call" data-rec="${r.rentalId}">${I.video} Mark Field Call</button>` : '');
     const inspSection = `<div class="section"><h4>Inspection</h4>
       <div class="fieldstack">
         ${kvPills(unit ? statusPill('unitInspectionStatus', unit.inspectionStatus, { card: 'units', recId: unit.unitId }) : '<span class="pill c-gray">—</span>')}
         <div class="kv"><span class="pfx">Start</span><span class="v inline-edit" data-edit="field" data-card="rentals" data-field="startHours" data-rec="${r.rentalId}" data-ph="Start hrs" data-type="number">${r.startHours != null ? num(r.startHours) + ' HRS' : '<span class="add-field">+ set</span>'}</span><span class="pfx" style="margin-left:8px">Return</span><span class="v inline-edit" data-edit="field" data-card="rentals" data-field="returnHours" data-rec="${r.rentalId}" data-ph="Return hrs" data-type="number">${r.returnHours != null ? num(r.returnHours) + ' HRS' : '<span class="add-field">+ set</span>'}</span></div>
-        ${kvPills(`<span class="pill ref">${I.video} On-Rent</span><span class="pill ref">${I.video} Returning</span>`)}
+        ${kvPills(`<button class="req">${I.video} On-Rent</button><button class="req">${I.video} Returning</button>`)}
         ${fcRow ? kvPills(fcRow) : ''}
       </div></div>`;
 
@@ -3470,6 +3497,18 @@ function onClick(e) {
   // rental status pill on its own open card → dropdown (pill-rule exception)
   if (closest('.js-status-pill')) return openStatusDropdown(closest('.js-status-pill').dataset.rec, closest('.js-status-pill'));
   if (closest('.js-transport-pill')) { const b = closest('.js-transport-pill'); e.stopPropagation(); return openTransportDropdown(b.dataset.rec, b); }
+  // transport journey-picker: click an endpoint then a second to set the type
+  if (closest('.js-tnode')) {
+    const b = closest('.js-tnode'); e.stopPropagation();
+    const i = Number(b.dataset.node), rec = b.dataset.rec, r = IDX.rental.get(rec); if (!r) return;
+    const a = state.tAnchor;
+    if (!a || a.rec !== rec) { state.tAnchor = { rec, node: i }; return render(); }   // first click (anchor)
+    const from = Math.min(a.node, i), to = Math.max(a.node, i); state.tAnchor = null;
+    const type = from === to ? 'Self' : (from === 0 && to === 1) ? 'Delivery' : (from === 1 && to === 2) ? 'Recovery' : 'Round-Trip';
+    if (r.transportType !== type) { const old = r.transportType; r.transportType = type; logAction(r, `Transport: ${auditVal(old)} → ${auditVal(type)}`); syncTransportLine(r); }
+    const s = activeSession(); if (s.anchor) setAnchor(s, s.anchor.card, s.anchor.recId, s.anchor.recType);
+    return render();
+  }
   if (closest('.js-fleetstatus')) { const b = closest('.js-fleetstatus'); e.stopPropagation(); return openFleetDropdown(b.dataset.rec, b); }
   if (closest('.js-setfleet')) { const b = closest('.js-setfleet'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return setUnitFleet(b.dataset.rec, b.dataset.val); }
   if (closest('.js-wophase')) { const b = closest('.js-wophase'); e.stopPropagation(); return openWoPhaseDropdown(b.dataset.rec, b, null); }

@@ -563,6 +563,15 @@ input { font-family: inherit; }
 .boldlight { font-weight: 700; color: var(--txt); }                                                          /* rule 12: value after entry */
 .pill[data-badge]:hover { filter: brightness(1.16); }                                                        /* rule 3: status badge hover highlight */
 .pill[data-badge]:hover .t { text-decoration: underline; }
+/* transport journey-picker (Our yard · Truck · Customer site) */
+.transport { display: flex; align-items: center; margin: 8px 0 4px; padding: 0 2px; }
+.tnode { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; background: var(--panel-2); border: 1px solid var(--line); color: var(--txt-2); cursor: pointer; transition: background .13s, border-color .13s, color .13s, box-shadow .13s; }
+.tnode svg { width: 21px; height: 21px; }
+.tnode:hover { border-color: var(--accent-line); color: var(--txt); }
+.tnode.anchor { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.tnode.on { background: var(--accent); border-color: var(--accent); color: var(--on-orange); }
+.tline { flex: 1 1 auto; border-top: 2px dotted var(--line); margin: 0 7px; }
+.tline.on { border-top: 2px solid var(--accent); }
 .pill .x { margin-left: 2px; opacity: .6; font-weight: 800; }
 .pill .x:hover { opacity: 1; color: var(--red); }
 .pill svg { width: 12px; height: 12px; flex: 0 0 auto; }
