@@ -443,6 +443,9 @@ input { font-family: inherit; }
 .c-titlecard .c-icon svg { width: 15px; height: 15px; }
 .c-titlecard .c-title { font-size: 13px; font-weight: 700; letter-spacing: .2px; color: var(--accent); }
 .c-titlecard .c-count { font-size: 11px; font-weight: 700; color: var(--txt-3); }
+/* Anchored standard-mode TITLE = orange-outline chip (mockup `.cardhead .link`) */
+.card.anchored .c-titlecard { background: var(--accent-soft); border-color: var(--accent-line); border-radius: 999px; }
+.card.anchored .c-titlecard:hover { border-color: var(--accent); }
 /* Back + ⊞/+ live together on the right of the header */
 .c-head-right { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
 .c-actions {
@@ -558,6 +561,15 @@ input { font-family: inherit; }
 .pill.c-danger { background: var(--red); color: #fff; border-color: transparent; font-weight: 800; }         /* S4: confirm-refund = solid red */
 .req { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 10px; background: #fff; color: #16181d; border: 1px solid #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }  /* rule 15/16/22: required-until-entered = white bg + dark ink */
 .req svg { width: 15px; height: 15px; }
+/* rule 8: notes carry a 3-color dot tag (white/red/green), picked while entering */
+.nd-white { background: #e9edf4; }
+.nd-red { background: #ff4242; }
+.nd-green { background: #34d399; }
+.note-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; border: 1px solid var(--line); flex: 0 0 auto; }
+.inline-wrap { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.dotpick { display: inline-flex; align-items: center; gap: 5px; }
+.dotpick .dp { width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line); cursor: pointer; }
+.dotpick .dp.on { box-shadow: 0 0 0 2px var(--accent); }
 .linkname { color: var(--blue); font-weight: 700; text-decoration: none; cursor: pointer; }                  /* rule 25: line-item name = hyperlink */
 .linkname:hover { text-decoration: underline; }
 .boldlight { font-weight: 700; color: var(--txt); }                                                          /* rule 12: value after entry */

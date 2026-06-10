@@ -37,11 +37,11 @@
 - All invoice line names = **blue hyperlinks** (navigable or not).
 - Status-badge icons = **YES** (every badge). Orange linked pills in list rows = **YES** (keep).
 
-## Remaining small polish (was queued next)
-- Anchored standard-mode **TITLE → orange-outline chip** (currently flat orange text — style `.c-titlecard` / `.d-title`).
-- Remaining **derived → italic** in Work Order / Customer / Category detail views.
-- **Conditional PO** → white `.req` only when the account requires a PO.
-- **Notes** field → 3-color dot tagging (white/red/green) on entry.
+## Remaining small polish — ✅ ALL DONE (2026-06-10)
+- ✅ Anchored standard-mode **TITLE → orange-outline chip** (`.card.anchored .c-titlecard` — accent-soft bg + accent-line border + 999px radius, per mockup `.cardhead .link`).
+- ✅ **Derived → italic** in Work Order (parts cost/labor/if-billed), Customer (digest stats line), Category (avg hours/ROI/per-unit rev+exp/util stub) — plus Units investment (repairs / mo avg / total revenue), same rule.
+- ✅ **Conditional PO** — white `.req` "PO #" chip only when `cust.requiresPO && !i.po`; entered → normal "PO {n}" pill; not required → subtle "Add PO" pill. Yellow "PO required" badge removed (the white chip IS the signal). Demo seed: HD Services (C0033) now `requiresPO: true` so it's visible for review.
+- ✅ **Notes 3-color dot tagging** — `efld(..., { dot: true })` on Rentals + Units notes; editing swaps in input + white/red/green `.dotpick` dots (mousedown so no blur-commit); picked color saved as `{field}Color` on the record; saved note shows a `.note-dot`.
 
 ## NEXT BIG DESIGN — from Jac's whiteboards (confirmed "mostly correct")
 
@@ -58,11 +58,11 @@ Top → bottom sections:
 - **Rental section:** +Customer · +Unit (+ its Ready inspection badge) · Pay Status · Category · **+Address → the transport journey-picker (ALREADY BUILT)** · +Invoice · `$0 / $1,000` paid/total.
 - **Yard section** = a journey widget **`+OnRent ···· +FC ···· +Return`** (rental physical lifecycle, same picker aesthetic). **This REPLACES the current white On-Rent/Returning/Field-Call buttons.**
 
-### Open questions for Jac (answer before building Units/Rentals):
-1. **Units merge scope** — do the standalone Inspections & Work Orders tabs go away entirely (fully absorbed into Units), or remain as separate lists too?
-2. **Inspection section** — latest inspection only? Are Wash/Pass-Fail toggles editable (log a new inspection) or display-only?
-3. **Yard journey** — confirm it replaces the three capture buttons; `+FC` mid-journey = Field-Call trigger (fail unit + auto-WO).
-4. **"Part Ordered → ETA"** — once picked, the status pill shows the date (e.g. `Jun 18`); picking again re-opens the date picker?
+### Open questions — ✅ ANSWERED by Jac (2026-06-10, BINDING):
+1. **Units merge scope** — Inspections & Work Orders standalone tabs GO AWAY; only the **Service tab** remains standalone. Card-footer values give quick access to needed inspections + failed units. **ADD a card-footer value that represents just WO count.**
+2. **Inspection section** — latest inspection + **editable** toggles (clicking Wash/No-Wash · Pass/Fail logs a new inspection inline; Fail → photo/description popup + auto-WO).
+3. **Yard journey** — YES, replaces the three white capture buttons entirely; `+FC` mid-journey = Field-Call trigger (fail unit + auto-WO).
+4. **"Part Ordered → ETA"** — badge displays **"ETA Jun18"**; clicking re-opens the picker AND must let the user **update the status** (part arrived / completed), not just the date.
 
 ## Files NOT in git (transfer via OneDrive or copy manually)
 - **`JacTec-handoff/`** (gitignored) — **`Code.gs`** (the Apps Script backend — paste + deploy manually) and **`JacTec-SPEC-v6.md`** (the spec; has a "v6.1 Built-State Delta" at the top documenting the live app).

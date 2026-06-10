@@ -1445,10 +1445,12 @@ function efld(card, rec, idField, field, ph, opts = {}) {
   const raw = rec[field];
   const has = raw !== '' && raw != null;
   const phDisp = String(ph).replace(/^Add\s+/i, '');   // rule 8/12: drop "Add" + space (data-ph keeps full prompt)
-  const disp = has ? esc(opts.fmt ? opts.fmt(raw) : String(raw)) : `<span class="add-field">+${esc(phDisp)}</span>`;
+  const dotColor = opts.dot ? rec[field + 'Color'] : '';   // rule 8: notes carry a 3-color dot tag
+  const dot = (has && dotColor) ? `<span class="note-dot nd-${esc(dotColor)}"></span>` : '';
+  const disp = has ? dot + esc(opts.fmt ? opts.fmt(raw) : String(raw)) : `<span class="add-field">+${esc(phDisp)}</span>`;
   const pfx = opts.pfx ? `<span class="pfx">${esc(opts.pfx)}</span>` : '';
   const sfx = (has && opts.sfx) ? `<span class="sfx">${esc(opts.sfx)}</span>` : '';
-  return `<div class="kv${opts.wrap ? ' wrap' : ''}">${pfx}<span class="v inline-edit" data-edit="field" data-card="${card}" data-field="${field}" data-rec="${esc(String(rec[idField]))}" data-ph="${esc(ph)}" data-type="${opts.type || 'text'}"${opts.wrap ? ' style="white-space:normal"' : ''}>${disp}</span>${sfx}</div>`;
+  return `<div class="kv${opts.wrap ? ' wrap' : ''}">${pfx}<span class="v inline-edit" data-edit="field" data-card="${card}" data-field="${field}" data-rec="${esc(String(rec[idField]))}" data-ph="${esc(ph)}" data-type="${opts.type || 'text'}"${opts.dot ? ' data-dot="1"' : ''}${opts.wrap ? ' style="white-space:normal"' : ''}>${disp}</span>${sfx}</div>`;
 }
 
 const DETAIL = {
@@ -1520,7 +1522,7 @@ const DETAIL = {
         ${fcRow ? kvPills(fcRow) : ''}
       </div></div>`;
 
-    const notes = `<div class="section"><h4>Notes</h4>${efld('rentals', r, 'rentalId', 'notes', 'Add notes', { wrap: true })}</div>`;
+    const notes = `<div class="section"><h4>Notes</h4>${efld('rentals', r, 'rentalId', 'notes', 'Add notes', { wrap: true, dot: true })}</div>`;
     const history = historySection('rentals', r, cs);
 
     return `<div class="detail">
@@ -1563,11 +1565,11 @@ const DETAIL = {
       ${efld('units', u, 'unitId', 'purchaseDate', 'Purchase date', { type: 'date', sfx: 'purchased', fmt: yr })}
       ${efld('units', u, 'unitId', 'trueCost', 'True cost', { type: 'number', sfx: 'true cost', fmt: money })}
       ${efld('units', u, 'unitId', 'purchaseHours', 'Hours at purchase', { type: 'number', sfx: 'at purchase', fmt: (v) => num(v) + ' HRS' })}
-      ${kv(money(repair), { sfx: 'repairs' })}
-      ${kv(money(avgRevMo), { sfx: '/mo avg' })}
-      ${kv(money(totalRev), { sfx: 'total revenue' })}
+      ${kv(money(repair), { sfx: 'repairs', derived: true })}
+      ${kv(money(avgRevMo), { sfx: '/mo avg', derived: true })}
+      ${kv(money(totalRev), { sfx: 'total revenue', derived: true })}
     </div></div>`;
-    const notes = `<div class="section"><h4>Notes</h4>${efld('units', u, 'unitId', 'notes', 'Add notes', { wrap: true })}</div>`;
+    const notes = `<div class="section"><h4>Notes</h4>${efld('units', u, 'unitId', 'notes', 'Add notes', { wrap: true, dot: true })}</div>`;
     return `<div class="detail">
       <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="units" data-field="name" data-rec="${u.unitId}" data-ph="Unit name">${esc(u.name)}</span><span class="pill c-${getStatus('unitFleetStatus', u.fleetStatus).color} js-fleetstatus" data-rec="${u.unitId}">${esc(getStatus('unitFleetStatus', u.fleetStatus).label)} ${I.chev}</span>${statusPill('unitInspectionStatus', u.inspectionStatus)}<button class="pill ${u.washRequested ? 'c-blue' : 'ref'} js-wash-request" data-rec="${u.unitId}">${I.droplet} ${u.washRequested ? 'Wash Requested' : 'Request Wash'}</button><span class="pill c-gray">${I.qr} QR</span></div>
       <div class="detail-cols">${specs}${gps}</div>
@@ -1594,7 +1596,7 @@ const DETAIL = {
     const account = `<div class="section"><h4>Account</h4><div class="fieldstack">
       ${kvPills(`${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${c.requiresPO ? badge('PO Required', 'yellow') : ''}`)}
       ${efield('industry', 'Add industry')}${efield('accountNotes', 'Add notes', true)}
-      ${kv(`${money(d.totalPaid)} total · ${d.visits || 0} visits · ${d.years || 0} yrs · every ${d.avgFrequencyDays || 0} days`, { wrap: true })}
+      ${kv(`${money(d.totalPaid)} total · ${d.visits || 0} visits · ${d.years || 0} yrs · every ${d.avgFrequencyDays || 0} days`, { wrap: true, derived: true })}
     </div></div>`;
     // name → badges → full-width activity bar → sections (Jac 2026-06-07); even .detail gaps
     const title = `<span class="d-title">${esc(fullName(c)) || 'New Customer'}</span>`;
@@ -1658,14 +1660,14 @@ const DETAIL = {
     </div></div>`;
     const fleet = `<div class="section"><h4>Fleet Summary</h4><div class="fieldstack">
       ${st.forSale ? kvPills(badge(st.forSale + ' For Sale', 'purple')) : ''}
-      ${kv(`${num(st.avgHours)} HRS`, { sfx: 'avg hours' })}
+      ${kv(`${num(st.avgHours)} HRS`, { sfx: 'avg hours', derived: true })}
       ${c.description ? kv(c.description, { wrap: true }) : ''}
     </div></div>`;
     const investment = `<div class="section"><h4>Investment</h4><div class="fieldstack">
-      ${st.roi != null ? kv(`${st.roi}%`, { sfx: 'ROI' }) : ''}
-      ${kv(money(st.avgRevUnit), { sfx: '/unit revenue' })}${kv(money(st.avgExpUnit), { sfx: '/unit expenses' })}
+      ${st.roi != null ? kv(`${st.roi}%`, { sfx: 'ROI', derived: true }) : ''}
+      ${kv(money(st.avgRevUnit), { sfx: '/unit revenue', derived: true })}${kv(money(st.avgExpUnit), { sfx: '/unit expenses', derived: true })}
       ${kv(money(c.msrp), { sfx: 'MSRP' })}${kv(money(c.askPrice), { sfx: 'ask' })}${kv(money(c.bottomDollar), { sfx: 'bottom dollar' })}
-      ${kv('—', { sfx: 'time / dollar util (backend)' })}
+      ${kv('—', { sfx: 'time / dollar util (backend)', derived: true })}
     </div></div>`;
     return `<div class="detail">
       <div class="detail-head"><span class="d-title">${esc(c.name)}</span>${c.fuelType ? badge(c.fuelType, 'navy') : ''}${badge(`${mix.total} units`, 'gray')}</div>
@@ -1693,7 +1695,9 @@ const DETAIL = {
       ${kv(money(t.balance), { sfx: 'due', big: true, derived: true })}
       ${kv(`${money(t.paid)} / ${money(t.total)}`, { sfx: 'paid', derived: true })}
       ${kv(fmtShortDate(i.dueDate), { sfx: 'due date', derived: true })}
-      ${kvPills(`<span class="pill ref inline-edit" data-edit="invoicePO" data-rec="${i.invoiceId}">${esc(i.po ? 'PO ' + i.po : 'Add PO')}</span>${cust?.requiresPO && !i.po ? badge('PO required', 'yellow') : ''}`)}
+      ${kvPills(cust?.requiresPO && !i.po
+        ? `<span class="req inline-edit" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
+        : `<span class="pill ref inline-edit" data-edit="invoicePO" data-rec="${i.invoiceId}">${esc(i.po ? 'PO ' + i.po : 'Add PO')}</span>`)}
       ${canMoney() && cust
         ? `<div class="pillrow" style="margin-top:2px">${
             t.status === 'Refunded'
@@ -1763,8 +1767,8 @@ const DETAIL = {
       ${kvPills(billToggle)}
       ${kv(fmtShortDate(w.date), { sfx: 'opened' })}
       ${kv(`${num(w.unitHoursAtCreation)} HRS`, { sfx: 'at creation' })}
-      ${kv(money(partsCost), { sfx: 'parts cost' })}${kv(`${labor} HRS`, { sfx: 'labor' })}
-      ${w.billCustomer === 'Yes' ? kv(money(priceIfBilled), { sfx: 'if billed' }) : ''}
+      ${kv(money(partsCost), { sfx: 'parts cost', derived: true })}${kv(`${labor} HRS`, { sfx: 'labor', derived: true })}
+      ${w.billCustomer === 'Yes' ? kv(money(priceIfBilled), { sfx: 'if billed', derived: true }) : ''}
       ${efld('workOrders', w, 'woId', 'description', 'Add description', { wrap: true })}
     </div></div>`;
     return `<div class="detail">
@@ -3681,9 +3685,28 @@ function startInlineEdit(span) {
     input.placeholder = span.dataset.ph || '';
     if (type === 'number') input.type = 'number';
     else if (type === 'date') input.type = 'date';
-    commit = () => { if (done) return; done = true; if (rec) { let v = input.value.trim(); if (type === 'number') v = (v === '' ? null : Number(v)); const old = rec[f]; if (String(old ?? '') !== String(v ?? '')) { rec[f] = v; reindex(card, rec); logAction(rec, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
+    commit = () => { if (done) return; done = true; if (rec) { let v = input.value.trim(); if (type === 'number') v = (v === '' ? null : Number(v)); const old = rec[f]; const oldDot = rec[f + 'Color'] || ''; const newDot = (span.dataset.dot === '1' && v) ? (input._dotPick ?? oldDot) : ''; if (String(old ?? '') !== String(v ?? '') || oldDot !== newDot) { rec[f] = v; if (span.dataset.dot === '1') rec[f + 'Color'] = newDot; reindex(card, rec); logAction(rec, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
   } else { return; }
-  span.replaceWith(input); input.focus(); input.select();
+  if (kind === 'field' && span.dataset.dot === '1') {
+    // rule 8 — notes get the 3-color dot picker (white/red/green) while entering
+    const rec2 = recOf(span.dataset.card, recId), f2 = span.dataset.field;
+    input._dotPick = (rec2 && rec2[f2 + 'Color']) || '';
+    const wrap = el('span', 'inline-wrap');
+    const dots = el('span', 'dotpick');
+    const COLORS = ['white', 'red', 'green'];
+    COLORS.forEach((c) => {
+      const d = el('span', `dp nd-${c}${input._dotPick === c ? ' on' : ''}`);
+      d.title = `Tag note ${c}`;
+      // mousedown (not click) + preventDefault so the input doesn't blur-commit mid-pick
+      d.addEventListener('mousedown', (e) => { e.preventDefault(); input._dotPick = input._dotPick === c ? '' : c; [...dots.children].forEach((x, i) => x.classList.toggle('on', COLORS[i] === input._dotPick)); });
+      dots.appendChild(d);
+    });
+    wrap.appendChild(input); wrap.appendChild(dots);
+    span.replaceWith(wrap);
+  } else {
+    span.replaceWith(input);
+  }
+  input.focus(); input.select();
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
     else if (e.key === 'Escape') { done = true; render(); }

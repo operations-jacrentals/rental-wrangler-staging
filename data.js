@@ -64,7 +64,7 @@ const customers = [
       usedSalesStage: 'Not A No!', interestedCategoryIds: ['CAT011'], salesAction: 'Pitch a second excavator for Q3',
       membershipStage: 'Paid', paidUntil: '2026-12-31', paidCadence: 'Yearly', unlimitedTransport: true, paidFees: 6000,
       activityLog: [ { when: '2026-01-15', text: 'Membership renewed — Yearly, Unlimited Transport' }, { when: '2025-11-30', text: 'Payment discussed for renewal' } ] }),
-  m({ customerId: 'C0033', name: 'matthew hazel (HD Services)', company: 'HD Services', phone: '(337) 304-0071', email: 'Hdservices2409@gmail.com', address: 'Sulphur, LA, USA', accountType: 'Business', payStatus: 'Partial', industry: 'Construction', requiresPO: false, accountNotes: '', stripeId: 'cus_demo033', _digest: { totalPaid: 7600, visits: 6, years: 1, avgFrequencyDays: 41, activePct: 58, firstInvoice: '2025-08-15', lastInvoice: '2026-06-07' },
+  m({ customerId: 'C0033', name: 'matthew hazel (HD Services)', company: 'HD Services', phone: '(337) 304-0071', email: 'Hdservices2409@gmail.com', address: 'Sulphur, LA, USA', accountType: 'Business', payStatus: 'Partial', industry: 'Construction', requiresPO: true, accountNotes: '', stripeId: 'cus_demo033', _digest: { totalPaid: 7600, visits: 6, years: 1, avgFrequencyDays: 41, activePct: 58, firstInvoice: '2025-08-15', lastInvoice: '2026-06-07' },
       usedSalesStage: 'Payment Discussed', interestedCategoryIds: ['CAT008'], salesAction: 'Follow up on used skid-steer purchase',
       membershipStage: 'Inbound Lead',
       activityLog: [ { when: '2026-06-07', text: 'Discussed buying a used skid steer' } ] }),
