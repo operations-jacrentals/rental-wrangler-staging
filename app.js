@@ -1284,14 +1284,18 @@ function listTotalsEl(card, rows, session) {
   const cols = cardColumns(card, session);
   const sel = loadListTotals(card);                 // null = every aggregatable column
   const allowed = sel ? new Set(sel) : null;
+  const totCard = (session.cards && session.cards[card]) ? card : 'shop';   // shop sub-types route to the shop card
+  const tf = session.cards[totCard] && session.cards[totCard].totalFilter;
   const chips = [];
   for (const col of cols) {
     if (allowed && !allowed.has(col.key)) continue;
     const a = aggColumn(col, rows);
     if (a.kind === 'badge') {
+      // each value-count is a button → filters the list to that value
       Object.entries(a.counts).sort((x, y) => y[1] - x[1]).forEach(([key, n]) => {
         const m = col.meta ? col.meta(key) : { label: key, color: 'gray' };
-        chips.push(`<span class="tot-chip c-${m.color}">${n} ${esc(m.label)}</span>`);
+        const on = tf && tf.col === col.key && String(tf.value) === String(key);
+        chips.push(`<button class="tot-chip c-${m.color} js-tot-chip${on ? ' on' : ''}" data-tot-card="${totCard}" data-tot-col="${col.key}" data-tot-val="${esc(String(key))}">${n} ${esc(m.label)}</button>`);
       });
     } else if (a.kind === 'num' && a.count) {
       const calc = col.agg === 'sum' ? 'sum' : 'avg';
@@ -1303,6 +1307,21 @@ function listTotalsEl(card, rows, session) {
   const node = el('div', 'list-totals');
   node.innerHTML = `<span class="tot-count">${rows.length}</span>${chips.join('')}`;
   return node;
+}
+/** Filter a card's list rows by an active footer-chip filter (col === value). */
+function applyTotalFilter(card, rows, session) {
+  const cs = session.cards[card]; if (!cs || !cs.totalFilter) return rows;
+  const col = cardColumns(card, session).find((c) => c.key === cs.totalFilter.col);
+  return col ? rows.filter((rec) => String(col.get(rec)) === String(cs.totalFilter.value)) : rows;
+}
+/** A removable "Filtered to X" chip when a footer-chip filter is active. */
+function totalFilterChip(card, session) {
+  const cs = session.cards[card]; if (!cs || !cs.totalFilter) return null;
+  const col = cardColumns(card, session).find((c) => c.key === cs.totalFilter.col);
+  const m = (col && col.meta) ? col.meta(cs.totalFilter.value) : { label: cs.totalFilter.value };
+  const chip = el('div', 'fleet-chip');
+  chip.innerHTML = `<span class="muted">Filtered to</span> <b>${esc(m.label)}</b> <button class="x js-clear-totfilter" data-card="${card}" title="Clear">${I.x}</button>`;
+  return chip;
 }
 
 /* ── §13.3 LIST-VIEW LAYOUT — per-device choice of which registry columns show in
@@ -2092,6 +2111,8 @@ function listView(cardDef, session) {
   } else if (availWin && card === 'categories') {
     rows = [...rows].sort((a, b) => (availUnavailable('categories', a) ? 1 : 0) - (availUnavailable('categories', b) ? 1 : 0));
   }
+  rows = applyTotalFilter(card, rows, session);          // a clicked footer-chip narrows the list
+  const tfChip = totalFilterChip(card, session); if (tfChip) wrap.appendChild(tfChip);
 
   const list = el('div', 'list');
   if (!rows.length) {
@@ -2256,6 +2277,18 @@ function shopListView(session, byType, forcedSeg) {
     items = items.filter((it) => blobMatches(IDX.search.get((it.type === 'serviceOrders' ? 'units' : it.type) + ':' + idOf(it.type, it.rec)), cs.search, cs.filterTerms));
   }
   items = shopSort(items, cs.sort);
+
+  // a clicked footer-chip narrows the shop list (filter is stored on the shop card)
+  if (cs.totalFilter && segActive !== 'all') {
+    const fcol = (CARD_COLUMNS[segActive] || []).find((c) => c.key === cs.totalFilter.col);
+    if (fcol) {
+      items = items.filter((it) => String(fcol.get(it.rec)) === String(cs.totalFilter.value));
+      const m = fcol.meta ? fcol.meta(cs.totalFilter.value) : { label: cs.totalFilter.value };
+      const chip = el('div', 'fleet-chip');
+      chip.innerHTML = `<span class="muted">Filtered to</span> <b>${esc(m.label)}</b> <button class="x js-clear-totfilter" data-card="shop" title="Clear">${I.x}</button>`;
+      wrap.appendChild(chip);
+    }
+  }
 
   const list = el('div', 'list');
   if (!items.length) {
@@ -3470,6 +3503,18 @@ function onClick(e) {
   if (closest('.js-sortmenu')) { const b = closest('.js-sortmenu'); return openSortMenu(b.dataset.card, b); }
   if (closest('.js-sortfield')) { const b = closest('.js-sortfield'); const cs = activeSession().cards[b.dataset.card]; const f = SORT_FIELDS[b.dataset.card].find((x) => x.field === b.dataset.field); if (f) { cs.sort = { ...f }; saveSort(b.dataset.card, cs.sort); } document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); render(); return; }
   if (closest('.js-sortdir')) { const card = closest('.js-sortdir').dataset.card; const cs = activeSession().cards[card]; cs.sort.dir = cs.sort.dir === 'asc' ? 'desc' : 'asc'; saveSort(card, cs.sort); render(); return; }
+
+  // footer-totals badge → filter the list to that value (click the active chip to clear)
+  if (closest('.js-tot-chip')) {
+    const b = closest('.js-tot-chip'); const cs = activeSession().cards[b.dataset.totCard];
+    if (cs) {
+      const same = cs.totalFilter && cs.totalFilter.col === b.dataset.totCol && String(cs.totalFilter.value) === String(b.dataset.totVal);
+      cs.totalFilter = same ? null : { col: b.dataset.totCol, value: b.dataset.totVal };
+      cs.mode = 'list';
+    }
+    render(); return;
+  }
+  if (closest('.js-clear-totfilter')) { e.stopPropagation(); const cs = activeSession().cards[closest('.js-clear-totfilter').dataset.card]; if (cs) cs.totalFilter = null; render(); return; }
 
   // inline edit (click a value → input)
   if (closest('.inline-edit')) { e.stopPropagation(); return startInlineEdit(closest('.inline-edit')); }
