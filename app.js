@@ -1961,11 +1961,12 @@ function rentalEngaged() { const d = rentalDraft(); return !!(d && (state.winpic
 function columnEl(col, session) {
   const active = (session.cols && session.cols[col.id]) || col.default;
   const wrap = el('div', 'col'); wrap.dataset.col = col.id;
-  wrap.appendChild(colTabsEl(col, active, session));
   // +Rental, nothing engaged yet → keep the side cards blank so the centered
   // "Select rental window" button + guide own the screen.
   const blank = col.id !== 'middle' && rentalDraft() && !rentalEngaged();
-  wrap.appendChild(blank ? blankColEl() : memberCardEl(active, session));
+  const card = blank ? blankColEl() : memberCardEl(active, session);
+  card.insertBefore(colTabsEl(col, active, session), card.firstChild);   // toggles live INSIDE the card top
+  wrap.appendChild(card);
   return wrap;
 }
 function blankColEl() { const n = el('div', 'card blank-col'); return n; }
