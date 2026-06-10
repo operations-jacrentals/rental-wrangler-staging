@@ -11,7 +11,7 @@
   --bg: #0b0c0f; --bg-2: #101216; --panel: #15171c; --panel-2: #1b1e24;
   --card: #14161b; --card-head: #191c22;
   --line: #262a31; --line-soft: #1f232a;
-  --txt: #e9edf4; --txt-2: #a7afbc; --txt-3: #6b7480; --track: #22262e;
+  --txt: #e9edf4; --txt-2: #a7afbc; --txt-3: #6b7480; --track: #22262e; --on-orange: #1a1205;
 
   /* status colors (base = text/border tone, -bg = soft fill) */
   --green:#34d399;  --green-bg:rgba(52,211,153,.14);
@@ -42,7 +42,7 @@
   --bg:#eef1f6; --bg-2:#e6eaf1; --panel:#ffffff; --panel-2:#eef1f6;
   --card:#ffffff; --card-head:#eef1f6;
   --line:#cfd6e1; --line-soft:#e1e6ee;
-  --txt:#141821; --txt-2:#414b5a; --txt-3:#69727f; --track:#d3d9e3;
+  --txt:#141821; --txt-2:#414b5a; --txt-3:#69727f; --track:#d3d9e3; --on-orange:#2a1400;
   --shadow: 0 18px 40px -26px rgba(20,30,60,.35);
   /* darker, saturated status colors so pill TEXT reads on the light -bg fills */
   --green:#0c8f5f; --yellow:#956f00; --red:#d52a2a; --blue:#1864d6; --navy:#2f4496;
@@ -159,10 +159,10 @@ input { font-family: inherit; }
 }
 .tab:hover { border-color: var(--accent-line); }
 /* active item tab — solid orange + white, matching the .coltab.on card toggle */
-.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }   /* solid fill is the highlight; no shadow (the rail clips overflow → hard cutoff) */
-.tab.active .tab-name { color: #fff; }
-.tab.active .pill { background: rgba(255,255,255,.22); color: #fff; border-color: transparent; box-shadow: none; }
-.tab.active .pill .dot { background: #fff; }
+.tab.active { background: var(--accent); border-color: var(--accent); color: var(--on-orange); }   /* selected = solid orange + DARK ink (rule 2) */
+.tab.active .tab-name { color: var(--on-orange); }
+.tab.active .pill { background: rgba(0,0,0,.16); color: var(--on-orange); border-color: transparent; box-shadow: none; }
+.tab.active .pill .dot { background: var(--on-orange); }
 .tab .tab-name { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
 .tab .pill { flex: 0 0 auto; }
 
@@ -178,7 +178,7 @@ input { font-family: inherit; }
 .iconbtn.primary { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); gap: 4px; }
 .iconbtn.off { color: var(--txt-3); }   /* previews toggled off */
 /* .on = a +X mode is currently active (header split button / Wash button light up). */
-.iconbtn.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.iconbtn.on { background: transparent; border-color: var(--accent); color: var(--accent); }   /* rule 4: armed mode = orange OUTLINE */
 .toolbar .js-theme, .toolbar .js-qr { width: 38px; padding: 0; color: var(--txt-2); }   /* icon-only chips */
 .toolbar .js-theme:hover, .toolbar .js-qr:hover { color: var(--accent); }
 
@@ -253,16 +253,16 @@ input { font-family: inherit; }
   font-weight: 700; font-size: 13px; line-height: 1; white-space: nowrap; transition: color .12s, background .12s;
 }
 .coltab:hover { color: var(--txt); }
-.coltab.on { background: var(--accent); color: #fff; }
+.coltab.on { background: var(--accent); color: var(--on-orange); }   /* selected = solid orange + DARK ink (rule 2) */
 .coltab.compact { padding: 7px 10px; }
 .coltab .ct-lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .coltab .ct-ico { display: inline-flex; flex: 0 0 auto; } .coltab .ct-ico svg { width: 16px; height: 16px; }
 .coltab .ct-n { font-size: 11px; font-weight: 700; color: var(--txt-3); background: var(--bg-2); padding: 1px 8px; border-radius: 999px; }
-.coltab.on .ct-n { color: #fff; background: rgba(255,255,255,.28); }
+.coltab.on .ct-n { color: var(--on-orange); background: rgba(0,0,0,.16); }
 /* red "needs work" alert on a Shop tab (pending inspections / open WOs / overdue service) */
-.coltab.alert:not(.on) { color: var(--red); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
+.coltab.alert:not(.on) { color: var(--txt); background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--red); }   /* rule 1: red border + red icon + light ink + dark bg */
 .coltab.alert:not(.on) .ct-ico { color: var(--red); }
-.coltab.alert .ct-n { color: #fff; background: var(--red); }
+.coltab.alert .ct-n { color: var(--txt); background: transparent; }
 /* prominent orange action button — mirrors the Select-rental-window button */
 .bigbtn { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 13px 16px;
   border-radius: 12px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent);
@@ -552,8 +552,18 @@ input { font-family: inherit; }
   box-shadow: 0 1px 2px rgba(0,0,0,.25); border: 1px solid transparent; cursor: pointer;
 }
 .pill .dot { width: 6px; height: 6px; border-radius: 50%; }
-.pill.ref { background: var(--panel-2); border-color: var(--line); color: var(--txt); }   /* reference pill */
+.pill.ref { background: var(--panel-2); border-color: var(--line); color: var(--txt); }   /* reference pill (generic / action — stays neutral) */
 .pill.ref:hover { border-color: var(--accent-line); }
+/* ── design-overhaul opt-in modifiers — added so we never blanket-restyle the shared .pill.ref base ── */
+.pill.ref.link { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }   /* rule 7/9/19: LINKED record = orange outline + orange ink */
+.pill.ref.link:hover { border-color: var(--accent); filter: brightness(1.06); }
+.pill.c-commit { background: var(--blue); color: #fff; border-color: transparent; }                          /* rule 17: Done/Save = blue */
+.pill.c-money  { background: var(--green); color: #04150d; border-color: transparent; font-weight: 800; }    /* rule 23: charge / take payment = green */
+.req { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 10px; background: #fff; color: #16181d; border: 1px solid #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }  /* rule 15/16/22: required-until-entered = white bg + dark ink */
+.req svg { width: 15px; height: 15px; }
+.linkname { color: var(--blue); font-weight: 700; text-decoration: none; cursor: pointer; }                  /* rule 25: line-item name = hyperlink */
+.linkname:hover { text-decoration: underline; }
+.boldlight { font-weight: 700; color: var(--txt); }                                                          /* rule 12: value after entry */
 .pill .x { margin-left: 2px; opacity: .6; font-weight: 800; }
 .pill .x:hover { opacity: 1; color: var(--red); }
 .pill svg { width: 12px; height: 12px; flex: 0 0 auto; }
@@ -605,6 +615,7 @@ input { font-family: inherit; }
 .kv .pfx { color: var(--txt-3); font-size: 12px; font-weight: 600; }     /* leading qualifier: Start, Return */
 .kv .v.big { font-size: 15px; }
 .kv .v.muted { color: var(--txt-3); font-weight: 500; }
+.kv.derived > .v, .kv.derived .sfx, .v.derived { font-style: italic; }   /* rule 13/20/21/27: derived/formulaic values italic */
 /* Active-Status spectrum bar (§6.2 #8) — fill = % active (clipped), same as the
    list-view row background; the % is overlaid on the right. */
 .active-bar { position: relative; width: 100%; height: 16px; border-radius: 8px; background: var(--track); overflow: hidden; margin-top: 2px; }
@@ -645,7 +656,7 @@ input { font-family: inherit; }
 .winpicker { border: 1px solid var(--accent); border-radius: 12px; background: var(--panel); padding: 10px; box-shadow: 0 22px 48px -18px rgba(0,0,0,.7), 0 0 0 2px var(--accent-line), 0 0 26px -4px rgba(255,122,26,.5); }
 .winpicker .wp-time { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; padding-bottom: 9px; border-bottom: 1px solid var(--line-soft); }
 .winpicker .wp-time label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .4px; color: var(--txt-3); }
-.winpicker .wp-time input[type="time"] { height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--txt); font: inherit; font-size: 13px; padding: 0 8px; color-scheme: dark; }
+.winpicker .wp-time input[type="time"] { height: 30px; border-radius: 8px; border: 1px solid #fff; background: #fff; color: #16181d; font: inherit; font-size: 13px; padding: 0 8px; color-scheme: light; }   /* rule 16: required input = white until entered */
 [data-theme="light"] .winpicker .wp-time input[type="time"] { color-scheme: light; }
 .winpicker .wp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
 .winpicker .wp-month { font-size: 13px; font-weight: 800; }
@@ -665,7 +676,7 @@ input { font-family: inherit; }
 .winpicker .wp-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
 .winpicker .wp-foot button { height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--txt-2); font-size: 12px; font-weight: 700; cursor: pointer; }
 .winpicker .wp-foot button:hover { color: var(--txt); border-color: var(--accent-line); }
-.winpicker .wp-foot .js-wp-done { background: var(--accent); color: #fff; border-color: var(--accent); }
+.winpicker .wp-foot .js-wp-done { background: var(--blue); color: #fff; border-color: var(--blue); }   /* rule 17: Done/Save = blue */
 
 /* §0.3 pick mode — banner + the highlighted source card */
 .pickbar { display: flex; align-items: center; gap: 10px; margin: 12px 12px 0; padding: 10px 14px; border-radius: 12px; background: var(--accent-soft); border: 1px solid var(--accent-line); box-shadow: var(--chip-shadow); }
@@ -700,7 +711,8 @@ input { font-family: inherit; }
 .hitem { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--txt-2); flex-wrap: wrap; }
 .hitem .htime { color: var(--txt-3); font-size: 11px; min-width: 92px; flex: 0 0 auto; }
 .hitem .hby { margin-left: auto; flex: 0 0 auto; font-size: 10px; font-weight: 700; color: var(--txt-3); background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
-.inv-line-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.inv-line-link { color: var(--blue); font-weight: 700; cursor: pointer; text-decoration: none; }   /* rule 25: hyperlink */
+.inv-line-link:hover { text-decoration: underline; }
 .hitem .line-x { cursor: pointer; opacity: .45; font-weight: 800; font-size: 11px; margin-left: 4px; flex: 0 0 auto; }
 .hitem .line-x:hover { opacity: 1; color: var(--red); }
 
@@ -955,5 +967,6 @@ select.nc-in { cursor: pointer; }
 .login-err { font-size: 12px; font-weight: 600; color: var(--red); text-align: center; }
 
 /* §7.1 — "+ Add phone/email/…" placeholder for an empty click-to-edit field */
-.add-field { color: var(--txt-3); font-weight: 500; }
+.add-field { color: var(--txt-2); font-weight: 700; border: 1px dashed var(--line); border-radius: 11px; padding: 0 12px; height: 30px; display: inline-flex; align-items: center; }   /* rule 8/12: dashed light add-affordance */
+.add-field:hover { border-color: var(--accent-line); }
 .inline-edit:hover .add-field { color: var(--accent); }
