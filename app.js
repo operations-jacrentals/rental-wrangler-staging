@@ -2013,7 +2013,6 @@ function memberCardEl(member, session) {
 function calendarCardEl(session) {
   const node = el('div', 'card' + (state.searchMode ? ' search-glow' : ''));
   node.dataset.card = 'calendar';
-  appendItemTabs(node, 'calendar');                           // (calendar has no record tabs)
   // no card title — the column tab already says "Calendar" (#2.3)
   const body = el('div', 'card-body cal-body');
   body.innerHTML = dispatchGridBody();
@@ -2029,7 +2028,6 @@ function cardEl(cardDef, session) {
   const pickTarget = state.pick && PICK_SRC[state.pick.slot] === card;
   const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === card ? ' card-focus' : '') + (pickTarget ? ' pick-target' : ''));
   node.dataset.card = card;
-  appendItemTabs(node, card);                                 // item tabs ride atop their parent card (#3)
 
   // §5.4: global search forces EVERY card into list view (the prior standard/anchor
   // state is untouched, so exiting search restores the session for free).
@@ -2210,7 +2208,6 @@ function shopCardEl(cardDef, session, forcedSeg) {
   const woPick = state.pick && state.pick.slot === 'wo';
   const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === 'shop' ? ' card-focus' : '') + (woPick ? ' pick-target' : ''));
   node.dataset.card = 'shop';
-  appendItemTabs(node, 'shop');                               // item tabs atop their parent card (#3)
 
   const inStandard = !state.searchMode && cs.mode === 'standard' && cs.recId != null && cs.recType;
   // List mode → no header (column tab names it). Standard → slim header: record name
@@ -2449,7 +2446,7 @@ function kpiTeam() {
 function headerEl() {
   const h = el('div', 'header');
   const roleRing = (id, label, vals, color) => `<button class="kpi-ring js-ring" data-role="${id}">
-      <span class="ring-wrap">${ring3SVG(vals, color, { size: 54 })}</span>
+      <span class="ring-wrap">${ring3SVG(vals, color, { size: 64 })}</span>
       <span class="ring-label">${esc(label)}</span>
     </button>`;
   const rings = ROLES.map((role) => roleRing(role.id, role.label, kpiFor(role.id), role.color)).join('');
@@ -2511,18 +2508,6 @@ function tabStrip(tabs) {
       <span class="tab-name">${esc(t.label)}</span>${b}</div>`;
   }).join('');
 }
-// Which GRID card an item tab belongs to (shop sub-types → the 'shop' card).
-const tabHomeCard = (t) => ((t.card === 'shop' || SHOP_TYPES.includes(t.card)) ? 'shop' : t.card);
-// Item tabs ride at the top of THEIR PARENT card only (still global — clicking one
-// switches the whole session). Collapses to nothing when that card has no tabs (#3).
-function appendItemTabs(node, cardId) {
-  const tabs = state.tabs.filter((t) => tabHomeCard(t) === cardId);
-  if (!tabs.length) return;
-  const it = el('div', 'tabstrip card-itemtabs');
-  it.innerHTML = tabStrip(tabs);
-  node.appendChild(it);
-}
-
 // Inner markup for a Mouse-shortcuts gesture demo (mock cards/rows + cursor/mouse + rings).
 function hkDemoInner(d) {
   const ptr = '<div class="hk-ptr"><svg class="hk-arrow" viewBox="0 0 24 24" width="14" height="14"><path d="M5 2 L5 19 L9.4 14.6 L12.4 21 L15 20 L12 13.6 L18 13.6 Z"/></svg></div>';

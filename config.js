@@ -390,6 +390,12 @@ export function invoiceId(iso, seq) {
 export const invoiceShort = (id) => { id = String(id || ''); return id.length > 6 ? id.slice(0, -6) : id; };
 
 /* ── Misc constants ──────────────────────────────────────────────────────── */
-export const TODAY_ISO = '2026-06-07';     // demo "today" (matches session date)
+// Live "today" — the real local date, so the window picker, Today/Tomorrow badges,
+// invoice aging, the monthly Revenue Goal, and weekend rates all track the actual day.
+// (Was a frozen demo date '2026-06-07'; seeded demo rentals now read relative to today.)
+export const TODAY_ISO = (() => {
+  const d = new Date(), p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+})();
 export const REVENUE_GOAL_DEFAULT = 150000; // SPEC §10 Revenue Goal default
 export const PERF_BUDGET_MS = 100;          // SPEC §3 hard interaction budget
