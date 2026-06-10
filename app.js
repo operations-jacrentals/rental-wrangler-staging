@@ -1146,6 +1146,7 @@ const CARD_COLUMNS = {
     C('phone', 'Phone', 'text', (c) => c.phone || ''),
     C('account', 'Account', 'badge', (c) => c.accountType || '', { set: 'customerAccountType' }),
     C('pay', 'Pay status', 'badge', (c) => c.payStatus || '', { set: 'customerPayStatus' }),
+    C('card', 'Card', 'badge', (c) => CARD_FLAG_META[cardFlag(c)].label, { meta: (k) => ({ label: k, color: ({ 'Card OK': 'green', 'Card Expiring': 'yellow', 'No Card': 'red' }[k] || 'gray') }) }),
     C('rentals', 'Active rentals', 'num', (c) => DATA.rentals.filter((r) => r.customerId === c.customerId && ACTIVE_RENTAL.has(r.status) && r.status !== 'Quote').length, { agg: 'sum' }),
     C('email', 'Email', 'text', (c) => c.email || ''),
   ],
@@ -3511,6 +3512,27 @@ function startInlineEdit(span) {
   input.addEventListener('blur', commit);
 }
 
+const BOOKING_STATUSES = ['On Rent', 'Reserved', 'Today', 'Tomorrow'];
+/** Verify an Admin password (reuses the Settings gate), then run onOk. Demo/offline → allowed. */
+async function requireAdmin(reason, onOk) {
+  const pw = (currentRole === 'Admin' || currentRole === 'Owner') ? backendPassword
+    : (window.prompt((reason ? reason + '\n\n' : '') + 'Enter an Admin password to override:') || '');
+  if (!pw && backendPassword) return;
+  if (!backendPassword) { onOk(); return; }          // demo: no backend to verify against
+  try { const r = await backendCall('getConfig', { password: pw }); if (r && r.ok) onOk(); else toast('Not an Admin password — override denied.'); }
+  catch (e) { toast('Couldn’t verify the password — try again.'); }
+}
+/** Block on no-valid-card: Admin override unblocks this rental + logs it. */
+function cardOverrideRental(rentalId, val) {
+  const r = IDX.rental.get(rentalId); if (!r) return;
+  const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
+  requireAdmin(`${cust ? cust.name : 'This customer'} has no valid card on file — booking is blocked.`, () => {
+    r.cardOverride = true;
+    logAction(r, `Admin override — booked ${getStatus('rentalStatus', val).label} with no valid card on file`);
+    if (cust) logAction(cust, 'Admin override used to book a rental without a valid card');
+    setRentalStatus(rentalId, val);
+  });
+}
 function setRentalStatus(rentalId, val) {
   const r = IDX.rental.get(rentalId);
   if (!r) return;
@@ -3518,6 +3540,11 @@ function setRentalStatus(rentalId, val) {
   // §9 hard gates
   if (val === 'On Rent' && !r.invoiceId) { toast('Blocked: "On Rent" requires a linked invoice (§9).'); return; }
   if (['On Rent', 'Reserved'].includes(val) && cust && /Blacklist/i.test(cust.accountType || '')) { toast('Blocked: customer is blacklisted (§9).'); return; }
+  // §14 — a booking requires a valid card on file by default; an Admin can override.
+  if (BOOKING_STATUSES.includes(val) && cust && !hasValidCard(cust) && !r.cardOverride) {
+    toast(`${cust.name} has no valid card on file — Admin override required.`);
+    return cardOverrideRental(rentalId, val);
+  }
   r.status = val;
   reindex('rentals', r);
   logAction(r, `Status → ${getStatus('rentalStatus', val).label}`);
