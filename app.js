@@ -3693,10 +3693,20 @@ function saveNewCustomer() {
  * owns the money math — the client never sends an amount.
  * ════════════════════════════════════════════════════════════════════════ */
 let _stripe = null, _cardElements = null, _cardElement = null;
+// The publishable key comes from the backend (Script Property STRIPE_PUBLISHABLE_KEY)
+// so the client runs in the SAME mode as the secret. Falls back to config.js (demo).
+let _pubKey = null, _pubKeyLoaded = false;
+async function ensurePubKey() {
+  if (_pubKeyLoaded) return;
+  _pubKeyLoaded = true;
+  if (typeof backendPassword === 'undefined' || !backendPassword) return;   // demo / no backend → config.js fallback
+  try { const r = await backendCall('stripePubKey'); if (r && r.ok && r.pubKey && r.pubKey !== _pubKey) { _pubKey = r.pubKey; _stripe = null; } } catch (e) { /* offline → config.js fallback */ }
+}
 function getStripe() {
   if (_stripe) return _stripe;
-  if (typeof Stripe === 'undefined' || !CFG.STRIPE_PUBLISHABLE_KEY) { toast('Payment library not ready yet — try again in a moment.'); return null; }
-  try { _stripe = Stripe(CFG.STRIPE_PUBLISHABLE_KEY); } catch (e) { toast('Could not start the payment library.'); return null; }
+  const pk = _pubKey || CFG.STRIPE_PUBLISHABLE_KEY;
+  if (typeof Stripe === 'undefined' || !pk) { toast('Payment library not ready yet — try again in a moment.'); return null; }
+  try { _stripe = Stripe(pk); } catch (e) { toast('Could not start the payment library.'); return null; }
   return _stripe;
 }
 // Only Office/Admin take payments. In #local demo (no role) we still show the UI.
@@ -3721,8 +3731,8 @@ function friendlyPayErr(r) {
   })[code] || 'Payment failed — try again or use another card.';
 }
 
-function openAddCard(customerId, opts) { openOverlay({ kind: 'addCard', customerId, returnTo: (opts && opts.returnTo) || '', invoiceId: (opts && opts.invoiceId) || '' }); }
-function openPayInvoice(invoiceId) { openOverlay({ kind: 'payment', invoiceId, busy: false, error: '' }); }
+async function openAddCard(customerId, opts) { await ensurePubKey(); openOverlay({ kind: 'addCard', customerId, returnTo: (opts && opts.returnTo) || '', invoiceId: (opts && opts.invoiceId) || '' }); }
+async function openPayInvoice(invoiceId) { await ensurePubKey(); openOverlay({ kind: 'payment', invoiceId, busy: false, error: '' }); }
 
 // Mount the Stripe Card Element into the open addCard overlay (called post-append,
 // like setupSignaturePad). Recreated per open; destroyed on close.
