@@ -989,6 +989,66 @@ function ghostPill(label, { js, data } = {}) {
   return `<button class="pill ghost${js ? ' ' + js : ''}" data-r="R18"${dataAttrs(data)}>${esc(label)}</button>`;
 }
 
+/* ── THE RULEBOOK METADATA (SPEC v7) — feeds the Design Inspector + the
+   visual Rulebook overlay. One row per rule: [name, builder, one-liner]. ── */
+const RULE_META = {
+  R0:  ['Flash-lint', 'body.rw-lint (CSS)', 'un-stamped UI pulses red — it bypassed the builders'],
+  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
+  R2:  ['Linked pill', 'refPill / unitPill', 'orange outline + DESTINATION-card icon — opens a record; optional ✕'],
+  R3:  ['Status badge', 'statusPill / badge', 'informational status, parent-card icon, one font size — never an action'],
+  R4:  ['Derived pill', 'dPill', 'rides another pill: no bg/border, ink+icon only, sits RIGHT of its parent'],
+  R5:  ['Add affordance', 'addBtn / efld empty state', 'dashed “+Thing” (no “Add”, no space) — orange ink when it links/creates'],
+  R6:  ['Required', 'reqBtn / .req', 'white + dark ink until entered/captured — stays loud'],
+  R7:  ['Hyperlink', 'linkName / .inv-line-link', 'blue · italic · NOT bold · permanent underline'],
+  R8:  ['Derived value', 'kv({derived}) / .derived', 'italic = the app computed it; you don’t type it'],
+  R9:  ['Title flags', 'flagEl / flagsStack', '≤2 stacked 14px mini-flags beside a title — no backgrounds'],
+  R10: ['S1 title chip', '.c-titlecard (cardEl)', 'dark chip · white bold label · plain orange icon · permanent orange border'],
+  R11: ['Section', '.section + sec-green/yellow/red', 'centered header; header+border follow the LIVE status'],
+  R12: ['Notes line', 'notesSection', 'boxless, label-less; filled→top of the card, empty→bottom above history'],
+  R13: ['History', 'historySection', 'count chips above the search bar filter inline; record-backed links only'],
+  R14: ['Seg toggle', 'segCtl', '3-state segmented control (condition · wash)'],
+  R15: ['Journey', 'yardToolHtml / miniJourneyHtml', 'yard +Start/+FC/+End + Jac─Site─Jac transport; white = video owed'],
+  R16: ['Day timeline', 'DETAIL.rentals timeline', 'the rental window in day cells; centered gate + naked price·rate'],
+  R17: ['Action pill', 'actionPill', 'commit = blue · money = green · danger = solid red; .locked = gated'],
+  R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear'],
+};
+/* structural fallbacks so hovering containers also names their rule */
+const CLASS_RULE = [
+  ['.c-titlecard', 'R10'], ['.nsec', 'R12'], ['.hvals', 'R13'], ['.history', 'R13'],
+  ['.timeline', 'R16'], ['.jnode', 'R15'], ['.jseg', 'R15'], ['.journey', 'R15'],
+  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.section', 'R11'],
+];
+function ruleOf(target) {
+  if (!target || !target.closest) return null;
+  const stamped = target.closest('[data-r]');
+  if (stamped) return { r: stamped.dataset.r, el: stamped };
+  for (const [sel, r] of CLASS_RULE) { const m = target.closest(sel); if (m) return { r, el: m }; }
+  const fam = target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req');
+  if (fam) return { r: null, el: fam };            // lint family, unstamped = violation
+  return null;
+}
+/* human-readable reference: CARD › SECTION › "text" — what Jac pastes to debug */
+function refPath(el) {
+  const card = el.closest('[data-card]')?.dataset.card;
+  const sec = el.closest('.section')?.querySelector('h4')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 26);
+  const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 28);
+  return [card ? card.toUpperCase() : null, sec || null, txt ? `“${txt}”` : null].filter(Boolean).join(' › ');
+}
+function onInspectMove(e) {
+  if (!state.inspect) return;
+  let t = document.getElementById('rw-tip');
+  if (!t) { t = document.createElement('div'); t.id = 'rw-tip'; document.body.appendChild(t); }
+  const hit = ruleOf(e.target);
+  if (!hit || e.target.closest('#rw-tip, .overlay')) { t.style.display = 'none'; return; }
+  const meta = hit.r ? RULE_META[hit.r] : null;
+  t.innerHTML = hit.r
+    ? `<b>${esc(hit.r)}</b> ${esc(meta ? meta[0] : '')}<span class="rt-b">${esc(meta ? meta[1] : '')}</span>`
+    : `<b class="bad">⚠ NO RULE</b> bypassed the builders (R0)`;
+  t.style.display = 'block';
+  t.style.left = Math.min(e.clientX + 14, window.innerWidth - 250) + 'px';
+  t.style.top = Math.min(e.clientY + 18, window.innerHeight - 56) + 'px';
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    §6 LIST ROWS — row meta + the universal row template
    ════════════════════════════════════════════════════════════════════════ */
@@ -2853,7 +2913,9 @@ function bottomBarEl() {
     <button class="iconbtn${state.previewsOn ? '' : ' off'} js-previews" data-tip="${state.previewsOn ? 'Hover previews: on' : 'Hover previews: off'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
     <button class="iconbtn js-feedback" data-tip="Report a bug or request">${I.feedback}</button>
     <button class="iconbtn js-hotkeys" data-tip="Mouse &amp; keyboard shortcuts">${I.mouse}</button>
-    <button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>`;
+    <button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
+    <button class="iconbtn js-inspect${state.inspect ? ' on' : ''}" data-tip="Design Inspector — hover names the rule, click copies the reference">${I.search}</button>
+    <button class="iconbtn js-rulebook" data-tip="The R-Rulebook — visual design reference (SPEC v7)">${I.doc}</button>`;
   return bar;
 }
 function tabStrip(tabs) {
@@ -2960,6 +3022,44 @@ function renderOverlay() {
         <img class="qr-img" alt="QR code" src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&bgcolor=15171c&color=ff7a1a&data=${encodeURIComponent(url)}" width="220" height="220" style="border-radius:12px;background:var(--panel-2)" />
         <p class="muted" style="margin-top:10px;font-size:12px;word-break:break-all">${esc(url)}</p>
         <p class="muted" style="margin-top:6px;font-size:11px">${esc(o.caption || 'Scan to open this session on another device (single shared login — §1/§4.2).')}</p>
+      </div>`;
+    overlay.appendChild(pop);
+  } else if (o.kind === 'rulebook') {
+    // THE VISUAL RULEBOOK (SPEC v7) — every example is emitted by the REAL
+    // builder, so this reference can never drift from the code.
+    const EX = {
+      R0: '<span class="pill c-gray" style="outline:2px dashed var(--red);outline-offset:2px;animation:rwLint 2.2s ease-in-out infinite"><span class="t">unstamped</span></span>',
+      R1: gatePill('rentalStatus', 'On Rent', '', {}),
+      R2: refPill('units', '', 'Shrek') + refPill('customers', '', 'Devin Lyles'),
+      R3: statusPill('unitInspectionStatus', 'Ready') + badge('480 HRS'),
+      R4: dPill('Lift Scissor 26ft', 'orange', { icon: CARD_ICON.categories }) + dPill('Partial', 'yellow', { icon: CARD_ICON.invoices }),
+      R5: addBtn('Customer', { link: true, h: 26 }) + addBtn('Serial', { h: 26 }) + addBtn('Part/Task', { anchor: true, h: 26 }),
+      R6: reqBtn('PO #'),
+      R7: linkName('Shrek · Jun 02–Jun 12'),
+      R8: '<span class="derived">$2,610 · 7-Day×1 + 1-Day×3</span>',
+      R9: flagsStack([flagEl('Ready', 'green', { icon: CARD_ICON.inspections }), flagEl('ETA Jun 18', 'yellow', { icon: CARD_ICON.workOrders })]),
+      R10: '<span class="c-titlecard"><span class="c-icon">' + CARD_ICON.units + '</span><span class="c-title">Beacon</span></span>',
+      R11: '<span style="display:inline-block;border:1px solid color-mix(in srgb, var(--green) 45%, transparent);border-radius:9px;padding:4px 14px;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--green)">INSPECTION</span>',
+      R12: '<span class="add-field" data-r="R5" style="height:24px;font-size:11px">+Notes</span><span class="muted" style="font-size:11px"> (boxless line)</span>',
+      R13: '<button class="hv g on" style="font-size:11px;font-weight:700;border:1px solid var(--accent);border-radius:99px;padding:2px 8px;background:none;color:var(--accent)">12 Inspections</button>',
+      R14: segCtl([{ label: '✓ Pass', on: 'green' }, { label: 'Not Ready' }, { label: '✕ Fail' }]),
+      R15: '<span style="display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;background:#fff;color:#16181d">' + I.video + '</span><span style="border-top:2px dotted var(--line);width:34px;display:inline-block;vertical-align:middle;margin:0 4px"></span><span style="display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;background:var(--green-bg);color:var(--green)">✓</span>',
+      R16: '<span style="display:inline-flex;height:22px;width:120px;border:1px solid var(--line);border-radius:7px;overflow:hidden"><span style="flex:1;background:var(--green-bg);border-right:1px dashed var(--line-soft)"></span><span style="flex:1;background:var(--green-bg);border-right:1px dashed var(--line-soft)"></span><span style="flex:1;border-right:1px dashed var(--line-soft)"></span><span style="flex:1"></span></span>',
+      R17: actionPill('commit', 'Done') + actionPill('money', 'Pay $210') + actionPill('danger', 'Refund'),
+      R18: ghostPill('Cancel'),
+    };
+    const rows = Object.keys(RULE_META).map((r) => `
+      <div class="rb-row">
+        <span class="rb-id">${r}</span>
+        <div class="rb-ex">${EX[r] || '<span class="muted">—</span>'}</div>
+        <div class="rb-info"><b>${esc(RULE_META[r][0])}</b> · <code>${esc(RULE_META[r][1])}</code><div class="muted" style="font-size:11px">${esc(RULE_META[r][2])}</div></div>
+      </div>`).join('');
+    const pop = el('div', 'popup'); pop.style.width = '620px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${I.doc}</span><h3>The R-Rulebook — SPEC v7</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body" style="max-height:70vh;overflow-y:auto">
+        <p class="muted" style="font-size:12px;margin-bottom:10px">Every example below is rendered by the REAL builder function — this reference can't drift from the app. Debug by rule: <b>“the X on the customer card violates R5.”</b> Use the 🔍 Inspector (bottom bar) to hover any element and copy its reference.</p>
+        ${rows}
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'capture') {
@@ -3685,6 +3785,21 @@ function onClick(e) {
   const t = e.target;
   const closest = (sel) => t.closest(sel);
 
+  // ── DESIGN INSPECTOR intercept (SPEC v7): while inspecting, clicking any
+  // rule-bearing element COPIES its reference instead of acting — the exact
+  // string Jac pastes to debug ("R4 · Derived pill — RENTALS › RENTAL › …").
+  if (state.inspect && !closest('.js-inspect, .js-lint, .js-rulebook, .js-theme, .overlay, #rw-tip')) {
+    const hit = ruleOf(t);
+    if (hit) {
+      e.preventDefault(); e.stopPropagation();
+      const meta = hit.r ? RULE_META[hit.r] : null;
+      const ref = `${hit.r ? `${hit.r} · ${meta[0]}` : '⚠ NO RULE (R0 violation)'} — ${refPath(hit.el)}`;
+      try { navigator.clipboard.writeText(ref); } catch (err) {}
+      toast(`📋 Copied: ${ref}`);
+      return;
+    }
+  }
+
   // clicked card → orange-border focus (§0.1 visual feedback; applied immediately,
   // independent of whatever else this click does — anchor stays a separate action)
   const fc = closest('.card');
@@ -3777,6 +3892,14 @@ function onClick(e) {
     toast(on ? 'Design lint ON — anything flashing bypassed the UI builders.' : 'Design lint off.');
     return render();
   }
+  if (closest('.js-inspect')) {   // Design Inspector — hover names rules, click copies references
+    state.inspect = !state.inspect;
+    document.body.classList.toggle('rw-inspect', state.inspect);
+    if (!state.inspect) { const t = document.getElementById('rw-tip'); if (t) t.style.display = 'none'; }
+    toast(state.inspect ? '🔍 Inspector ON — hover anything to see its rule; CLICK to copy the reference for Claude. (Esc exits.)' : 'Inspector off.');
+    return render();
+  }
+  if (closest('.js-rulebook')) return openOverlay({ kind: 'rulebook' });
   if (closest('.js-feedback')) { e.stopPropagation(); return openOverlay({ kind: 'feedback', fbType: 'Bug', text: '', shot: '', error: '', busy: false }); }
   if (closest('.js-fb-type')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'feedback') { const ta = document.querySelector('.overlay .js-fb-text'); if (ta) o.text = ta.value; o.fbType = closest('.js-fb-type').dataset.val; renderOverlay(); } return; }
   if (closest('.js-fb-shot-x')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'feedback') { const ta = document.querySelector('.overlay .js-fb-text'); if (ta) o.text = ta.value; o.shot = ''; renderOverlay(); } return; }
@@ -5375,6 +5498,7 @@ function boot() {
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
+  document.addEventListener('mousemove', onInspectMove);   // Design Inspector hover tag (no-op unless state.inspect)
   // Board View formula cells: reveal the raw "=…" on focus, recompute on blur.
   document.addEventListener('focusin', (e) => {
     const t = e.target; if (t && t.classList && t.classList.contains('bv-scratch') && t.dataset.raw) t.textContent = t.dataset.raw;
@@ -5397,6 +5521,12 @@ function boot() {
     if (t.classList.contains('bv-colname') && (t.value || '').trim().startsWith('=')) renderOverlay();
   });
   document.addEventListener('keydown', (e) => {
+    // Esc exits the Design Inspector first (SPEC v7)
+    if (e.key === 'Escape' && state.inspect) {
+      state.inspect = false; document.body.classList.remove('rw-inspect');
+      const tip = document.getElementById('rw-tip'); if (tip) tip.style.display = 'none';
+      toast('Inspector off.'); render(); return;
+    }
     // §5.4 — the search bar IS the filter builder: Enter locks the current text in as
     // an AND-narrowing pill (clearing the input), Backspace-on-empty pops the last pill.
     if (e.target.id === 'globalsearch') {

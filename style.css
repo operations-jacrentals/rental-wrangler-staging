@@ -961,6 +961,32 @@ body.rw-lint .seg:not([data-r]) {
 }
 @keyframes rwLint { 50% { outline-color: transparent; } }
 
+/* ── DESIGN INSPECTOR (SPEC v7) — hover names the rule, click copies the
+   reference. #rw-tip = the floating rule tag; .rb-* = the Rulebook overlay. ── */
+#rw-tip { position: fixed; z-index: 200; display: none; pointer-events: none; max-width: 240px;
+  background: var(--card); border: 1px solid var(--accent-line); border-radius: 10px;
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); padding: 6px 10px;
+  font-size: 11px; font-weight: 600; color: var(--txt); }
+#rw-tip b { color: var(--accent); font-weight: 800; margin-right: 5px; }
+#rw-tip b.bad { color: var(--red); }
+#rw-tip .rt-b { display: block; font-size: 9.5px; color: var(--txt-3); font-family: ui-monospace, monospace; }
+body.rw-inspect .pill, body.rw-inspect .add-field, body.rw-inspect .flag,
+body.rw-inspect .linkname, body.rw-inspect .inv-line-link, body.rw-inspect .req,
+body.rw-inspect .seg, body.rw-inspect .jnode, body.rw-inspect .c-titlecard { cursor: help !important; }
+body.rw-inspect .pill:hover, body.rw-inspect .add-field:hover, body.rw-inspect .flag:hover,
+body.rw-inspect .linkname:hover, body.rw-inspect .req:hover, body.rw-inspect .seg:hover,
+body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset: 2px; }
+.iconbtn.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+/* Rulebook overlay rows */
+.rb-row { display: grid; grid-template-columns: 44px 200px 1fr; gap: 12px; align-items: center;
+  padding: 9px 2px; border-bottom: 1px solid var(--line-soft); }
+.rb-row:last-child { border-bottom: none; }
+.rb-id { font-size: 12px; font-weight: 800; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); border-radius: 8px; padding: 3px 0; text-align: center; }
+.rb-ex { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
+.rb-info { font-size: 12px; min-width: 0; }
+.rb-info code { font-size: 10px; color: var(--txt-3); font-family: ui-monospace, monospace; }
+
 /* ── §13 v2 BUILD: gate pills · derived pills · flags · section colors ·
       timeline · yard/transport journeys · history chips · WO grid · toggles
       (spec: drafts/units-rentals-v2.html + HANDOFF "design source of truth") ── */
