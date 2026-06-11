@@ -198,7 +198,7 @@ h2 .no{color:var(--accent)}
 .derived{font-style:italic;color:var(--txt-2)}
 .boldlight{font-weight:700;color:var(--txt)}
 /* hyperlinks: NOT bold, italic, SMALL — regular information, not a button (redlines A3 + v2.1) */
-.linkname{color:var(--blue);font-weight:400;font-style:italic;font-size:12px;cursor:pointer}.linkname:hover{text-decoration:underline}
+.linkname{color:var(--blue);font-weight:400;font-style:italic;font-size:12px;cursor:pointer;text-decoration:underline}.linkname:hover{filter:brightness(1.15)}
 .muted{color:var(--txt-3);font-size:12px}
 
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 14px;border-radius:10px;border:1px solid transparent;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap}
@@ -553,7 +553,7 @@ h2 .no{color:var(--accent)}
 
       <!-- RENTAL (v2.7) — the DAY TIMELINE lives just under the section header;
            left actions · right balance; centered line items w/ ITEM BALANCES. -->
-      <div class="section sec-green"><h4>Rental</h4>
+      <div class="section sec-green">
         <div class="timeline" style="margin-bottom:11px" onclick="toast('opens the rental-window calendar (same as today)')">
           <div class="day past"><span class="dnum">Mo 01</span></div>
           <div class="day past"></div>
