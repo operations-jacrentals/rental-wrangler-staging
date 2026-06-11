@@ -61,8 +61,13 @@ h2 .no{color:var(--accent)}
 
 /* NOTES = a heading-only "section": no panel box, minimal height (redline 14/15) */
 .nsec{display:flex;align-items:center;gap:10px;padding:1px 2px}
-.nsec .nlbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--txt-3)}
+.nsec .nlbl,.jtool .nlbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--txt-3)}
 .nsec .ndot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:0 0 auto}
+
+/* YARD JOURNEY = boxless floating TOOL at the top of the UNITS card —
+   the unit's QR code lands mechanics here, so captures live on the unit. */
+.jtool{display:flex;flex-direction:column;gap:1px;padding:2px 2px 0}
+.jtool .jhead{display:flex;align-items:center;gap:10px}
 
 /* history — footer values anchored ABOVE the search bar; record-backed entries are links */
 .history{border-top:2px dotted var(--line);background:var(--bg-2);padding:12px;margin:0 -12px -12px}
@@ -276,7 +281,7 @@ h2 .no{color:var(--accent)}
 <!-- ════════════════ 2 · UNITS CARD v2 ════════════════ -->
 <section>
   <h2><span class="no">2 ·</span> Units card — v2</h2>
-  <p class="intro">Inspection toggles swapped (condition first, wash second), centered, 3-state, timestamp above. Inspection Status is a LIVE condition — while a WO created from an inspection is open, changing it is blocked with an explainer. Completed WOs live in History as links, not sections. The WO's own name is the section title; flags stack to its right with destination icons.</p>
+  <p class="intro">The YARD JOURNEY now lives HERE, floating boxless at the very top — the unit's printed QR code lands mechanics on this card, so +Start / +FC / +End captures attach to the UNIT (the tool shows which active rental it's feeding). Below it: inspection toggles swapped (condition first, wash second), centered, 3-state, timestamp above. Inspection Status is a LIVE condition — while a WO created from an inspection is open, changing it is blocked with an explainer. Completed WOs live in History as links, not sections. The WO's own name is the section title; flags stack to its right with destination icons.</p>
 
   <div class="lane" style="margin-top:14px">
   <div class="card">
@@ -294,6 +299,31 @@ h2 .no{color:var(--accent)}
       <div class="acts"><button class="iconbtn" title="list">≡</button><button class="iconbtn" title="anchor">◯</button><button class="iconbtn" title="new tab">+</button></div>
     </div>
     <div class="detail">
+
+      <!-- YARD JOURNEY — boxless floating tool at the TOP of the UNITS card.
+           The unit's printed QR code lands mechanics exactly here (Jac 2026-06-11). -->
+      <div class="jtool">
+        <div class="jhead">
+          <span class="nlbl">Yard</span>
+          <span class="dpill c-orange" style="margin-left:auto" title="the active rental these captures belong to — navigates to it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg><span class="t">Jun01-07: Mike Nixon</span></span>
+        </div>
+        <div class="journey">
+          <div class="jnode" id="j-start" onclick="jCapture(this,'Start video captured · rental → On Rent')">
+            <span class="jbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5-3v10l-5-3M3 6h12v12H3z"/></svg></span>
+            <span class="jlbl">+Start</span><span class="jts"></span>
+          </div>
+          <div class="jline" id="jl1"></div>
+          <div class="jnode fc" id="j-fc" onclick="jFC(this)">
+            <span class="jbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5-3v10l-5-3M3 6h12v12H3z"/></svg></span>
+            <span class="jlbl">+FC</span><span class="jts"></span>
+          </div>
+          <div class="jline" id="jl2"></div>
+          <div class="jnode" id="j-end" onclick="jCapture(this,'End video captured · rental → Returned · Complete Rental unlocks on the Rentals card')">
+            <span class="jbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5-3v10l-5-3M3 6h12v12H3z"/></svg></span>
+            <span class="jlbl">+End</span><span class="jts"></span>
+          </div>
+        </div>
+      </div>
 
       <!-- SECTION 1 · INSPECTION — condition toggle first, wash second, centered, timestamp above (redlines 2/4/5) -->
       <div class="section"><h4>Inspection <span class="right"><span class="linkname" onclick="toast('opens the inspection report / fail popup')">report</span></span></h4>
@@ -440,7 +470,7 @@ h2 .no{color:var(--accent)}
 <!-- ════════════════ 3 · RENTALS CARD v2 ════════════════ -->
 <section>
   <h2><span class="no">3 ·</span> Rentals card — v2</h2>
-  <p class="intro">Notes (filled) rides above the day timeline as a heading-only line. Timeline keeps day cells but only labels the first/last; price · status · time are centered. Derived pills (Ready, category, Partial) lost their backgrounds. Invoice link moved to the right column above Partial. Yard journey captures turn BLUE; +FC is red. Complete Rental gates the bottom-right.</p>
+  <p class="intro">Notes (filled) rides above the day timeline as a heading-only line. Timeline keeps day cells but only labels the first/last; price · status · time are centered. Derived pills (Ready, category, Partial) lost their backgrounds. Invoice link moved to the right column above Partial. The Yard journey MOVED to the Units card (QR scans land there) — capturing +End over there still unlocks Complete Rental here.</p>
 
   <div class="lane" style="margin-top:14px">
   <div class="card">
@@ -508,27 +538,6 @@ h2 .no{color:var(--accent)}
         </div>
       </div>
 
-      <!-- YARD — captures turn BLUE; +FC red outline → red fill (redline 18) -->
-      <div class="section"><h4>Yard</h4>
-        <div class="journey">
-          <div class="jnode" id="j-onrent" onclick="jCapture(this,'On-Rent video captured · status → On Rent')">
-            <span class="jbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5-3v10l-5-3M3 6h12v12H3z"/></svg></span>
-            <span class="jlbl">+OnRent</span><span class="jts"></span>
-          </div>
-          <div class="jline" id="jl1"></div>
-          <div class="jnode fc" id="j-fc" onclick="jFC(this)">
-            <span class="jbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5-3v10l-5-3M3 6h12v12H3z"/></svg></span>
-            <span class="jlbl">+FC</span><span class="jts"></span>
-          </div>
-          <div class="jline" id="jl2"></div>
-          <div class="jnode" id="j-return" onclick="jCapture(this,'Return video captured · status → Returned · Complete Rental unlocks')">
-            <span class="jbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5-3v10l-5-3M3 6h12v12H3z"/></svg></span>
-            <span class="jlbl">+Return</span><span class="jts"></span>
-          </div>
-        </div>
-        <div class="kv" style="margin-top:6px"><span class="muted">White = required video still owed. Captured → blue ✓ + timestamp. +FC = red outline (optional); logging it fills red, fails the unit + auto-creates a WO.</span></div>
-      </div>
-
       <div class="history"><h4>History</h4>
         <div class="hvals">
           <span class="tc b" onclick="hfilter(this,'captures')">2 Captures</span>
@@ -550,8 +559,8 @@ h2 .no{color:var(--accent)}
       <div><b>✓14</b> Notes is a one-line heading section ABOVE the timeline.</div>
       <div><b>✓15/16</b> GZ box gone; only Mo 01 / Su 07 labeled; price · status · time centered.</div>
       <div><b>✓17</b> Ready / Lift Scissor / Partial = derived pills, no background; invoice link sits above Partial on the right.</div>
-      <div><b>✓18</b> Journey captures = blue; +FC red outline → red fill.</div>
-      <div><b>✓19</b> Complete Rental bottom-right — locked until Returned; Cancel/No Show flips it to red Cancel Rental.</div>
+      <div><b>✓18</b> Journey captures = blue; +FC red outline → red fill — now living on the UNITS card as a boxless top tool (+Start/+FC/+End), since unit QR codes land mechanics there.</div>
+      <div><b>✓19</b> Complete Rental bottom-right — locked until Returned (capture +End on the Units card to watch it unlock); Cancel/No Show flips it to red Cancel Rental.</div>
       <div><b>✓A2</b> Every pill leads with its DESTINATION card icon.</div>
     </div>
     <div class="gzlist">
@@ -559,6 +568,7 @@ h2 .no{color:var(--accent)}
       <div><b>GZ-13</b> <span class="q">History filter</span>: the value chips anchor above the search bar; clicking one filters the log in place (no popup) and highlights the chip orange. Click again to clear.</div>
       <div><b>GZ-14</b> <span class="q">Worst-bottleneck flag</span>: severity order = Part Needed → Part Ordered/ETA (earliest date) → In Progress. The title flag shows the single worst one across all open WOs.</div>
       <div><b>GZ-15</b> <span class="q">Complete Rental</span> stays visible-but-locked (gray) before Returned so users learn the gate exists. Alternative: hidden until Returned — say the word.</div>
+      <div><b>GZ-16</b> <span class="q">Yard tool scope</span>: the floating journey on the Units card shows a derived pill naming the ACTIVE rental its captures feed (navigates to it, rentals icon). When the unit has no active rental, the tool hides entirely. +Start/+End stay white-required; +FC red-optional.</div>
     </div>
   </div>
   </div>
@@ -656,8 +666,8 @@ function jCapture(node,msg){
   node.classList.add('done');
   node.querySelector('.jbox').innerHTML='✓';
   node.querySelector('.jts').textContent=new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
-  if(node.id==='j-onrent')document.getElementById('jl1').classList.add('on');
-  if(node.id==='j-return'){
+  if(node.id==='j-start')document.getElementById('jl1').classList.add('on');
+  if(node.id==='j-end'){
     document.getElementById('jl2').classList.add('on');
     const b=document.getElementById('crbtn');b.className='btn btn--commit';b.onclick=()=>toast('Rental completed ✓');
   }
