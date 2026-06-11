@@ -1465,6 +1465,124 @@ function notesSection(card, rec, idField, field = 'notes') {
   return { top: has ? sec : '', bottom: has ? '' : sec };
 }
 
+/* ── §12.4v2 BUILD helpers (spec: drafts/units-rentals-v2.html + HANDOFF) ── */
+function openWOsForUnit(unitId) { return DATA.workOrders.filter((w) => w.unitId === unitId && w.phase !== 'Complete'); }
+function latestInspForUnit(unitId) {
+  const ls = DATA.inspections.filter((n) => n.unitId === unitId).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  return ls[0] || null;
+}
+/* worst open bottleneck across a WO (GZ-14 severity: Needed → ? → ETA → local) */
+const WO_SEV = { 'Part Needed': 0, 'Part Needed?': 1, 'Part Ordered': 2, 'Part is Local': 3, 'No Part Needed': 4 };
+function woBottleneck(w) {
+  const open = (w.lineItems || []).filter((l) => l.phase !== 'Complete').map((l) => ({ ph: l.phase, eta: l.eta }));
+  if (w.phase !== 'Complete') open.push({ ph: w.phase, eta: w.eta });
+  if (!open.length) return { label: 'Ready to complete', color: 'green' };
+  open.sort((a, b) => ((WO_SEV[a.ph] ?? 9) - (WO_SEV[b.ph] ?? 9)) || String(a.eta || '~').localeCompare(String(b.eta || '~')));
+  const t = open[0];
+  if (t.eta && (t.ph === 'Part Ordered' || t.ph === 'Part is Local')) return { label: `ETA ${fmtShortDate(t.eta)}`, color: 'yellow' };
+  const st = getStatus('woPhase', t.ph);
+  return { label: st.label, color: st.color === 'red' ? 'red' : st.color === 'green' ? 'green' : 'yellow' };
+}
+function unitWorstBottleneck(unitId) {
+  const sev = { red: 0, yellow: 1, green: 2 };
+  const bns = openWOsForUnit(unitId).map((w) => woBottleneck(w));
+  bns.sort((a, b) => (sev[a.color] ?? 3) - (sev[b.color] ?? 3));
+  return bns[0] || null;
+}
+/* condition is LOCKED while a WO born from a failed inspection / field call is open */
+function unitCondLock(u) { return openWOsForUnit(u.unitId).find((w) => w.woType === 'Failed' || w.woType === 'Field Call') || null; }
+function newInspectionForUnit(u) {
+  const id = 'INS-C' + (state.seq++);
+  const n = { inspectionId: id, unitId: u.unitId, date: TODAY_ISO, wash: '', checklist: '', billCustomer: '', description: '', photo: '', mock: true };
+  DATA.inspections.push(n); IDX.insp.set(id, n); reindex('inspections', n);
+  return n;
+}
+/* YARD JOURNEY — boxless tool at the top of the Units card; the unit's QR code
+   lands mechanics here. Node 0 = the reservation; +Start/+End relabel to
+   +Log Delivery/+Log Recovery on transport rentals; FC = red optional. */
+function yardToolHtml(u) {
+  const r = activeRentalForUnit(u.unitId);
+  if (!r) return '';
+  const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
+  const st = getStatus('rentalStatus', rentalDisplayStatus(r));
+  const isDel = r.transportType && r.transportType !== 'Self';
+  const startLbl = r.startCapture ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
+  const endLbl = r.endCapture ? 'Returned' : isDel ? '+Log Recovery' : '+End';
+  const kindLbl = isDel ? getStatus('transportType', r.transportType).label : '';
+  return `<div class="jtool"><div class="journey">
+    <div class="jnode pre" style="cursor:default"><span class="jbox" style="color:var(--${st.color})">${CARD_ICON.rentals}</span><span class="jlbl" style="color:var(--${st.color})">${esc(st.label)}</span><span class="jts">${fmtShortDate(r.startDate)}${r.startTime ? ' · ' + esc(r.startTime) : ''}</span></div>
+    <div class="jseg">
+      <span class="jover"><span class="pill dvd c-orange" data-pill-card="rentals" data-pill-rec="${esc(r.rentalId)}">${CARD_ICON.rentals}<span class="t">${esc(cust?.name || r.rentalName || 'Rental')}</span></span></span>
+      <span class="jline2 ${r.startCapture ? 'on' : ''}"></span>
+      <span class="junder">${fmtShortDate(r.startDate)} – ${fmtShortDate(r.endDate)}</span>
+      ${r.deliveryAddress ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}">${esc(r.deliveryAddress)}</span>` : isDel ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}">+Address</span>` : ''}
+      ${kindLbl ? `<span class="jkind">${esc(kindLbl)}</span>` : ''}
+    </div>
+    <div class="jnode ${r.startCapture ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}"><span class="jbox">${r.startCapture ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(r.startCapture?.clock || '')}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${r.endCapture || r.fcCapture ? 'on' : ''}"></span></div>
+    <div class="jnode fc ${r.fcCapture || r.fieldCall ? 'done' : ''} js-yard" data-cap="fc" data-rec="${esc(r.rentalId)}"><span class="jbox">${I.video}</span><span class="jlbl">+FC</span><span class="jts">${esc(r.fcCapture?.clock || '')}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${r.endCapture ? 'on' : ''}"></span></div>
+    <div class="jnode ${r.endCapture ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}"><span class="jbox">${r.endCapture ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(r.endCapture?.clock || '')}</span></div>
+  </div></div>`;
+}
+/* one open-WO section on the Units card: WO name = the title, type+date flags right,
+   +Part/Task shares the totals row, gate line statuses, +Invoice + if-billed formula */
+function woSectionHtml(w) {
+  const bn = woBottleneck(w);
+  const secColor = bn.color === 'red' ? 'red' : bn.color === 'green' ? 'green' : 'yellow';
+  const parts = (w.lineItems || []).reduce((a, li) => a + (Number(li.cost) || 0), 0);
+  const hrs = (w.lineItems || []).reduce((a, li) => a + (Number(li.hours) || 0), 0) || w.laborHours || 0;
+  const billed = woBillable(w);
+  const laborBilled = Math.round(hrs * LABOR_RATE);
+  const typeFlag = w.woType === 'Field Call'
+    ? `<span class="flag c-red" ${w.customerId ? `data-pill-card="customers" data-pill-rec="${esc(w.customerId)}"` : ''} title="WO type: Field Call">${CARD_ICON.rentals}Field Call</span>`
+    : w.woType === 'Failed'
+      ? `<span class="flag c-red" title="WO type: failed inspection">${CARD_ICON.inspections}Failed Inspection</span>`
+      : `<span class="flag c-gray" title="WO type: opened by a mechanic">${esc(w.assignedMechanic || 'Mechanic')}</span>`;
+  const lines = (w.lineItems || []).map((li, idx) => {
+    const ph = getStatus('woPhase', li.phase);
+    const lbl = li.eta && (li.phase === 'Part Ordered' || li.phase === 'Part is Local') ? `ETA ${fmtShortDate(li.eta)}` : ph.label;
+    return `<div class="woline"><span class="pill gate c-${ph.color} js-wophase-line" data-rec="${w.woId}" data-idx="${idx}">${esc(lbl)} ${I.chev}</span><span>${esc(li.part)}</span><span class="nums"><b>${money(li.cost)}</b><span>${li.hours || 0}h</span></span></div>`;
+  }).join('');
+  const partForm = `<div class="lineform">
+    <input class="lf-in js-pf-part" placeholder="Part / labor description" />
+    <div class="lineform-row"><input class="lf-in js-pf-cost" type="number" min="0" placeholder="Part $ (0 for labor)" /><input class="lf-in js-pf-hours" type="number" min="0" placeholder="Labor hrs" /></div>
+    <div class="pillrow"><button class="pill c-commit js-part-save" data-rec="${w.woId}">Add line</button><button class="pill c-gray js-part-cancel">Cancel</button></div>
+  </div>`;
+  return `<div class="section sec-${secColor}">
+    <h4 style="text-transform:none;letter-spacing:0;font-size:13px"><span style="font-weight:800;margin-right:1px">WO:</span> <span class="inline-edit" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span>
+      <span class="right"><span class="flags" style="height:24px">${typeFlag}<span class="flag c-gray">${fmtShortDate(w.date)}</span></span></span></h4>
+    <div class="wototals"><button class="add-field anchor js-add-part" data-rec="${w.woId}" style="height:26px">+Part/Task</button><span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>
+    ${lines || '<div class="kv"><span class="muted" style="font-size:12px">No line items yet</span></div>'}
+    ${state.woPartForm === w.woId ? partForm : ''}
+    <div class="wofoot">
+      <span class="derived">Parts ${money(Math.max(0, billed - laborBilled))} + Hrs ${money(laborBilled)} = ${money(billed)}</span>
+      <button class="pill ref js-bill-wo" data-rec="${w.woId}">${CARD_ICON.invoices} +Invoice</button>
+      <button class="pill c-commit js-wo-complete" data-rec="${w.woId}" style="height:26px">Complete WO</button>
+    </div>
+  </div>`;
+}
+/* card-head title flags: live condition + worst-WO bottleneck (units);
+   rental status + pay status (rentals). Two stacked 14px rows = title height. */
+function headFlagsHtml(card, rec) {
+  if (!rec) return '';
+  if (card === 'units') {
+    const insp = getStatus('unitInspectionStatus', rec.inspectionStatus);
+    const fleet = getStatus('unitFleetStatus', rec.fleetStatus);
+    const wos = openWOsForUnit(rec.unitId);
+    const bn = unitWorstBottleneck(rec.unitId);
+    return `<span class="flags"><span class="flag c-${insp.color}">${CARD_ICON.inspections}${esc(insp.label)}</span><span class="flag c-gray">${esc(fleet.label)}</span></span>`
+      + (wos.length && bn ? `<span class="flags"><span class="flag c-${bn.color}">${CARD_ICON.workOrders}${esc(bn.label)}</span><span class="flag c-red">${wos.length} WO${wos.length > 1 ? 's' : ''} Open</span></span>` : '');
+  }
+  if (card === 'rentals') {
+    const st = getStatus('rentalStatus', rentalDisplayStatus(rec));
+    const inv = rec.invoiceId ? IDX.invoice.get(rec.invoiceId) : null;
+    const payst = inv ? getStatus('invoiceStatus', invoiceTotals(inv).status) : null;
+    return `<span class="flags"><span class="flag c-${st.color}">${CARD_ICON.rentals}${esc(st.label)}</span>${payst ? `<span class="flag c-${payst.color}">${CARD_ICON.invoices}${esc(payst.label)}</span>` : ''}</span>`;
+  }
+  return '';
+}
+
 const DETAIL = {
   /* ── RENTALS — fully built (§12.2 standard mode) ── */
   rentals: (r, cs) => {
@@ -1573,23 +1691,68 @@ const DETAIL = {
       ${efld('units', u, 'unitId', 'gpsType', 'GPS unit/type')}
       ${efld('units', u, 'unitId', 'gpsPlacement', 'Placement')}
     </div></div>`;
-    const investment = `<div class="section"><h4>Investment</h4><div class="fieldstack">
-      ${efld('units', u, 'unitId', 'purchasePrice', 'Purchase price', { type: 'number', sfx: 'paid', fmt: money })}
-      ${efld('units', u, 'unitId', 'purchaseDate', 'Purchase date', { type: 'date', sfx: 'purchased', fmt: yr })}
-      ${efld('units', u, 'unitId', 'trueCost', 'True cost', { type: 'number', sfx: 'true cost', fmt: money })}
-      ${efld('units', u, 'unitId', 'purchaseHours', 'Hours at purchase', { type: 'number', sfx: 'at purchase', fmt: (v) => num(v) + ' HRS' })}
-      ${kv(money(repair), { sfx: 'repairs', derived: true })}
-      ${kv(money(avgRevMo), { sfx: '/mo avg', derived: true })}
-      ${kv(money(totalRev), { sfx: 'total revenue', derived: true })}
-    </div></div>`;
+    /* INVESTMENT — left = entry · right = derived, ordered per Jac:
+       Total Revenue → Monthly → Work Orders → Profit · (ROI%) */
+    const invested = Number(u.trueCost) || Number(u.purchasePrice) || 0;
+    const profit = totalRev - repair - invested;
+    const roi = invested ? Math.round((profit / invested) * 100) : null;
+    const investment = `<div class="section"><h4>Investment</h4>
+      <div class="split">
+        <div class="side">
+          ${efld('units', u, 'unitId', 'purchasePrice', 'Purchase price', { type: 'number', sfx: 'paid', fmt: money })}
+          ${efld('units', u, 'unitId', 'purchaseDate', 'Purchase date', { type: 'date', sfx: 'purchased', fmt: yr })}
+          ${efld('units', u, 'unitId', 'trueCost', 'True cost', { type: 'number', sfx: 'true cost', fmt: money })}
+          ${efld('units', u, 'unitId', 'purchaseHours', 'Hours at purchase', { type: 'number', sfx: 'at purchase', fmt: (v) => num(v) + ' HRS' })}
+        </div>
+        <div class="side r">
+          ${kv(money(totalRev), { pfx: 'Total Revenue', derived: true })}
+          ${kv(money(avgRevMo), { pfx: 'Monthly', derived: true })}
+          ${kv(money(repair), { pfx: 'Work Orders', derived: true })}
+          ${kv(`${money(profit)}${roi != null ? ` · (${roi}%)` : ''}`, { pfx: 'Profit', derived: true })}
+        </div>
+      </div></div>`;
+    /* INSPECTION — live condition + wash toggles, timestamp in the header */
+    const li2 = latestInspForUnit(u.unitId);
+    const stampDate = u.condAt || li2?.date || '';
+    const stamp = stampDate ? `${fmtShortDate(stampDate)}${u.condClock ? ' · ' + u.condClock : ''}` : '—';
+    const cond = u.inspectionStatus;
+    const washedToday = (u.serviceLog || []).some((l) => l.taskId === 'svc-wash' && l.date === TODAY_ISO);
+    const inspSec = `<div class="section sec-${cond === 'Ready' ? 'green' : cond === 'Failed' ? 'red' : 'yellow'}">
+      <h4>Inspection <span class="hmuted">· ${esc(stamp)}</span></h4>
+      <div class="fieldstack">
+        <div class="kv" style="justify-content:center">
+          <span class="seg">
+            <button class="js-cond ${cond === 'Ready' ? 'on-green' : ''}" data-rec="${u.unitId}" data-val="Pass">✓ Pass</button>
+            <button class="js-cond ${cond === 'Not Ready' ? 'on-yellow' : ''}" data-rec="${u.unitId}" data-val="Not Ready">Not Ready</button>
+            <button class="js-cond ${cond === 'Failed' ? 'on-red' : ''}" data-rec="${u.unitId}" data-val="Fail">✕ Fail</button>
+          </span>
+          <span class="seg">
+            <button class="js-washseg ${u.washRequested ? 'on-yellow' : ''}" data-rec="${u.unitId}" data-val="Wash">${I.droplet} Wash</button>
+            <button class="js-washseg" data-rec="${u.unitId}" data-val="DontWash">Don't Wash</button>
+            <button class="js-washseg ${washedToday ? 'on-green' : ''}" data-rec="${u.unitId}" data-val="Washed">Washed</button>
+          </span>
+        </div>
+        ${li2?.description ? `<div class="kv" style="justify-content:center"><span class="muted">Latest:</span> <span style="font-size:12.5px">${esc(li2.description)}</span></div>` : ''}
+      </div>
+    </div>`;
+    const woSecs = openWOsForUnit(u.unitId).map(woSectionHtml).join('');
     const notes = notesSection('units', u, 'unitId');
+    const hchips = [
+      { kind: 'insp', label: `${DATA.inspections.filter((n) => n.unitId === u.unitId).length} Inspections`, cls: 'g', re: /inspect/i },
+      { kind: 'wo', label: `${DATA.workOrders.filter((w) => w.unitId === u.unitId).length} WOs`, cls: 'r', re: /\bWO\b|work order|part |field call|serviced/i },
+      { kind: 'rent', label: `${DATA.rentals.filter((r) => r.unitId === u.unitId).length} Rentals`, cls: 'b', re: /rent/i },
+      { kind: 'wash', label: `${(u.serviceLog || []).filter((l) => l.taskId === 'svc-wash').length} Washes`, cls: 'y', re: /wash/i },
+    ];
     return `<div class="detail">
-      <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="units" data-field="name" data-rec="${u.unitId}" data-ph="Unit name">${esc(u.name)}</span><span class="pill gate c-${getStatus('unitFleetStatus', u.fleetStatus).color} js-fleetstatus" data-rec="${u.unitId}">${esc(getStatus('unitFleetStatus', u.fleetStatus).label)} ${I.chev}</span>${statusPill('unitInspectionStatus', u.inspectionStatus)}<button class="pill ${u.washRequested ? 'c-blue' : 'ref'} js-wash-request" data-rec="${u.unitId}">${I.droplet} ${u.washRequested ? 'Wash Requested' : 'Request Wash'}</button><span class="pill c-gray">${I.qr} QR</span></div>
+      ${yardToolHtml(u)}
+      <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="units" data-field="name" data-rec="${u.unitId}" data-ph="Unit name">${esc(u.name)}</span><span class="pill gate c-${getStatus('unitFleetStatus', u.fleetStatus).color} js-fleetstatus" data-rec="${u.unitId}">${esc(getStatus('unitFleetStatus', u.fleetStatus).label)} ${I.chev}</span><span class="pill c-gray">${I.qr} QR</span></div>
       ${notes.top}
+      ${inspSec}
+      ${woSecs}
       <div class="detail-cols">${specs}${gps}</div>
       ${investment}
       ${notes.bottom}
-      ${historySection('units', u, cs)}
+      ${historySection('units', u, cs, hchips)}
     </div>`;
   },
 
@@ -1881,7 +2044,7 @@ const DETAIL = {
 };
 
 /* History section (§0.6) — dotted separator + bg shift, pinned at bottom. */
-function historySection(card, rec, cs) {
+function historySection(card, rec, cs, chips) {
   // Timestamped actions taken this session (logAction) ride at the top, newest-first,
   // above the date-derived history. Single merge point → every card gets action history.
   const acts = (rec.actions || []).slice().sort((a, b) => b.seq - a.seq).map((a) => {
@@ -1889,14 +2052,19 @@ function historySection(card, rec, cs) {
     return { when, text: a.text, by: a.by || '', search: `${when} ${a.text} ${a.by || ''}` };
   });
   const all = [...acts, ...historyFor(card, rec)];
+  // v2: clickable count chips above the search bar filter the log in place
+  const chip = cs?.histKind && chips ? chips.find((c) => c.kind === cs.histKind) : null;
+  const base = chip ? all.filter((h) => chip.re.test(h.search || `${h.when} ${h.text}`)) : all;
   const q = (cs?.historySearch || '').trim().toLowerCase();
-  const items = q ? all.filter((h) => (h.search || `${h.when} ${h.text}`).toLowerCase().includes(q)) : all;
+  const items = q ? base.filter((h) => (h.search || `${h.when} ${h.text}`).toLowerCase().includes(q)) : base;
   const log = items.length
     ? items.map((h) => `<div class="hitem"><span class="htime">${esc(h.when)}</span>${h.pill || ''}<span>${esc(h.text)}</span>${h.by ? `<span class="hby">${esc(h.by)}</span>` : ''}</div>`).join('')
-    : `<div class="muted" style="font-size:12px">${q ? 'No matching history.' : 'No history yet.'}</div>`;
+    : `<div class="muted" style="font-size:12px">${q || chip ? 'No matching history.' : 'No history yet.'}</div>`;
+  const chipBar = chips?.length
+    ? `<div class="hvals">${chips.map((c) => `<button class="hv ${c.cls || ''} ${cs?.histKind === c.kind ? 'on' : ''} js-hchip" data-card="${esc(card)}" data-kind="${esc(c.kind)}">${esc(c.label)}</button>`).join('')}</div>` : '';
   // History Search (§0.6) — appears once the log has some depth.
   const searchBar = all.length >= 3 ? `<input class="mini-search js-history-search" placeholder="Search history…" value="${esc(cs?.historySearch || '')}" />` : '';
-  return `<div class="history"><h4>History</h4>${searchBar}<div class="hlog">${log}</div></div>`;
+  return `<div class="history"><h4>History</h4>${chipBar}${searchBar}<div class="hlog">${log}</div></div>`;
 }
 function historyFor(card, rec) {
   if (card === 'rentals') {
@@ -2112,6 +2280,7 @@ function cardEl(cardDef, session) {
     const head = el('div', 'card-head');
     head.innerHTML = `
       <span class="c-titlecard"><span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}</span>
+      ${headFlagsHtml(card, stdRec)}
       <div class="c-head-right"><div class="c-actions"><button class="hbtn js-tolist" title="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}" title="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}" title="New tab (+)">${I.plus}</button></div></div>`;
     node.appendChild(head);
   }
@@ -2675,6 +2844,60 @@ function renderOverlay() {
         <img class="qr-img" alt="QR code" src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&bgcolor=15171c&color=ff7a1a&data=${encodeURIComponent(url)}" width="220" height="220" style="border-radius:12px;background:var(--panel-2)" />
         <p class="muted" style="margin-top:10px;font-size:12px;word-break:break-all">${esc(url)}</p>
         <p class="muted" style="margin-top:6px;font-size:11px">${esc(o.caption || 'Scan to open this session on another device (single shared login — §1/§4.2).')}</p>
+      </div>`;
+    overlay.appendChild(pop);
+  } else if (o.kind === 'capture') {
+    // v2 yard journey: every log opens this popup; with transport, the address
+    // + map pin ride the top so the driver sees the destination while logging.
+    const r = IDX.rental.get(o.rentalId);
+    const isDel = r && r.transportType && r.transportType !== 'Self';
+    const title = o.cap === 'fc' ? 'Log Field Call' : o.cap === 'start' ? (isDel ? 'Log Delivery' : 'Log Start') : (isDel ? 'Log Recovery' : 'Log End');
+    const pop = el('div', 'popup'); pop.style.width = '380px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${I.video}</span><h3>${esc(title)}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        ${r && r.deliveryAddress && o.cap !== 'fc' ? `
+        <div style="border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:10px">
+          <div style="padding:8px 11px;font-size:12.5px;display:flex;align-items:center;gap:7px"><span>📍</span><b>${esc(r.deliveryAddress)}</b></div>
+          <div class="site-map" style="height:96px">${r.sitePin ? `<span class="site-pin" style="left:${r.sitePin.x}%;top:${r.sitePin.y}%">📍</span>` : ''}<span class="map-tag">driver destination${r.sitePin ? ' — exact pin set' : ''}</span></div>
+        </div>` : ''}
+        <label class="cap-drop">${I.video} <span>${state.capFile ? '✓ video attached' : 'Tap to capture / attach the video'}</span><input type="file" accept="video/*,image/*" capture="environment" class="js-cap-file" style="display:none"></label>
+        <div class="pillrow" style="justify-content:flex-end;margin-top:12px">
+          <button class="pill ref js-close">Cancel</button>
+          <button class="pill c-commit js-cap-save" style="height:26px;font-size:11px">${o.cap === 'fc' ? 'Log Field Call' : 'Log it'}</button>
+        </div>
+      </div>`;
+    overlay.appendChild(pop);
+  } else if (o.kind === 'site') {
+    // v2 transport: smart address finder + map with a tap-to-drop pin for dispatch
+    const r = IDX.rental.get(o.rentalId);
+    const pop = el('div', 'popup'); pop.style.width = '400px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.rentals}</span><h3>Site address</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        <input class="js-site-addr lf-in" placeholder="Start typing an address…" value="${esc(r?.deliveryAddress || '')}" style="width:100%;margin-bottom:6px">
+        <div class="js-site-sug" style="display:flex;flex-direction:column;border-radius:10px;overflow:hidden;margin-bottom:8px"></div>
+        <div class="site-map js-site-map" style="height:150px;cursor:crosshair">${r?.sitePin ? `<span class="site-pin" style="left:${r.sitePin.x}%;top:${r.sitePin.y}%">📍</span>` : ''}<span class="map-tag">Google Map here — tap to drop the EXACT pin for the driver</span></div>
+        <div class="pillrow" style="justify-content:flex-end;margin-top:12px">
+          <button class="pill ref js-close">Cancel</button>
+          <button class="pill c-commit js-site-save" style="height:26px;font-size:11px">Save site</button>
+        </div>
+      </div>`;
+    overlay.appendChild(pop);
+  } else if (o.kind === 'wodone') {
+    // v2: Complete WO with open line items → warn, don't hard-block
+    const w = IDX.wo.get(o.woId);
+    const open = (w?.lineItems || []).filter((l) => l.phase !== 'Complete');
+    const pop = el('div', 'popup'); pop.style.width = '360px';
+    pop.innerHTML = `
+      <div class="popup-head"><h3>Complete this Work Order?</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        <p style="font-size:13px;margin-bottom:6px">Are you sure? Not all items are completed.</p>
+        <p class="muted" style="font-size:12px;margin-bottom:12px">Still open: ${open.map((l) => `“${esc(l.part)} · ${esc(getStatus('woPhase', l.phase).label)}”`).join(' · ') || '—'}</p>
+        <div class="pillrow" style="justify-content:flex-end">
+          <button class="pill ref js-close">Cancel</button>
+          <button class="pill c-commit js-wodone-confirm" data-rec="${esc(o.woId)}" style="height:26px;font-size:11px">Complete WO</button>
+        </div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'role') {
@@ -3526,6 +3749,26 @@ function onClick(e) {
   if (closest('.js-part-cancel')) { e.stopPropagation(); state.woPartForm = null; return render(); }
   // inspection gated flow (§9): Wash → Checklist → result
   if (closest('.js-open-insp')) { e.stopPropagation(); return openOverlay({ kind: 'inspection', recId: closest('.js-open-insp').dataset.rec }); }
+  // ── v2 build: condition/wash segs · yard captures · site popup · WO complete · history chips ──
+  if (closest('.js-cond')) { const b = closest('.js-cond'); return setUnitCondition(b.dataset.rec, b.dataset.val); }
+  if (closest('.js-washseg')) { const b = closest('.js-washseg'); return setUnitWash(b.dataset.rec, b.dataset.val); }
+  if (closest('.js-yard')) { const b = closest('.js-yard'); return yardCapture(b.dataset.rec, b.dataset.cap); }
+  if (closest('.js-cap-save')) return saveYardCapture();
+  if (closest('.js-site-go')) { const b = closest('.js-site-go'); state.sitePin = null; return openOverlay({ kind: 'site', rentalId: b.dataset.rec }); }
+  if (closest('.js-site-save')) return saveSiteAddress();
+  if (closest('.js-site-pick')) { const b = closest('.js-site-pick'); const inp = document.querySelector('.js-site-addr'); if (inp) inp.value = b.textContent; const box = document.querySelector('.js-site-sug'); if (box) box.innerHTML = ''; return; }
+  if (closest('.js-site-map')) {
+    const m = closest('.js-site-map'); const rect = m.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * 100), y = Math.round(((e.clientY - rect.top) / rect.height) * 100);
+    state.sitePin = { x, y };
+    let p = m.querySelector('.site-pin');
+    if (!p) { p = document.createElement('span'); p.className = 'site-pin'; p.textContent = '📍'; m.prepend(p); }
+    p.style.left = x + '%'; p.style.top = y + '%';
+    return;
+  }
+  if (closest('.js-wo-complete')) { const b = closest('.js-wo-complete'); return completeWOAttempt(b.dataset.rec); }
+  if (closest('.js-wodone-confirm')) { const b = closest('.js-wodone-confirm'); state.overlay = null; setWoPhase(b.dataset.rec, 'Complete'); renderOverlay(); return; }
+  if (closest('.js-hchip')) { const b = closest('.js-hchip'); const session = activeSession(); const cs = session.cards[b.dataset.card] || session.cards.shop; cs.histKind = cs.histKind === b.dataset.kind ? null : b.dataset.kind; return render(); }
   if (closest('.js-insp-wash')) { const b = closest('.js-insp-wash'); e.stopPropagation(); return setInspWash(b.dataset.rec, b.dataset.val); }
   if (closest('.js-insp-result')) { const b = closest('.js-insp-result'); e.stopPropagation(); return setInspResult(b.dataset.rec, b.dataset.val); }
   if (closest('.js-insp-bill')) { const b = closest('.js-insp-bill'); e.stopPropagation(); return setInspBill(b.dataset.rec, b.dataset.val); }
@@ -3810,12 +4053,101 @@ function clearFieldCall(rentalId) {
   r.fieldCall = false; reindex('rentals', r); logAction(r, 'Field Call cleared'); toast('Field Call cleared.'); reanchorRender();
 }
 
+/* ── v2 BUILD actions: condition/wash segs · yard captures · site popup · WO complete ── */
+function setUnitCondition(unitId, val) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  const lock = unitCondLock(u);
+  if (lock) return toast(`🔒 Condition locked — WO “${lock.woReport}” is open from a ${lock.woType === 'Field Call' ? 'field call' : 'failed inspection'}. Complete it to update the condition.`);
+  u.condAt = TODAY_ISO; u.condClock = nowClock();
+  if (val === 'Pass' || val === 'Fail') {
+    const n = newInspectionForUnit(u);
+    if (val === 'Fail') n.wash = n.wash || 'No';
+    return setInspResult(n.inspectionId, val);     // handles unit status, auto-WO + fail popup
+  }
+  u.inspectionStatus = 'Not Ready';
+  reindex('units', u); logAction(u, 'Condition → Not Ready');
+  toast('Condition → Not Ready'); reanchorRender();
+}
+function setUnitWash(unitId, val) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  if (val === 'Washed') return recordServiceCompletion(unitId, 'svc-wash', u.currentHours, TODAY_ISO, 'Washed (condition toggle)', '');
+  u.washRequested = val === 'Wash';
+  reindex('units', u);
+  logAction(u, val === 'Wash' ? 'Wash requested' : 'Marked: don’t wash');
+  toast(val === 'Wash' ? 'Wash queued — shows in the Wash list.' : 'Don’t wash — request cleared.');
+  reanchorRender();
+}
+/* yard journey: +Start/+Log Delivery and +End/+Log Recovery are the SAME capture
+   either way (one event, shared video); +FC = markFieldCall. Popup gates every log. */
+function yardCapture(rentalId, cap) {
+  const r = IDX.rental.get(rentalId); if (!r) return;
+  if (cap === 'start' && r.startCapture) return toast('Start already captured — video on file.');
+  if (cap === 'end' && r.endCapture) return toast('End already captured — video on file.');
+  if (cap === 'end' && !r.startCapture) return toast('Log the Start/Delivery first.');
+  if (cap === 'fc' && (r.fcCapture || r.fieldCall)) return toast('Field Call already logged.');
+  state.capFile = null;
+  openOverlay({ kind: 'capture', rentalId, cap });
+}
+function saveYardCapture() {
+  const o = state.overlay; if (!o || o.kind !== 'capture') return;
+  const r = IDX.rental.get(o.rentalId); if (!r) return closeOverlay();
+  const stamp = { date: TODAY_ISO, clock: nowClock(), video: state.capFile || '' };
+  if (o.cap === 'start') {
+    setRentalStatus(o.rentalId, 'On Rent');
+    if (r.status !== 'On Rent') return;            // a §9 gate blocked it — popup stays
+    r.startCapture = stamp; logAction(r, 'Start/Delivery video captured');
+  } else if (o.cap === 'end') {
+    setRentalStatus(o.rentalId, 'Returned');
+    if (r.status !== 'Returned') return;
+    r.endCapture = stamp; logAction(r, 'End/Recovery video captured');
+  } else if (o.cap === 'fc') {
+    r.fcCapture = stamp;
+    markFieldCall(o.rentalId);
+  }
+  state.capFile = null; state.overlay = null;
+  const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
+  render(); renderOverlay();
+}
+function saveSiteAddress() {
+  const o = state.overlay; if (!o || o.kind !== 'site') return;
+  const r = IDX.rental.get(o.rentalId); if (!r) return closeOverlay();
+  const v = (document.querySelector('.js-site-addr')?.value || '').trim();
+  if (!v) return toast('Type or pick an address first.');
+  r.deliveryAddress = v;
+  if (state.sitePin) r.sitePin = state.sitePin;
+  if (!r.transportType || r.transportType === 'Self') r.transportType = 'Delivery';
+  syncTransportLine(r);
+  reindex('rentals', r); logAction(r, `Site address → ${auditVal(v)}`);
+  toast('Site saved — address + exact pin go to dispatch.');
+  state.overlay = null; state.sitePin = null;
+  const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
+  render(); renderOverlay();
+}
+function completeWOAttempt(woId) {
+  const w = IDX.wo.get(woId); if (!w) return;
+  const open = (w.lineItems || []).filter((l) => l.phase !== 'Complete');
+  if (!open.length) return setWoPhase(woId, 'Complete');
+  openOverlay({ kind: 'wodone', woId });           // "Are you sure? Not all items are completed."
+}
+
 function onInput(e) {
   if (e.target.id === 'globalsearch') {
     const sel = e.target.selectionStart;
     setQuery(e.target.value);                      // re-renders; the input is recreated
     const gs = document.getElementById('globalsearch');
     if (gs) { gs.focus(); gs.setSelectionRange(sel, sel); }
+    return;
+  }
+  // v2 site popup: live address suggestions (typed street + known transport cities)
+  if (e.target.classList.contains('js-site-addr')) {
+    const box = document.querySelector('.js-site-sug'); if (!box) return;
+    const v = e.target.value.trim();
+    if (!v) { box.innerHTML = ''; return; }
+    const cities = Object.keys(TRANSPORT_MAP || {});
+    const street = v.replace(/,.*$/, '');
+    const hits = cities.filter((c) => v.toLowerCase().includes(c.toLowerCase()));
+    const pool = (hits.length ? hits : cities).slice(0, 3);
+    box.innerHTML = pool.map((c) => `<button class="js-site-pick" type="button">${esc(`${street}, ${c.replace(/\b\w/g, (m) => m.toUpperCase())}, TX`)}</button>`).join('');
     return;
   }
   if (e.target.classList.contains('js-history-search')) {
@@ -3857,6 +4189,14 @@ function onInput(e) {
 
 /* change events — native <input type="date"> / <select> on draft details. */
 function onChange(e) {
+  // v2 yard capture: attach the video/photo, re-render the popup to show ✓
+  if (e.target.classList.contains('js-cap-file')) {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { state.capFile = rd.result; renderOverlay(); };
+    rd.readAsDataURL(f);
+    return;
+  }
   // Feedback screenshot attach → downscale → store on the overlay.
   if (e.target.classList.contains('js-fb-shot')) {
     const file = e.target.files && e.target.files[0]; if (!file) return;
