@@ -24,7 +24,7 @@ import {
 } from './config.js';
 
 /* ════════════════════════════════════════════════════════════════════════
-   0. Small utilities
+   §1 UTILITIES & FORMATTING — $, el, esc, money, num, dates
    ════════════════════════════════════════════════════════════════════════ */
 const $  = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
@@ -37,7 +37,7 @@ const dayDiff = (a, b) => Math.round((b - a) / 86400000);
 const SINGULAR = { customers: 'customer', rentals: 'rental', units: 'unit', invoices: 'invoice', categories: 'category', workOrders: 'workOrder', inspections: 'inspection', serviceOrders: 'unit' };
 
 /* ════════════════════════════════════════════════════════════════════════
-   1. Indexes — built once on load (SPEC §3: never scan thousands per keystroke)
+   §2 INDEXES & SEARCH — built once on load (SPEC §3: never scan per keystroke)
    ════════════════════════════════════════════════════════════════════════ */
 const IDX = {};
 /* Split a legacy single "name" (optionally "First Last (Company)") into parts.
@@ -224,7 +224,7 @@ function searchBlob(card, rec) {
 const reindex = (card, rec) => { const id = idOf(card, rec); if (id != null) IDX.search.set(card + ':' + id, searchBlob(card, rec)); saveSoon(); };
 
 /* ════════════════════════════════════════════════════════════════════════
-   2. Derivations (SPEC §10) — money, availability, statuses, countdowns
+   §3 DERIVATIONS (SPEC §10) — money, availability, statuses, countdowns
    ════════════════════════════════════════════════════════════════════════ */
 const RATE_LABELS = { m: '4-Week', w: '7-Day', d: '1-Day' };
 
@@ -488,7 +488,7 @@ function categoryStats(cat) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   3. State (one normalized object) + session model (SPEC §0.1)
+   §4 STATE & SESSIONS — one normalized object + the session model (SPEC §0.1)
    ════════════════════════════════════════════════════════════════════════
    A "session" is the full grid state. The default (no tabs) session is pure
    list-search across all cards. Each TAB carries its own isolated session with
@@ -832,7 +832,7 @@ function filterTermPill(ft, i, scope) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   4. Inline SVG icons (stroke-based, currentColor — §6.2 #12)
+   §5a ICONS — inline SVG (stroke-based, currentColor)
    ════════════════════════════════════════════════════════════════════════ */
 const I = {
   circle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="5"/><rect x="9.3" y="9.3" width="5.4" height="5.4" rx="1.6" fill="currentColor" stroke="none"/></svg>',
@@ -990,7 +990,7 @@ function ghostPill(label, { js, data } = {}) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   6. Row meta (tab label/dot) + the universal row template (§6.2 #2)
+   §6 LIST ROWS — row meta + the universal row template
    ════════════════════════════════════════════════════════════════════════ */
 const ROW_META = {
   rentals:    (r) => ({ title: IDX.unit.get(r.unitId)?.name || r.rentalName || 'Rental', sub: IDX.customer.get(r.customerId)?.name || '', color: getStatus('rentalStatus', rentalDisplayStatus(r)).color }),
@@ -1048,7 +1048,7 @@ function categoryMixViz(catId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   7. Per-card list rows
+   §6b PER-CARD ROWS
    ════════════════════════════════════════════════════════════════════════ */
 function rowEl(card, rec) {
   const id = idOf(card, rec);
@@ -1218,7 +1218,7 @@ const ROWS = {
 };
 
 /* ════════════════════════════════════════════════════════════════════════
-   §13. COLUMN REGISTRY — one source of truth per card for the Board View
+   §7 COLUMN REGISTRY & FOOTER TOTALS — one source of truth per card
    (spreadsheet popup), the List-View totals row, and (later) the List-View
    value picker. Each column: { key, label, type, get(rec), cell(rec), badge,
    set?, meta?, agg }. `get` returns the RAW value (number, or status key for
@@ -1484,7 +1484,8 @@ function rowInnerHTML(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   8. Standard mode (detail) renderers
+   §8 DETAIL RENDERERS — kv/efld/notes · v2 helpers (yard tool, WO sections,
+   journeys, head flags) · the DETAIL{} map · history
    ════════════════════════════════════════════════════════════════════════ */
 /* Label-free stacked field (§6.2 #3): value + optional prefix/suffix qualifier.
  * `value` may be raw text (escaped) or pre-built HTML (pills) via {html:true}. */
@@ -2212,7 +2213,7 @@ function historyFor(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   9. Card rendering (header + body) + the grid
+   §9 CARDS & GRID — cardEl, listView, the 3-column shell
    ════════════════════════════════════════════════════════════════════════ */
 function listFor(card, session) {
   // pick mode → the source card lists every record so any can be chosen (§0.3)
@@ -2502,7 +2503,7 @@ function listView(cardDef, session) {
 const PLUS_NEW = new Set(['rentals', 'invoices', 'customers']);
 
 /* ════════════════════════════════════════════════════════════════════════
-   9b. SHOP CARD  —  merged Work Orders + Service Orders + Inspections
+   §10 SHOP CARD — merged Work Orders + Service Orders + Inspections
    ────────────────────────────────────────────────────────────────────────
    ITERATE HERE: this whole block is the Shop card's presentation. The grid
    plumbing (anchor/cascade/tabs/standard-mode) routes through it via the
@@ -2695,7 +2696,7 @@ function shopRowEl(type, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   10. Header (KPI rings, tabs, search, buttons) + dashboard placeholder
+   §11 HEADER, KPI & BOTTOM BAR
    ════════════════════════════════════════════════════════════════════════ */
 /** Apple-style band coloring (§11): 0-25 red · 25-50 orange · 50-75 yellow ·
  *  75-100 green · 95-100 glowing green. */
@@ -2939,7 +2940,7 @@ function tabBadge(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   11. Overlays (logo menu, role KPI popup) — §0.4 / §5.2
+   §12 OVERLAYS & BOARDS — renderOverlay kinds + back-office board popups
    ════════════════════════════════════════════════════════════════════════ */
 function renderOverlay() {
   const root = $('#overlay-root');
@@ -3525,7 +3526,7 @@ function bvCustomizePanel(card) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   12. Status dropdown (pill-rule exception — the record's own status pill)
+   §13 DROPDOWNS — openDropdown + status/fleet/funnel/sort menus
    ════════════════════════════════════════════════════════════════════════ */
 /** Shared floating dropdown (matches board chrome) — used by the status pill
  *  dropdown and the in-card Sort menu. */
@@ -3601,7 +3602,7 @@ function setFocusedCard(cardId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   13. Render pipeline + toast
+   §14 RENDER PIPELINE + toast
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
 function render() {
@@ -3677,7 +3678,8 @@ function toast(msg) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   14. Event delegation (single listener tree)
+   §15 EVENT HANDLERS — onClick/onInput/onChange (single listener tree)
+   ⚠ §16 ACTIONS/MUTATIONS interleave from here to §17 — see the SPEC v7 map
    ════════════════════════════════════════════════════════════════════════ */
 function onClick(e) {
   const t = e.target;
@@ -4161,6 +4163,10 @@ function clearFieldCall(rentalId) {
   r.fieldCall = false; reindex('rentals', r); logAction(r, 'Field Call cleared'); toast('Field Call cleared.'); reanchorRender();
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   §16 ACTIONS / MUTATIONS — every state change funnels through here
+   (status setters, picks, drafts, captures, site, WO/invoice lines, +New)
+   ════════════════════════════════════════════════════════════════════════ */
 /* ── v2 BUILD actions: condition/wash segs · yard captures · site popup · WO complete ── */
 function setUnitCondition(unitId, val) {
   const u = IDX.unit.get(unitId); if (!u) return;
@@ -4517,7 +4523,7 @@ function saveNewCustomer() {
   toast(`${c.name} added.`);
 }
 /* ════════════════════════════════════════════════════════════════════════
- * STRIPE CLIENT (Phase 2) — card-on-file + invoice charging.
+ * §17 STRIPE / PAYMENTS — card-on-file + invoice charging (client side).
  * Card data is entered ONLY in Stripe's iframe (Card Element) and tokenized in
  * the browser; raw PAN/CVC never touches our code or the backend. The backend
  * owns the money math — the client never sends an amount.
@@ -5238,10 +5244,10 @@ function addWOToInvoice(invoiceId, woId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   15. Boot
+   §18 PERSISTENCE & BOOT
    ════════════════════════════════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════════
-   16. Backend persistence — Google Sheets via an Apps Script web app
+   §18b BACKEND SYNC — Google Sheets via the Apps Script web app
    ════════════════════════════════════════════════════════════════════════
    The app loads its data from the Sheet on sign-in, seeds the Sheet from the
    demo data on first run, and auto-saves (debounced) after every change.
