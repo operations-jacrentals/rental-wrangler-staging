@@ -559,6 +559,9 @@ input { font-family: inherit; }
 .pill.c-commit { background: var(--blue); color: #fff; border-color: transparent; }                          /* rule 17: Done/Save = blue */
 .pill.c-money  { background: var(--green); color: #04150d; border-color: transparent; font-weight: 800; }    /* rule 23: charge / take payment = green */
 .pill.c-danger { background: var(--red); color: #fff; border-color: transparent; font-weight: 800; }         /* S4: confirm-refund = solid red */
+.pill.ghost { background: transparent; border-color: var(--line); color: var(--txt-2); }                     /* R18: quiet action (Cancel/Close) */
+.pill.ghost:hover { color: var(--txt); border-color: var(--accent-line); }
+.pill.locked { opacity: .55; cursor: not-allowed; }                                                          /* R17 locked-gate state (no inline hacks) */
 .req { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 10px; background: #fff; color: #16181d; border: 1px solid #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }  /* rule 15/16/22: required-until-entered = white bg + dark ink */
 .req svg { width: 15px; height: 15px; }
 /* rule 8: notes carry a 3-color dot tag (white/red/green), picked while entering */
@@ -620,6 +623,7 @@ input { font-family: inherit; }
 .section > h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--txt-3); margin-bottom: 8px; display: flex; align-items: center; justify-content: center; gap: 7px; position: relative; }
 .section > h4 .right { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; }
 .section > h4 .hmuted { text-transform: none; letter-spacing: 0; color: var(--txt-3); font-weight: 600; }
+.section > h4.h-name { text-transform: none; letter-spacing: 0; font-size: 13px; }   /* R11: record-NAME headers (WO: <name>) */
 /* inside the anchored main card: dark-gray section cards (normal light text) —
    NO orange border (the card's orange border + glow is the anchor signal). */
 /* anchored cards keep the DEFAULT section background (no special gray fill) */

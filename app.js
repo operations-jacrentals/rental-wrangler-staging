@@ -118,16 +118,16 @@ function cardsSection(c) {
     return `<div class="card-row">
       <span class="cr-brand">${esc(brandName(k.brand))} ••${esc(k.last4)}</span>
       <span class="cr-exp${exp ? ' bad' : soon ? ' warn' : ''}">${k.expMonth ? esc(k.expMonth + '/' + String(k.expYear).slice(-2)) : ''}${exp ? ' · expired' : ''}</span>
-      <span class="cr-nick inline-edit" data-edit="cardNick" data-rec="${c.customerId}" data-card="${k.id}">${k.nickname ? esc(k.nickname) : '<span class="add-field">+ name</span>'}</span>
+      <span class="cr-nick inline-edit" data-edit="cardNick" data-rec="${c.customerId}" data-card="${k.id}">${k.nickname ? esc(k.nickname) : '<span class="add-field" data-r="R5">+Nickname</span>'}</span>
       ${k.agreement ? badge('Agreement ✓', 'green') : ''}
-      ${k.isDefault ? badge('Default', 'blue') : `<button class="pill ref js-card-default" data-rec="${c.customerId}" data-card="${k.id}">Make default</button>`}
+      ${k.isDefault ? badge('Default', 'blue') : actionPill('commit', 'Make default', { js: 'js-card-default', data: { rec: c.customerId, card: k.id } })}
       <button class="x js-card-remove" data-rec="${c.customerId}" data-card="${k.id}" title="Remove card">${I.x}</button>
     </div>`;
   }).join('') : '<span class="muted" style="font-size:12px">No cards on file.</span>';
   const flag = cardFlag(c), fm = CARD_FLAG_META[flag];
-  return `<div class="section"><h4>Cards on File ${flag !== 'ok' ? badge(fm.label, fm.color) : ''}</h4>
+  return `<div class="section"><h4>Cards on File${flag !== 'ok' ? `<span class="right">${flagEl(fm.label, fm.color)}</span>` : ''}</h4>
     <div class="cards-list">${rows}</div>
-    ${consent ? `<button class="bigbtn js-add-card" data-rec="${c.customerId}" style="margin-top:10px">${I.plus} Add card</button>`
+    ${consent ? `<div style="margin-top:10px">${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: c.customerId } })}</div>`
               : '<span class="muted" style="font-size:11px">Capture a selfie + signature (Edit account) before adding a card.</span>'}</div>`;
 }
 
@@ -979,9 +979,9 @@ function dPill(label, color, { card, recId, icon, title } = {}) {
 /** R5: the ADD affordance — dashed, "+Thing" (never the word "Add", never a
  *  space after +). `link:true` = orange ink (creates/links a record);
  *  `anchor:true` = the neon-blue +Part/Task variant. */
-function addBtn(label, { js, data, link, anchor, h } = {}) {
+function addBtn(label, { js, data, link, anchor, h, icon } = {}) {
   const cls = `add-field${link ? ' link-ink' : ''}${anchor ? ' anchor' : ''}${js ? ' ' + js : ''}`;
-  return `<button class="${cls}" data-r="R5"${dataAttrs(data)}${h ? ` style="height:${h}px"` : ''}>+${esc(label.replace(/^\+?\s*(Add\s+)?/i, ''))}</button>`;
+  return `<button class="${cls}" data-r="R5"${dataAttrs(data)}${h ? ` style="height:${h}px"` : ''}>${icon || ''}+${esc(label.replace(/^\+?\s*(Add\s+)?/i, ''))}</button>`;
 }
 /** R6: required-until-entered — white bg + dark ink, stays loud until satisfied. */
 function reqBtn(label, { js, data, icon } = {}) {
@@ -1005,6 +1005,10 @@ function segCtl(buttons) {
 /** R17: forward-action pills — commit (blue) / money (green) / danger (solid red). */
 function actionPill(kind, label, { js, data, h } = {}) {
   return `<button class="pill c-${kind}${js ? ' ' + js : ''}" data-r="R17"${dataAttrs(data)}${h ? ` style="height:${h}px;font-size:11px"` : ''}>${esc(label)}</button>`;
+}
+/** R18: the ONE quiet/neutral action — Cancel, Close, secondary tools. */
+function ghostPill(label, { js, data } = {}) {
+  return `<button class="pill ghost${js ? ' ' + js : ''}" data-r="R18"${dataAttrs(data)}>${esc(label)}</button>`;
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -1524,7 +1528,7 @@ function efld(card, rec, idField, field, ph, opts = {}) {
   const phDisp = String(ph).replace(/^Add\s+/i, '');   // rule 8/12: drop "Add" + space (data-ph keeps full prompt)
   const dotColor = opts.dot ? rec[field + 'Color'] : '';   // rule 8: notes carry a 3-color dot tag
   const dot = (has && dotColor) ? `<span class="note-dot nd-${esc(dotColor)}"></span>` : '';
-  const disp = has ? dot + esc(opts.fmt ? opts.fmt(raw) : String(raw)) : `<span class="add-field">+${esc(phDisp)}</span>`;
+  const disp = has ? dot + esc(opts.fmt ? opts.fmt(raw) : String(raw)) : `<span class="add-field" data-r="R5">+${esc(phDisp)}</span>`;
   const pfx = opts.pfx ? `<span class="pfx">${esc(opts.pfx)}</span>` : '';
   const sfx = (has && opts.sfx) ? `<span class="sfx">${esc(opts.sfx)}</span>` : '';
   return `<div class="kv${opts.wrap ? ' wrap' : ''}">${pfx}<span class="v inline-edit" data-edit="field" data-card="${card}" data-field="${field}" data-rec="${esc(String(rec[idField]))}" data-ph="${esc(ph)}" data-type="${opts.type || 'text'}"${opts.dot ? ' data-dot="1"' : ''}${opts.wrap ? ' style="white-space:normal"' : ''}>${disp}</span>${sfx}</div>`;
@@ -1611,31 +1615,32 @@ function woSectionHtml(w) {
   const hrs = (w.lineItems || []).reduce((a, li) => a + (Number(li.hours) || 0), 0) || w.laborHours || 0;
   const billed = woBillable(w);
   const laborBilled = Math.round(hrs * LABOR_RATE);
+  // R9: the WO TYPE flag (Field Call / Failed Inspection / mechanic's name)
   const typeFlag = w.woType === 'Field Call'
-    ? `<span class="flag c-red" ${w.customerId ? `data-pill-card="customers" data-pill-rec="${esc(w.customerId)}"` : ''} title="WO type: Field Call">${CARD_ICON.rentals}Field Call</span>`
+    ? flagEl('Field Call', 'red', { icon: CARD_ICON.rentals, card: w.customerId ? 'customers' : null, recId: w.customerId, title: 'WO type: Field Call' })
     : w.woType === 'Failed'
-      ? `<span class="flag c-red" title="WO type: failed inspection">${CARD_ICON.inspections}Failed Inspection</span>`
-      : `<span class="flag c-gray" title="WO type: opened by a mechanic">${esc(w.assignedMechanic || 'Mechanic')}</span>`;
+      ? flagEl('Failed Inspection', 'red', { icon: CARD_ICON.inspections, title: 'WO type: failed inspection' })
+      : flagEl(w.assignedMechanic || 'Mechanic', 'gray', { icon: CARD_ICON.customers, title: 'WO type: opened by a mechanic' });
   const lines = (w.lineItems || []).map((li, idx) => {
     const ph = getStatus('woPhase', li.phase);
     const lbl = li.eta && (li.phase === 'Part Ordered' || li.phase === 'Part is Local') ? `ETA ${fmtShortDate(li.eta)}` : ph.label;
-    return `<div class="woline"><span class="pill gate c-${ph.color} js-wophase-line" data-rec="${w.woId}" data-idx="${idx}">${esc(lbl)} ${I.chev}</span><span>${esc(li.part)}</span><span class="nums"><b>${money(li.cost)}</b><span>${li.hours || 0}h</span></span></div>`;
+    return `<div class="woline">${gatePillRaw(lbl, ph.color, 'js-wophase-line', { rec: w.woId, idx })}<span>${esc(li.part)}</span><span class="nums"><b>${money(li.cost)}</b><span>${li.hours || 0}h</span></span></div>`;
   }).join('');
   const partForm = `<div class="lineform">
     <input class="lf-in js-pf-part" placeholder="Part / labor description" />
     <div class="lineform-row"><input class="lf-in js-pf-cost" type="number" min="0" placeholder="Part $ (0 for labor)" /><input class="lf-in js-pf-hours" type="number" min="0" placeholder="Labor hrs" /></div>
-    <div class="pillrow"><button class="pill c-commit js-part-save" data-rec="${w.woId}">Add line</button><button class="pill c-gray js-part-cancel">Cancel</button></div>
+    <div class="pillrow">${actionPill('commit', 'Add line', { js: 'js-part-save', data: { rec: w.woId } })}${ghostPill('Cancel', { js: 'js-part-cancel' })}</div>
   </div>`;
   return `<div class="section sec-${secColor}">
-    <h4 style="text-transform:none;letter-spacing:0;font-size:13px"><span style="font-weight:800;margin-right:1px">WO:</span> <span class="inline-edit" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span>
-      <span class="right"><span class="flags" style="height:24px">${typeFlag}<span class="flag c-gray">${fmtShortDate(w.date)}</span></span></span></h4>
-    <div class="wototals"><button class="add-field anchor js-add-part" data-rec="${w.woId}" style="height:26px">+Part/Task</button><span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>
+    <h4 class="h-name"><span style="font-weight:800;margin-right:1px">WO:</span> <span class="inline-edit" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span>
+      <span class="right">${flagsStack([typeFlag, flagEl(fmtShortDate(w.date), 'gray')], 24)}</span></h4>
+    <div class="wototals">${addBtn('Part/Task', { anchor: true, js: 'js-add-part', h: 26, data: { rec: w.woId } })}<span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>
     ${lines || '<div class="kv"><span class="muted" style="font-size:12px">No line items yet</span></div>'}
     ${state.woPartForm === w.woId ? partForm : ''}
     <div class="wofoot">
       <span class="derived">Parts ${money(Math.max(0, billed - laborBilled))} + Hrs ${money(laborBilled)} = ${money(billed)}</span>
-      <button class="pill ref js-bill-wo" data-rec="${w.woId}">${CARD_ICON.invoices} +Invoice</button>
-      <button class="pill c-commit js-wo-complete" data-rec="${w.woId}" style="height:26px">Complete WO</button>
+      ${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}
+      ${actionPill('commit', 'Complete WO', { js: 'js-wo-complete', h: 26, data: { rec: w.woId } })}
     </div>
   </div>`;
 }
@@ -1732,8 +1737,8 @@ const DETAIL = {
         </div>
       </div>`;
     }
-    const pickUnitBtn = `<button class="pill ref js-pick" data-card="${cs?.recType ? 'shop' : 'rentals'}" data-rec="${r.rentalId}" data-slot="unit">+ Pick unit</button>`;
-    const pickCustBtn = `<button class="pill ref js-pick" data-card="rentals" data-rec="${r.rentalId}" data-slot="customer">+ Pick customer</button>`;
+    const pickUnitBtn = addBtn('Unit', { link: true, js: 'js-pick', h: 26, data: { card: cs?.recType ? 'shop' : 'rentals', rec: r.rentalId, slot: 'unit' } });
+    const pickCustBtn = addBtn('Customer', { link: true, js: 'js-pick', h: 26, data: { card: 'rentals', rec: r.rentalId, slot: 'customer' } });
 
     /* invoice pill: ✕ unlink ONLY while $0 is assigned to this rental's line item
        (after any assigned payment, removal requires refunding first — Jac's rule).
@@ -1742,7 +1747,7 @@ const DETAIL = {
     const paidForThis = inv ? itemPaid(inv, r.rentalId) : 0;
     const invPill = inv
       ? `<span class="pill ref link" data-pill-card="invoices" data-pill-rec="${esc(inv.invoiceId)}">${CARD_ICON.invoices}${esc(invoiceShort(inv.invoiceId))}${paidForThis <= 0 ? `<span class="x" data-x="inv-remove" title="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`
-      : (r.mock && cust && s && e ? `<button class="pill ref js-create-invoice" data-rec="${r.rentalId}">${CARD_ICON.invoices} +Invoice/+Transport</button>` : '<span class="pill c-gray">No invoice — link one to set transport</span>');
+      : (r.mock && cust && s && e ? addBtn('Invoice/+Transport', { link: true, js: 'js-create-invoice', h: 26, icon: CARD_ICON.invoices, data: { rec: r.rentalId } }) : badge('No invoice — link one to set transport'));
 
     const balColor = invT ? (invT.balance <= 0 && invT.paid > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red') : null;
 
@@ -1763,10 +1768,10 @@ const DETAIL = {
     const cancelish = ['Cancelled', 'No Show'].includes(r.status);
     const canComplete = r.status === 'Returned';
     const crBtn = cancelish
-      ? `<button class="pill c-danger js-cancel-rental" data-rec="${r.rentalId}" style="height:26px;font-size:11px">Cancel Rental</button>`
-      : `<button class="pill ${canComplete ? 'c-commit' : 'ref'} js-complete-rental" data-rec="${r.rentalId}" style="height:26px;font-size:11px${canComplete ? '' : ';opacity:.55'}">Complete Rental</button>`;
+      ? actionPill('danger', 'Cancel Rental', { js: 'js-cancel-rental', h: 26, data: { rec: r.rentalId } })
+      : actionPill('commit', 'Complete Rental', { js: `js-complete-rental${canComplete ? '' : ' locked'}`, h: 26, data: { rec: r.rentalId } });
 
-    const fcRow = r.fieldCall ? `<button class="pill c-red js-clear-fc" data-rec="${r.rentalId}">Field Call active — clear</button>` : '';
+    const fcRow = r.fieldCall ? actionPill('danger', 'Field Call active — clear', { js: 'js-clear-fc', data: { rec: r.rentalId } }) : '';
 
     /* RENTAL section (v2): NO header — the timeline opens the section; the border
        carries the rental-status color. Left = actions · right = pay-colored balance. */
@@ -1908,7 +1913,8 @@ const DETAIL = {
     const yr = (iso) => `${fmtShortDate(iso)}, ${parseISO(iso).getFullYear()}`;
 
     // §7.1 — every contact/account detail is click-to-edit (auto-saves via the persist hook)
-    const efield = (f, ph, wrap) => { const val = c[f]; return `<div class="kv"><span class="v inline-edit" data-edit="custField" data-field="${f}" data-rec="${c.customerId}" data-ph="${esc(ph)}"${wrap ? ' style="white-space:normal"' : ''}>${val ? esc(val) : `<span class="add-field">+ ${esc(ph)}</span>`}</span></div>`; };
+    // R5: empty fields render the dashed "+Thing" add (no "Add", no space after +)
+    const efield = (f, ph, wrap) => { const val = c[f]; const thing = ph.replace(/^Add\s+/i, ''); const lbl = thing.charAt(0).toUpperCase() + thing.slice(1); return `<div class="kv"><span class="v inline-edit" data-edit="custField" data-field="${f}" data-rec="${c.customerId}" data-ph="${esc(ph)}"${wrap ? ' style="white-space:normal"' : ''}>${val ? esc(val) : `<span class="add-field" data-r="R5">+${esc(lbl)}</span>`}</span></div>`; };
     const contact = `<div class="section"><h4>Contact</h4><div class="fieldstack">
       ${efield('firstName', 'First name')}${efield('lastName', 'Last name')}
       ${efield('phone', 'Add phone')}${efield('email', 'Add email')}
@@ -1924,13 +1930,13 @@ const DETAIL = {
     const acctDone = !!(c.selfie && c.signature);
     const selfieThumb = c.selfie ? `<img class="cust-selfie" src="${esc(c.selfie)}" alt="" />` : '';
     const agPill = c.agreementSignedAt ? `<button class="pill c-green js-view-agreement" data-rec="${c.customerId}" title="View signed agreement">${esc(AGREEMENTS[c.agreementType]?.title || 'Agreement')} ✓</button>` : '';
-    const badges = `<div class="detail-badges pillrow">${selfieThumb}${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${isMember ? badge('Member', 'purple') : ''}${statusPill('customerPayStatus', c.payStatus)}${agPill}<span class="spacer"></span>${acctDone ? '' : badge('Incomplete', 'yellow')}<button class="pill ref js-edit-customer" data-rec="${c.customerId}">${acctDone ? 'Edit account' : 'Complete account'}</button></div>`;
+    const badges = `<div class="detail-badges pillrow">${selfieThumb}${badge(isBusiness ? 'Business' : 'Non-Business', isBusiness ? 'blue' : 'gray')}${isMember ? badge('Member', 'purple') : ''}${statusPill('customerPayStatus', c.payStatus)}${agPill}<span class="spacer"></span>${acctDone ? '' : badge('Incomplete', 'yellow')}${actionPill('commit', acctDone ? 'Edit account' : 'Complete account', { js: 'js-edit-customer', data: { rec: c.customerId } })}</div>`;
     const activeBar = `<div class="active-bar wide"><div class="active-spectrum" style="clip-path:inset(0 ${100 - (d.activePct || 0)}% 0 0)"></div><span class="active-lbl">${d.activePct || 0}% Active</span></div>`;
 
     const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id }) : ''; }).join('');
     const usedSales = `<div class="section"><h4>Used Sales</h4><div class="fieldstack">
       ${kvPills(funnelPill(c.customerId, 'usedSales', c.usedSalesStage || 'Inbound Lead'))}
-      <div class="kv pillrow">${intCats}<button class="pill ref js-addcat" data-rec="${c.customerId}">+ Add Category</button></div>
+      <div class="kv pillrow">${intCats}${addBtn('Category', { link: true, js: 'js-addcat', h: 26, data: { rec: c.customerId } })}</div>
     </div></div>`;
     const membership = `<div class="section"><h4>Membership</h4><div class="fieldstack">
       ${kvPills(funnelPill(c.customerId, 'membership', c.membershipStage || 'Inbound Lead'))}
@@ -1942,9 +1948,9 @@ const DETAIL = {
     // §12.1 — the action entry + Record/Schedule lead the Activity Log (they're related)
     const activity = `<div class="section"><h4>Activity Log</h4>
       <div class="pillrow" style="margin-bottom:10px">
-        <span class="pill ref inline-edit" data-edit="salesAction" data-rec="${c.customerId}">${c.salesAction ? esc(c.salesAction) : '+ Add action'}</span>
-        <button class="pill ref js-funnel-record" data-rec="${c.customerId}">Record</button>
-        <button class="pill ref js-funnel-schedule" data-rec="${c.customerId}">Schedule</button>
+        <span class="${c.salesAction ? 'pill ghost' : 'add-field'} inline-edit" data-r="${c.salesAction ? 'R18' : 'R5'}" data-edit="salesAction" data-rec="${c.customerId}"${c.salesAction ? '' : ' style="height:26px"'}>${c.salesAction ? esc(c.salesAction) : '+Action'}</span>
+        ${actionPill('commit', 'Record', { js: 'js-funnel-record', data: { rec: c.customerId } })}
+        ${actionPill('commit', 'Schedule', { js: 'js-funnel-schedule', data: { rec: c.customerId } })}
       </div>
       <div class="hlog">${log || '<span class="muted" style="font-size:12px">No activity yet.</span>'}</div></div>`;
 
@@ -2015,31 +2021,31 @@ const DETAIL = {
       const ref = li.kind === 'rental' ? `data-pill-card="rentals" data-pill-rec="${esc(li.ref)}"` : '';
       // transport line auto-appears from the rental (no remove); rental/WO/custom carry an X — unless locked (§12.5)
       const x = (!locked && li.kind !== 'transport') ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
-      return `<div class="hitem"><span class="pill ref link" style="min-width:62px;justify-content:center">${esc(li.kind)}</span><span ${ref} class="inv-line-link">${esc(li.label)}</span><span class="spacer"></span><b class="derived">${money(li.amount)}</b>${x}</div>`;
+      return `<div class="hitem">${badge(li.kind)}<span ${ref} class="inv-line-link" data-r="R7">${esc(li.label)}</span><span class="spacer"></span><b class="derived">${money(li.amount)}</b>${x}</div>`;
     }).join('');
     const invoiceSec = `<div class="section"><h4>Invoice</h4><div class="fieldstack">
-      ${kvPills(cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? `<button class="pill ref js-pick" data-card="invoices" data-rec="${i.invoiceId}" data-slot="customer">+ Pick customer</button>` : '<span class="pill c-gray">No customer</span>'))}
+      ${kvPills(cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? addBtn('Customer', { link: true, js: 'js-pick', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer')))}
       ${kv(money(t.balance), { sfx: 'due', big: true, derived: true })}
       ${kv(`${money(t.paid)} / ${money(t.total)}`, { sfx: 'paid', derived: true })}
       ${kv(fmtShortDate(i.dueDate), { sfx: 'due date', derived: true })}
       ${kvPills(cust?.requiresPO && !i.po
-        ? `<span class="req inline-edit" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
-        : `<span class="pill ref inline-edit" data-edit="invoicePO" data-rec="${i.invoiceId}">${esc(i.po ? 'PO ' + i.po : 'Add PO')}</span>`)}
+        ? `<span class="req inline-edit" data-r="R6" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
+        : `<span class="${i.po ? 'pill ghost' : 'add-field'} inline-edit" data-r="${i.po ? 'R18' : 'R5'}" data-edit="invoicePO" data-rec="${i.invoiceId}"${i.po ? '' : ' style="height:26px"'}>${esc(i.po ? 'PO ' + i.po : '+PO')}</span>`)}
       ${canMoney() && cust
         ? `<div class="pillrow" style="margin-top:2px">${
             t.status === 'Refunded'
-              ? `<span class="pill c-gray" style="min-width:0">Refunded</span><button class="pill ref js-pay-invoice" data-rec="${i.invoiceId}">Details</button>`
+              ? `${badge('Refunded')}${actionPill('commit', 'Details', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
               : t.balance <= 0 && t.paid > 0
-                ? `<span class="pill c-green" style="min-width:0">Paid${i.paymentMethod ? ' · ' + esc(i.paymentMethod) : ''}</span><button class="pill ref js-pay-invoice" data-rec="${i.invoiceId}">Refund</button>`
-                : `<button class="pill c-money js-pay-invoice" data-rec="${i.invoiceId}">${hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money(t.balance) : 'Take payment'}</button>${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : ''}`
+                ? `${badge(`Paid${i.paymentMethod ? ' · ' + i.paymentMethod : ''}`, 'green')}${actionPill('danger', 'Refund', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
+                : `${actionPill('money', hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money(t.balance) : 'Take payment', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : ''}`
           }</div>`
         : ''}
     </div></div>`;
-    const lineForm = `<div class="lineform"><input class="lf-in js-lf-label" placeholder="Custom line description" /><div class="lineform-row"><input class="lf-in js-lf-amt" type="number" min="0" placeholder="Amount $" /></div><div class="pillrow"><button class="pill c-commit js-line-save" data-rec="${i.invoiceId}">Add line</button><button class="pill c-gray js-line-cancel">Cancel</button></div></div>`;
+    const lineForm = `<div class="lineform"><input class="lf-in js-lf-label" placeholder="Custom line description" /><div class="lineform-row"><input class="lf-in js-lf-amt" type="number" min="0" placeholder="Amount $" /></div><div class="pillrow">${actionPill('commit', 'Add line', { js: 'js-line-save', data: { rec: i.invoiceId } })}${ghostPill('Cancel', { js: 'js-line-cancel' })}</div></div>`;
     const addRow = state.invLineForm === i.invoiceId ? lineForm
       : locked
-        ? `<div class="pillrow" style="margin-top:8px"><span class="muted" style="font-size:12px">🔒 Pricing locked — this is what gets charged.</span>${canMoney() ? `<span class="spacer"></span><button class="pill ref js-unlock-invoice" data-rec="${i.invoiceId}">Unlock to edit</button>` : ''}</div>`
-        : `<div class="pillrow" style="margin-top:8px"><button class="pill ref js-add-line" data-rec="${i.invoiceId}" data-kind="Rental">+ Add Rental</button><button class="pill ref js-add-line" data-rec="${i.invoiceId}" data-kind="WO">+ Add WO</button><button class="pill ref js-add-line" data-rec="${i.invoiceId}" data-kind="Custom">+ Add Custom</button>${canMoney() && (i.lineItems || []).length ? `<span class="spacer"></span><button class="pill ref js-lock-invoice" data-rec="${i.invoiceId}" title="Freeze pricing so it can be charged safely">🔒 Lock price</button>` : ''}</div>`;
+        ? `<div class="pillrow" style="margin-top:8px"><span class="muted" style="font-size:12px">🔒 Pricing locked — this is what gets charged.</span>${canMoney() ? `<span class="spacer"></span>${actionPill('commit', 'Unlock to edit', { js: 'js-unlock-invoice', data: { rec: i.invoiceId } })}` : ''}</div>`
+        : `<div class="pillrow" style="margin-top:8px">${addBtn('Rental', { link: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Rental' } })}${addBtn('WO', { link: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'WO' } })}${addBtn('Custom', { js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Custom' } })}${canMoney() && (i.lineItems || []).length ? `<span class="spacer"></span>${actionPill('commit', '🔒 Lock price', { js: 'js-lock-invoice', data: { rec: i.invoiceId } })}` : ''}</div>`;
     const items = `<div class="section"><h4>Items</h4>
       <div class="hlog">${lines || '<span class="muted" style="font-size:12px">No line items</span>'}</div>
       ${addRow}
