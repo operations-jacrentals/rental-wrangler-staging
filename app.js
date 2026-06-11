@@ -1337,14 +1337,29 @@ function listTotalsEl(card, rows, session) {
       chips.push(`<span class="tot-chip">${val} ${esc(col.label)} ${calc}</span>`);
     }
   }
+  // v2: the units footer carries the SHOP — open-WO + parts-ordered counts
+  // (the standalone Inspections/WO tabs went away; Jac call #1)
+  if (card === 'units') {
+    const openBy = new Set(DATA.workOrders.filter((w) => w.phase !== 'Complete').map((w) => w.unitId));
+    const ordBy = new Set(DATA.workOrders.filter((w) => w.phase !== 'Complete' && (w.phase === 'Part Ordered' || (w.lineItems || []).some((l) => l.phase === 'Part Ordered'))).map((w) => w.unitId));
+    const nOpen = rows.filter((u) => openBy.has(u.unitId)).length;
+    const nOrd = rows.filter((u) => ordBy.has(u.unitId)).length;
+    if (nOpen) { const on = tf && tf.col === '__wo' && tf.value === 'open'; chips.push(`<button class="tot-chip c-red js-tot-chip${on ? ' on' : ''}" data-tot-card="units" data-tot-col="__wo" data-tot-val="open">${nOpen} WOs Open</button>`); }
+    if (nOrd) { const on = tf && tf.col === '__wo' && tf.value === 'ordered'; chips.push(`<button class="tot-chip c-yellow js-tot-chip${on ? ' on' : ''}" data-tot-card="units" data-tot-col="__wo" data-tot-val="ordered">${nOrd} Parts Ordered</button>`); }
+  }
   if (!chips.length) return null;
   const node = el('div', 'list-totals');
-  node.innerHTML = `<span class="tot-count">${rows.length}</span>${chips.join('')}`;
+  node.innerHTML = chips.join('');   // v2: total count dropped (Jac: "not helpful")
   return node;
 }
 /** Filter a card's list rows by an active footer-chip filter (col === value). */
 function applyTotalFilter(card, rows, session) {
   const cs = session.cards[card]; if (!cs || !cs.totalFilter) return rows;
+  if (cs.totalFilter.col === '__wo') {           // v2 synthetic footer chips: units with shop work
+    const want = cs.totalFilter.value;
+    const ids = new Set(DATA.workOrders.filter((w) => w.phase !== 'Complete' && (want === 'open' || w.phase === 'Part Ordered' || (w.lineItems || []).some((l) => l.phase === 'Part Ordered'))).map((w) => w.unitId));
+    return rows.filter((rec) => ids.has(rec.unitId));
+  }
   const col = cardColumns(card, session).find((c) => c.key === cs.totalFilter.col);
   return col ? rows.filter((rec) => String(col.get(rec)) === String(cs.totalFilter.value)) : rows;
 }
@@ -2295,7 +2310,11 @@ function columnEl(col, session) {
 function blankColEl() { const n = el('div', 'card blank-col'); return n; }
 function colTabsEl(col, active, session) {
   const bar = el('div', 'col-tabs');
-  bar.innerHTML = col.members.map((m) => {
+  // v2 (Jac call #1): the standalone Inspections + Work Orders tabs go away —
+  // they live INSIDE the Unit card now; only Service keeps a tab. The hidden
+  // tab still renders while its member is ACTIVE so deep links navigate home.
+  const HIDDEN_TABS = new Set(['inspections', 'workOrders']);
+  bar.innerHTML = col.members.filter((m) => !HIDDEN_TABS.has(m) || m === active).map((m) => {
     const on = m === active, compact = SHOP_TYPES.includes(m);   // shop sub-types are icon-only
     const n = memberCount(m, session);
     const alert = SHOP_TYPES.includes(m) && shopAlertCount(m, session) > 0;   // red = work needs doing
