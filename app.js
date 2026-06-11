@@ -1690,7 +1690,7 @@ const DETAIL = {
        Clicking it opens the window calendar exactly like the old status bar. */
     let timeline;
     if (r.mock && !hasWin) {
-      timeline = `<button class="statusbar draftwin wintrigger js-open-winpicker" data-rec="${r.rentalId}"><span class="wt-label">${r.startDate ? esc(fmtShortDate(r.startDate)) + ' → pick end' : 'Select rental window'}</span><span class="pill c-${stColor}">${esc(getStatus('rentalStatus', rentalDisplayStatus(r)).label)}</span></button>`;
+      timeline = `<button class="statusbar draftwin wintrigger js-open-winpicker" data-rec="${r.rentalId}"><span class="wt-label">${r.startDate ? esc(fmtShortDate(r.startDate)) + ' → pick end' : 'Select rental window'}</span>${badge(getStatus('rentalStatus', rentalDisplayStatus(r)).label, stColor)}</button>`;
     } else {
       const dayMs = 86400000;
       const total = hasWin ? Math.max(1, Math.round((e - s) / dayMs)) : 1;
@@ -3063,7 +3063,7 @@ function renderOverlay() {
           : `<label class="fb-attach"><span>${I.plus} Add a screenshot (recommended)</span><input type="file" accept="image/*" class="js-fb-shot" hidden></label>`}
         <div class="fb-ctx muted">Auto-attached so Claude can reproduce it: <b>${esc(ctx.view)}</b> · ${esc(ctx.role || 'no role')} · ${esc(ctx.viewport)}</div>
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:8px">${esc(o.error)}</div>` : ''}
-        <div class="pillrow" style="justify-content:flex-end;margin-top:14px"><button class="pill c-gray js-close">Cancel</button><button class="pill c-green js-fb-send" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Sending…' : 'Send report'}</button></div>
+        <div class="pillrow" style="justify-content:flex-end;margin-top:14px"><button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill c-commit js-fb-send" data-r="R17" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Sending…' : 'Send report'}</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'board') {
@@ -3099,7 +3099,7 @@ function renderOverlay() {
         ${roleRows}
         <label class="set-row set-admin"><span class="set-role">Admin</span><input class="set-input" data-admin="1" value="${esc(cfg.admin)}" autocomplete="off" /></label>
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:8px">${esc(o.error)}</div>` : ''}
-        <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill c-gray js-close">Cancel</button><button class="pill c-commit js-settings-save">Save</button></div>
+        <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill c-commit js-settings-save">Save</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'newCustomer') {
@@ -3138,7 +3138,7 @@ function renderOverlay() {
           <div class="nc-cap"><span class="nc-cap-lbl">Card on file</span><div class="nc-thumb empty${cardOnFile ? ' good' : ''}">${esc(cardShort)}</div><div class="pillrow">${isEdit ? (d.signature && d.selfie ? `<button class="pill ref js-add-card" data-rec="${o.editId}">${cardOnFile ? 'Replace card' : '＋ Add card'}</button>` : '<span class="muted" style="font-size:11px">Sign first</span>') : '<span class="muted" style="font-size:11px">Save customer first</span>'}</div></div>
         </div>
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:10px">${esc(o.error)}</div>` : ''}
-        <div class="pillrow" style="margin-top:16px;justify-content:flex-end"><button class="pill c-gray js-close">Cancel</button><button class="pill c-green js-nc-save">${isEdit ? 'Save account' : 'Create customer'}</button></div>
+        <div class="pillrow" style="margin-top:16px;justify-content:flex-end"><button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill c-green js-nc-save">${isEdit ? 'Save account' : 'Create customer'}</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'agreement') {
@@ -3154,7 +3154,7 @@ function renderOverlay() {
         <div class="nc-ag-meta">${esc(fullName(c))}${c.agreementSignedAt ? ` · accepted ${esc(c.agreementSignedAt)}` : ' · not yet signed'}</div>
         <div class="nc-agreement" tabindex="0">${esc(ag.text)}</div>
         ${c.signature ? `<div class="nc-ag-sigline"><span class="nc-cap-lbl">Signature</span><img class="nc-thumb sig" src="${esc(c.signature)}" alt="signature" /></div>` : ''}
-        <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill c-gray js-close">Close</button><button class="pill ref js-edit-customer" data-rec="${c.customerId}">Edit account</button></div>
+        <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill ghost js-close" data-r="R18">Close</button><button class="pill c-commit js-edit-customer" data-r="R17" data-rec="${c.customerId}">Edit account</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'inspection') {
@@ -3199,7 +3199,7 @@ function renderOverlay() {
         <label class="svc-field"><span>Date completed</span><input type="date" class="js-svc-date" value="${TODAY_ISO}"></label>
         ${media}
         <textarea class="insp-desc js-svc-notes" placeholder="Notes (parts used, observations)…"></textarea>
-        <div class="pillrow" style="justify-content:flex-end;margin-top:10px"><button class="pill c-green js-svc-save" data-unit="${u.unitId}" data-task="${task.taskId}">Record completion</button></div>
+        <div class="pillrow" style="justify-content:flex-end;margin-top:10px"><button class="pill c-commit js-svc-save" data-r="R17" data-unit="${u.unitId}" data-task="${task.taskId}">Record completion</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'schedule') {
@@ -3213,7 +3213,7 @@ function renderOverlay() {
       <div class="popup-body">
         <label class="svc-field"><span>Date &amp; time</span><input type="datetime-local" class="js-sch-when" value="${def}"></label>
         <textarea class="insp-desc js-sch-note" placeholder="What's the follow-up? (quote call, pickup, demo…)"></textarea>
-        <div class="pillrow" style="justify-content:flex-end;margin-top:10px"><button class="pill c-green js-schedule-save" data-rec="${c.customerId}">Add to schedule</button></div>
+        <div class="pillrow" style="justify-content:flex-end;margin-top:10px"><button class="pill c-commit js-schedule-save" data-r="R17" data-rec="${c.customerId}">Add to schedule</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'addCard') {
@@ -3225,12 +3225,12 @@ function renderOverlay() {
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>Add card — ${esc(c.name)}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body">
-        ${consent ? '' : `<div class="login-err" style="text-align:left;margin-bottom:12px">A selfie + signature are required first (card authorization). <button class="pill ref js-edit-customer" data-rec="${c.customerId}" style="margin-left:6px">Complete account</button></div>`}
+        ${consent ? '' : `<div class="login-err" style="text-align:left;margin-bottom:12px">A selfie + signature are required first (card authorization). <button class="pill c-commit js-edit-customer" data-r="R17" data-rec="${c.customerId}" style="margin-left:6px">Complete account</button></div>`}
         <div class="pay-cap">Card number</div>
         <div class="pay-card-field" id="sl-card-element"></div>
         <div class="pay-err" id="sl-card-error"></div>
         <p class="muted" style="font-size:11px;margin:10px 0 0">Entered securely via Stripe. We store only the brand + last 4 digits — never the full number. The customer's signature + selfie on file authorize future charges.</p>
-        <div class="pillrow" style="justify-content:flex-end;margin-top:14px"><button class="pill c-gray js-close">Cancel</button><button class="pill c-green js-card-save" ${consent ? '' : 'disabled style="opacity:.45;cursor:default"'}>Save card</button></div>
+        <div class="pillrow" style="justify-content:flex-end;margin-top:14px"><button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill c-commit js-card-save" data-r="R17" ${consent ? '' : 'disabled style="opacity:.45;cursor:default"'}>Save card</button></div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'payment') {
@@ -3256,12 +3256,12 @@ function renderOverlay() {
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:10px">${esc(o.error)}</div>` : ''}
         <div class="pillrow" style="justify-content:flex-end;margin-top:16px">
           ${o.confirmRefund
-            ? `<button class="pill c-gray js-refund-cancel">Cancel</button><button class="pill c-danger js-refund-confirm" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Refunding…' : 'Confirm refund'}</button>`
-            : `<button class="pill c-gray js-close">Close</button>
-               ${t.paid > 0 && !refunded ? `<button class="pill ref js-refund-invoice" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>Refund</button>` : ''}
+            ? `<button class="pill ghost js-refund-cancel" data-r="R18">Cancel</button><button class="pill c-danger js-refund-confirm" data-r="R17" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Refunding…' : 'Confirm refund'}</button>`
+            : `<button class="pill ghost js-close" data-r="R18">Close</button>
+               ${t.paid > 0 && !refunded ? `<button class="pill c-danger js-refund-invoice" data-r="R17" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>Refund</button>` : ''}
                ${t.balance > 0 ? (card
                  ? `<button class="pill c-money js-charge-invoice" data-rec="${inv.invoiceId}" ${o.busy ? 'disabled' : ''}>${o.busy ? 'Charging…' : 'Charge'}</button>`
-                 : `<button class="pill ref js-pay-addcard" data-rec="${inv.customerId || ''}" data-inv="${inv.invoiceId}" ${inv.customerId ? '' : 'disabled style="opacity:.45;cursor:default"'}>Add a card</button>`) : ''}`}
+                 : `<button class="add-field link-ink js-pay-addcard" data-r="R5" data-rec="${inv.customerId || ''}" data-inv="${inv.invoiceId}" ${inv.customerId ? '' : 'disabled style="opacity:.45;cursor:default"'}>+Card</button>`) : ''}`}
         </div>
       </div>`;
     overlay.appendChild(pop);
@@ -3450,7 +3450,7 @@ function boardViewTable(o, session) {
     if (co.kind === 'data') { const c = byKey[co.key]; if (!c) return ''; return `<th class="js-bv-sort${isNum(c) ? ' num' : ''}" data-col="${c.key}">${esc(c.label)}<span class="bv-arrow">${arrow(c.key)}</span>${insBtn(ci)}</th>`; }
     return `<th class="bv-xcol"><input class="bv-colname" data-col="${co.id}" value="${esc(co.label || '')}" placeholder="=price*2 or note" /><button class="bv-xrm js-bv-rmcol" data-col="${co.id}" title="Remove column">×</button>${insBtn(ci)}</th>`;
   }).join('');
-  const head = `<tr><th class="bv-gutter"></th>${headCells}<th class="bv-addcol"><button class="bv-mini js-bv-addcol" title="Add a formula / notes column">${I.plus}Col</button></th></tr>`;
+  const head = `<tr><th class="bv-gutter"></th>${headCells}<th class="bv-addcol"><button class="bv-mini js-bv-addcol" data-r="R5" title="Add a column">+Col</button></th></tr>`;
   // body cells
   const dataCell = (co, rec, recId) => {
     if (co.kind === 'data') { const c = byKey[co.key]; return `<td${isNum(c) ? ' class="num"' : ''}>${c.cell(rec)}</td>`; }
@@ -3520,7 +3520,7 @@ function bvCustomizePanel(card) {
       ${badges.length ? badges.map((c) => box(c, 'row2', layout.row2.includes(c.key), false)).join('') : '<span class="muted">No badge columns on this card.</span>'}</div>
     <div class="bv-pick-group"><h4>Card totals <span class="muted">(footer)</span></h4>
       ${aggCols.length ? aggCols.map(totBox).join('') : '<span class="muted">Nothing to total.</span>'}</div>
-    <button class="bv-mini js-bv-resetlayout" data-card="${card}">Reset to defaults</button>
+    <button class="pill ghost js-bv-resetlayout" data-r="R18" data-card="${card}">Reset to defaults</button>
   </div>`;
 }
 
@@ -4271,7 +4271,7 @@ function onInput(e) {
     const street = v.replace(/,.*$/, '');
     const hits = cities.filter((c) => v.toLowerCase().includes(c.toLowerCase()));
     const pool = (hits.length ? hits : cities).slice(0, 3);
-    box.innerHTML = pool.map((c) => `<button class="js-site-pick" type="button">${esc(`${street}, ${c.replace(/\b\w/g, (m) => m.toUpperCase())}, TX`)}</button>`).join('');
+    box.innerHTML = pool.map((c) => `<button class="dd-item js-site-pick" type="button">${esc(`${street}, ${c.replace(/\b\w/g, (m) => m.toUpperCase())}, TX`)}</button>`).join('');
     return;
   }
   if (e.target.classList.contains('js-history-search')) {
@@ -4849,7 +4849,7 @@ function pickBarEl() {
   if (p.slot === 'washunit') {   // header "Wash" mode — pick a unit to flag for a wash
     const bar = el('div', 'pickbar');
     bar.innerHTML = `<span class="pb-dot"></span><span class="pb-text">You are in <b>Wash Mode</b>. Exit by clicking <b>Wash</b>, or click a <b>Unit</b> to request its wash.</span>
-      <button class="pb-cancel js-cancelpick">Exit</button>`;
+      <button class="pill ghost js-cancelpick" data-r="R18">Exit</button>`;
     return bar;
   }
   const entity = entityCardOf(p.card, p.recType);
@@ -4857,7 +4857,7 @@ function pickBarEl() {
   const bar = el('div', 'pickbar');
   const rec = recOf(entity, p.recId);   // swaps & other one-off picks keep the original prompt
   bar.innerHTML = `<span class="pb-dot"></span><span class="pb-text">Pick ${PICK_LABEL[p.slot]} for <b>${esc(draftName(p.card, rec || {}))}</b> — click a row in the highlighted card.</span>
-    <button class="pb-cancel js-cancelpick">Cancel</button>`;
+    <button class="pill ghost js-cancelpick" data-r="R18">Cancel</button>`;
   return bar;
 }
 /* ── The non-dimming "+X mode" guide popup, centered in the middle card, with arrows
@@ -4886,7 +4886,7 @@ function guidePopupEl() {
   const node = el('div', 'guide-pop');
   node.innerHTML = `${g.arrows.map(arrow).join('')}
     <div class="g-card"><div class="g-title">${esc(MODE_TITLE[g.entity])} mode</div><div class="g-msg">${esc(g.msg)}</div>
-      <button class="g-exit js-cancelpick">Exit</button></div>`;
+      <button class="pill ghost js-cancelpick" data-r="R18">Exit</button></div>`;
   return node;
 }
 function positionGuide(node) {
@@ -5056,7 +5056,7 @@ function winPickerEl(r) {
     <div class="wp-head"><span class="wp-month">${MONTH_NAMES[m]} ${y}</span>
       <span class="wp-nav"><button class="js-wp-prev" title="Previous month">‹</button><button class="js-wp-next" title="Next month">›</button></span></div>
     <div class="wp-grid">${dows}${cells}</div>
-    <div class="wp-foot"><button class="js-wp-clear">Clear</button><button class="js-wp-today">Today</button><button class="js-wp-done">Done</button></div>
+    <div class="wp-foot"><button class="pill ghost js-wp-clear" data-r="R18">Clear</button><button class="pill ghost js-wp-today" data-r="R18">Today</button><button class="pill c-commit js-wp-done" data-r="R17">Done</button></div>
   </div>`;
 }
 /** Float the picker anchored to the TOP of its trigger button (opens upward so the
@@ -5318,7 +5318,7 @@ function renderLogin(msg) {
     <div class="login-sub">Sign in to continue.</div>
     <input id="login-name" class="login-input" placeholder="Your name" autocomplete="name" value="${esc(currentUser)}" />
     <input id="login-pw" type="password" class="login-input" placeholder="Team password" autocomplete="current-password" />
-    <button type="submit" class="login-btn" id="login-go">Sign in</button>
+    <button type="submit" class="login-btn" data-r="R17" id="login-go">Sign in</button>
     <div class="login-err" id="login-err">${msg ? esc(msg) : ''}</div>
   </form></div>`;
   document.getElementById('login-form').addEventListener('submit', (e) => { e.preventDefault(); attemptLogin(); });

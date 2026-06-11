@@ -261,8 +261,6 @@ input { font-family: inherit; }
   box-shadow: 0 0 0 4px var(--accent-soft), 0 18px 50px rgba(0,0,0,.5); padding: 15px 22px; text-align: center; min-width: 210px; }
 .g-title { font-size: 11px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase; color: var(--accent); }
 .g-msg { font-size: 16px; font-weight: 700; color: var(--txt); margin: 6px 0 12px; }
-.g-exit { font-size: 12px; font-weight: 700; color: var(--txt-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 16px; }
-.g-exit:hover { color: var(--red); border-color: var(--red); }
 /* big directional arrows; each keyframe KEEPS its centering transform (the old shared
    gbob clobbered translateX/Y(-50%), knocking the arrows off-center) */
 .g-arrow { position: absolute; color: var(--accent); font-size: 58px; font-weight: 900; line-height: 1; text-shadow: 0 3px 11px rgba(0,0,0,.65); pointer-events: none; }
@@ -670,17 +668,13 @@ input { font-family: inherit; }
 .winpicker .wp-day.range-end { background: var(--accent); color: #fff; border-radius: 0 7px 7px 0; }
 .winpicker .wp-day.range-start.range-end { border-radius: 7px; }
 .winpicker .wp-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
-.winpicker .wp-foot button { height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--txt-2); font-size: 12px; font-weight: 700; cursor: pointer; }
-.winpicker .wp-foot button:hover { color: var(--txt); border-color: var(--accent-line); }
-.winpicker .wp-foot .js-wp-done { background: var(--blue); color: #fff; border-color: var(--blue); }   /* rule 17: Done/Save = blue */
+.pickbar .pill.ghost { margin-left: auto; }
 
 /* §0.3 pick mode — banner + the highlighted source card */
 .pickbar { display: flex; align-items: center; gap: 10px; margin: 12px 12px 0; padding: 10px 14px; border-radius: 12px; background: var(--accent-soft); border: 1px solid var(--accent-line); box-shadow: var(--chip-shadow); }
 .pickbar .pb-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(255,122,26,.18); animation: pbpulse 1.3s ease-in-out infinite; flex: 0 0 auto; }
 .pickbar .pb-text { font-size: 13px; color: var(--txt); }
 .pickbar .pb-text b { color: var(--accent); }
-.pickbar .pb-cancel { margin-left: auto; height: 28px; padding: 0 12px; border-radius: var(--chip-radius); background: var(--panel); border: 1px solid var(--line); color: var(--txt-2); font-size: 12px; font-weight: 700; cursor: pointer; }
-.pickbar .pb-cancel:hover { color: var(--txt); border-color: var(--accent-line); }
 .card.pick-target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-line), 0 0 26px -4px rgba(255,122,26,.5); }
 .card.pick-target .list .row { cursor: copy; }
 .card.pick-target .list .row:hover { background: var(--accent-soft); }
@@ -941,7 +935,7 @@ select.nc-in { cursor: pointer; }
 .login-sub { font-size: 13px; color: var(--txt-3); margin-bottom: 6px; text-align: center; }
 .login-input { width: 100%; height: 42px; padding: 0 13px; border-radius: 11px; background: var(--panel-2); border: 1px solid var(--line); color: var(--txt); font-size: 14px; transition: border-color .12s, box-shadow .12s; }
 .login-input:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
-.login-btn { width: 100%; height: 42px; border-radius: 11px; background: var(--accent); color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; border: none; transition: filter .12s; }
+.login-btn { width: 100%; height: 42px; border-radius: 11px; background: var(--blue); color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; border: none; transition: filter .12s; }
 .login-btn:hover { filter: brightness(1.07); }
 .login-btn:disabled { opacity: .65; cursor: default; }
 .login-err { font-size: 12px; font-weight: 600; color: var(--red); text-align: center; }
