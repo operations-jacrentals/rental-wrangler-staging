@@ -85,13 +85,21 @@ function legacyUnitEntry(r) {
     startHours: r.startHours != null ? r.startHours : null,
     returnHours: r.returnHours != null ? r.returnHours : null,
     startCapture: r.startCapture || null, endCapture: r.endCapture || null, fcCapture: r.fcCapture || null,
-    transportType: r.transportType || null, deliveryAddress: r.deliveryAddress || '', recoveryAddress: r.recoveryAddress || '' };
+    transportType: r.transportType || null, deliveryAddress: r.deliveryAddress || '', recoveryAddress: r.recoveryAddress || '', sitePin: r.sitePin || null };
 }
 function migrateRentals() {
   DATA.rentals.forEach((r) => {
     if (!Array.isArray(r.units)) {
       r.units = r.unitId ? [legacyUnitEntry(r)] : [];
       migrationDirty = true;
+    }
+    // §20 reconcile r.unitId/r.status from units[] even for data that already
+    // arrived with a units[] array (rentalMirrorStatus needs no IDX, so it is
+    // safe to run here before the indexes are built).
+    if (r.units.length) {
+      r.unitId = r.units[0].unitId || r.unitId || null;
+      const ms = rentalMirrorStatus(r);
+      if (ms && ms !== r.status) { r.status = ms; migrationDirty = true; }
     }
   });
 }
@@ -509,9 +517,14 @@ function rentalsOverlappingUnit(unitId, startISO, endISO, selfId) {
    window; a unit is overbooked when any of its active rentals is. Surfaces as
    a pulsing red R9 flag (headFlagsHtml) for as long as the overlap exists. */
 function rentalOverbooked(r) {
-  if (!r || !r.unitId || !r.startDate || !r.endDate) return null;
+  if (!r || !r.startDate || !r.endDate) return null;
   if (!ACTIVE_RENTAL.has(r.status) || r.status === 'Quote') return null;
-  return rentalsOverlappingUnit(r.unitId, r.startDate, r.endDate, r.rentalId)[0] || null;
+  for (const eu of rentalUnits(r)) {                        // §20 check EVERY unit, not just the primary
+    if (unitVoided(r, eu)) continue;                        // a No-Show/Cancelled unit isn't booked
+    const hit = rentalsOverlappingUnit(eu.unitId, r.startDate, r.endDate, r.rentalId)[0];
+    if (hit) return hit;
+  }
+  return null;
 }
 function unitOverbooked(unitId) {
   return DATA.rentals.find((r) => rentalHasUnit(r, unitId) && rentalOverbooked(r)) || null;
@@ -5181,6 +5194,12 @@ function handlePillX(xEl) {
     // §20 per-unit removal: pull just this unit off the rental event
     const uid = xEl.dataset.id;
     const u = uid ? IDX.unit.get(uid) : null;
+    // swap-safety (carried over from the old swap path): a unit that's physically
+    // out — On Rent with a logged delivery/FC capture — can't just be pulled off.
+    const eu = (rec.units || []).find((x) => x.unitId === uid);
+    if (eu && unitStatus(rec, eu) === 'On Rent' && (eu.startCapture || eu.fcCapture)) {
+      toast(`Blocked: ${u?.name || 'that unit'} is On Rent with a logged capture — recover it (or mark No Show) before removing.`); return;
+    }
     removeUnitFromRental(rec, uid);
     logAction(rec, `Unit − ${u?.name || uid}`);
     reindexDraft('rentals', rec);
@@ -5315,6 +5334,7 @@ function setRentalStatus(rentalId, val) {
   }
   r.status = val;
   (r.units || []).forEach((eu) => { eu.status = val; });   // §20 master gate: bulk-set every unit
+  if ((val === 'No Show' || val === 'Cancelled') && r.invoiceId) (r.units || []).forEach((eu) => removeUnitInvoiceLine(r, eu.unitId));   // §20 voided units aren't billed (symmetric with the per-unit gate)
   reindex('rentals', r);
   logAction(r, `Status → ${getStatus('rentalStatus', val).label}`);
   // §9 non-blocking warnings on go-live (warning, not block — Phase 1)
@@ -5335,25 +5355,36 @@ function setUnitStatus(rentalId, unitId, val) {
   if (val === 'On Rent' && !r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
   if (['On Rent', 'Reserved'].includes(val) && cust && /Blacklist/i.test(cust.accountType || '')) { toast('Blocked: customer is blacklisted (§9).'); return; }
   if (BOOKING_STATUSES.includes(val) && cust && !hasValidCard(cust) && !r.cardOverride) { toast(`${cust.name} has no valid card on file — Admin override required.`); return; }
+  // §20 No-Show / Cancel: don't commit the terminal status while a payment is
+  // assigned to the unit (it would count toward Complete yet stay billed) — block first.
+  if ((val === 'No Show' || val === 'Cancelled') && unitLinePaid(r, unitId)) { toast('That unit has an assigned payment — refund it before No Show/Cancel.'); return; }
   eu.status = val;
-  // §20 No-Show / Cancel: the unit STAYS on the rental record but its invoice line
-  // is removed (not billed). Returned keeps its line.
+  // the unit STAYS on the rental record but its invoice line(s) are removed (not billed). Returned keeps its line.
   if ((val === 'No Show' || val === 'Cancelled') && r.invoiceId) removeUnitInvoiceLine(r, unitId);
   syncRentalPrimary(r);            // mirror the aggregate back onto r.status for back-compat readers
   reindex('rentals', r);
   logAction(r, `${IDX.unit.get(unitId)?.name || unitId} → ${getStatus('rentalStatus', val).label}`);
   render();
 }
-/* drop a unit's rental line from its invoice (No Show / Cancel — not billed).
-   Keeps the §7.4 guard: a line with an assigned payment stays (refund first). */
+/* §20 is any of this unit's invoice lines paid? (blocks No-Show/Cancel — refund first) */
+function unitLinePaid(r, unitId) {
+  if (!r.invoiceId) return false;
+  const inv = IDX.invoice.get(r.invoiceId); if (!inv) return false;
+  return (inv.lineItems || []).some((li) => (li.kind === 'rental' || li.kind === 'transport') && li.ref === r.rentalId && li.unitId === unitId && itemPaid(inv, li) > 0);
+}
+/* drop BOTH of a unit's invoice lines (rental + its transport) on No Show / Cancel —
+   not billed. A line carrying an assigned payment is kept (refund first); stable
+   li.lid keys mean removing a line never disturbs other lines' allocations. */
 function removeUnitInvoiceLine(r, unitId) {
   const inv = IDX.invoice.get(r.invoiceId); if (!inv) return;
-  const idx = (inv.lineItems || []).findIndex((li) => li.kind === 'rental' && li.ref === r.rentalId && li.unitId === unitId);
-  if (idx < 0) return;
-  if (itemPaid(inv, inv.lineItems[idx], idx) > 0) { toast('Line has an assigned payment — refund it before No Show/Cancel.'); return; }
-  inv.lineItems.splice(idx, 1);
+  const before = (inv.lineItems || []).length;
+  inv.lineItems = (inv.lineItems || []).filter((li) => {
+    const mine = (li.kind === 'rental' || li.kind === 'transport') && li.ref === r.rentalId && li.unitId === unitId;
+    return !mine || itemPaid(inv, li) > 0;   // keep non-matching lines and any paid matching line
+  });
+  if ((inv.lineItems || []).length === before) return;
   reindex('invoices', inv);
-  logAction(inv, `${IDX.unit.get(unitId)?.name || unitId} line removed — No Show / Cancel (not billed)`);
+  logAction(inv, `${IDX.unit.get(unitId)?.name || unitId} line(s) removed — No Show / Cancel (not billed)`);
 }
 function openUnitStatusDropdown(rentalId, unitId, anchorEl) {
   const html = Object.keys(STATUS.rentalStatus).filter((v) => v !== 'Tomorrow' && v !== 'Today').map((v) =>
@@ -6610,7 +6641,13 @@ function syncRentalPrimary(r) {
   r.unitId = ids[0] || null;
   const u0 = r.unitId ? IDX.unit.get(r.unitId) : null;
   r.categoryId = u0 ? u0.categoryId : null;
-  if (arr.length) r.status = rentalMirrorStatus(r);   // §20 keep r.status a valid single value for back-compat readers
+  if (arr.length) {
+    r.status = rentalMirrorStatus(r);   // §20 keep r.status a valid single value for back-compat readers
+    const p = arr[0];                   // mirror the PRIMARY unit's captures (don't leave a removed unit's stamp behind)
+    r.startCapture = p.startCapture || null; r.endCapture = p.endCapture || null; r.fcCapture = p.fcCapture || null;
+  } else {
+    r.startCapture = null; r.endCapture = null; r.fcCapture = null;
+  }
 }
 /* the single status mirrored onto r.status so pre-#20 readers (ACTIVE_RENTAL,
    dispatch, overbooking) stay correct: the most-progressed ACTIVE unit status if
@@ -6628,8 +6665,13 @@ function addUnitToRental(r, unitId) {
   // a new unit inherits the rental's master status (keeps the units uniform so the
   // master gate stays usable) + the existing transport settings as its default.
   const proto = unitTransportProto(r);
-  r.units.push({ unitId, status: r.status || 'Reserved', startHours: null, returnHours: null, startCapture: null, endCapture: null, fcCapture: null,
-    transportType: proto.transportType || null, deliveryAddress: proto.deliveryAddress || '', recoveryAddress: proto.recoveryAddress || '' });
+  // a new unit is 'Reserved' (it still needs its own delivery) unless the rental
+  // is still a Quote — then it matches so the units stay uniform. Adding to an
+  // already-active rental therefore diverges + locks the master gate (correct),
+  // and dispatch won't skip an undelivered unit as if it were already out.
+  const newStatus = (r.status === 'Quote') ? 'Quote' : 'Reserved';
+  r.units.push({ unitId, legacyUnitName: '', status: newStatus, startHours: null, returnHours: null, startCapture: null, endCapture: null, fcCapture: null,
+    transportType: proto.transportType || null, deliveryAddress: proto.deliveryAddress || '', recoveryAddress: proto.recoveryAddress || '', sitePin: null });
   syncRentalPrimary(r);
 }
 /* the transport settings a newly-added unit inherits as its default (the first
