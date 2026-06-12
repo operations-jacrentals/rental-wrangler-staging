@@ -103,6 +103,18 @@ function rentalUnits(r) {
 const rentalUnitIds = (r) => rentalUnits(r).map((u) => u.unitId).filter(Boolean);
 const primaryUnit = (r) => (r && r.unitId) || (rentalUnits(r)[0] || {}).unitId || null;
 const rentalHasUnit = (r, unitId) => rentalUnitIds(r).includes(unitId);
+/* §20 derived rental name — "Window: Unit, Unit" (the customer rides as a FLAG,
+   not in the name). Rental/Invoice/Unit/Category titles are READ-ONLY (Jac). */
+function rentalUnitsLabel(r) {
+  const names = rentalUnits(r).map((u) => IDX.unit.get(u.unitId)?.name).filter(Boolean);
+  return names.length ? names.join(', ') : (r.legacyUnitName || '');
+}
+function rentalDisplayName(r) {
+  const units = rentalUnitsLabel(r);
+  const win = (r.startDate && r.endDate) ? fmtWindow(r.startDate, r.endDate) : (r.startDate ? fmtShortDate(r.startDate) : '');
+  if (win && units) return `${win}: ${units}`;
+  return units || win || 'Quote';
+}
 /* ── §14 multi-card helpers ── */
 const customerCards = (c) => (c && Array.isArray(c.cards)) ? c.cards.filter((k) => k.status !== 'removed') : [];
 const defaultCard = (c) => { const ks = customerCards(c); return ks.find((k) => k.isDefault) || ks[0] || null; };
@@ -1206,7 +1218,7 @@ function onInspectMove(e) {
    §6 LIST ROWS — row meta + the universal row template
    ════════════════════════════════════════════════════════════════════════ */
 const ROW_META = {
-  rentals:    (r) => ({ title: IDX.unit.get(r.unitId)?.name || r.rentalName || 'Rental', sub: IDX.customer.get(r.customerId)?.name || '', color: getStatus('rentalStatus', rentalDisplayStatus(r)).color }),
+  rentals:    (r) => ({ title: rentalDisplayName(r), sub: IDX.customer.get(r.customerId)?.name || '', color: getStatus('rentalStatus', rentalDisplayStatus(r)).color }),
   customers:  (c) => ({ title: c.name, sub: c.phone || c.company || '', color: getStatus('customerPayStatus', c.payStatus).color }),
   units:      (u) => ({ title: u.name, sub: IDX.category.get(u.categoryId)?.name || '', color: getStatus('unitInspectionStatus', u.inspectionStatus).color }),
   categories: (c) => ({ title: c.name, sub: c.fuelType || '', color: 'orange' }),
@@ -1291,7 +1303,7 @@ const ROWS = {
     const price = rentalPrice(r);
     const dispStatus = rentalDisplayStatus(r);
     const truck = showsTruck(r.status, r.transportType);
-    const name = unit?.name || r.legacyUnitName || r.rentalName || 'Rental';
+    const name = rentalUnitsLabel(r) || 'Quote';   // the row IS the window timeline; show just the unit(s)
     const gate = gatePill('rentalStatus', dispStatus, 'js-status-pill', { rec: r.rentalId }, { truck });
     const s = parseISO(r.startDate), e = parseISO(r.endDate);
 
@@ -1940,7 +1952,9 @@ function headFlagsHtml(card, rec) {
     const st = getStatus('rentalStatus', rentalDisplayStatus(rec));
     const inv = rec.invoiceId ? IDX.invoice.get(rec.invoiceId) : null;
     const payst = inv ? getStatus('invoiceStatus', invoiceTotals(inv).status) : null;
-    return flagsStack([flagEl(st.label, st.color, { icon: CARD_ICON.rentals }), payst ? flagEl(payst.label, payst.color, { icon: CARD_ICON.invoices }) : ''])
+    const cust = rec.customerId ? IDX.customer.get(rec.customerId) : null;   // §20: customer rides as a FLAG (not in the name)
+    return (cust ? flagsStack([flagEl(cust.name, 'gray', { icon: CARD_ICON.customers, card: 'customers', recId: cust.customerId })]) : '')
+      + flagsStack([flagEl(st.label, st.color, { icon: CARD_ICON.rentals }), payst ? flagEl(payst.label, payst.color, { icon: CARD_ICON.invoices }) : ''])
       + (rentalOverbooked(rec) ? flagsStack([flagEl('Overbooked', 'red', { icon: CARD_ICON.rentals, alert: true, card: 'rentals', recId: rentalOverbooked(rec).rentalId, title: `Overlaps another rental on ${IDX.unit.get(rec.unitId)?.name || 'this unit'} — click to view` })]) : '');
   }
   if (card === 'customers') {
@@ -2090,7 +2104,7 @@ const DETAIL = {
     ];
 
     return `<div class="detail">
-      <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="rentals" data-field="rentalName" data-rec="${r.rentalId}" data-ph="Rental name">${esc(r.rentalName || unit?.name || 'Rental')}</span>${r.fieldCall ? badge('FC', 'red') : ''}</div>
+      <div class="detail-head"><span class="d-title">${esc(rentalDisplayName(r))}</span>${r.fieldCall ? badge('FC', 'red') : ''}</div>
       ${notes.top}
       ${rentalSec}
       ${notes.bottom}
@@ -2177,7 +2191,7 @@ const DETAIL = {
     ];
     return `<div class="detail">
       ${yardToolHtml(u)}
-      <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="units" data-field="name" data-rec="${u.unitId}" data-ph="Unit name">${esc(u.name)}</span></div>
+      <div class="detail-head"><span class="d-title">${esc(u.name)}</span></div>
       ${notes.top}
       ${inspSec}
       ${woSecs}
@@ -2780,7 +2794,7 @@ function appendWindowed(list, rows, cs, card, renderRow) {
 function detailTitle(card, rec) {
   if (!rec) return '';
   switch (card) {
-    case 'rentals': return (rec.rentalName || '').replace(/\s*\(\s*\)\s*$/, '').trim() || IDX.unit.get(rec.unitId)?.name || 'Rental';
+    case 'rentals': return rentalDisplayName(rec);
     case 'units': return rec.name || 'Unit';
     case 'customers': return fullName(rec) || rec.name || 'Customer';
     case 'categories': return rec.name || 'Category';
@@ -2924,9 +2938,7 @@ function cardEl(cardDef, session) {
   if (inStandard) {
     const stdRec = recOf(card, cs.recId);
     const titleHtml = stdRec
-      ? (card === 'rentals' ? `<span class="c-title inline-edit" data-edit="field" data-card="rentals" data-field="rentalName" data-rec="${esc(cs.recId)}" data-ph="Rental name">${esc(detailTitle(card, stdRec))}</span>`
-        : card === 'units' ? `<span class="c-title inline-edit" data-edit="field" data-card="units" data-field="name" data-rec="${esc(cs.recId)}" data-ph="Unit name">${esc(detailTitle(card, stdRec))}</span>`
-        : `<span class="c-title">${esc(detailTitle(card, stdRec))}</span>`)
+      ? `<span class="c-title">${esc(detailTitle(card, stdRec))}</span>`
       : '';
     const head = el('div', 'card-head');
     head.innerHTML = `
