@@ -1842,14 +1842,37 @@ function woSectionHtml(w) {
   </div>`;
 }
 /* ITEM BALANCE — every invoice line item carries its own balance. A partial
-   payment must be assigned per line item (inv.allocations = {ref: amount});
-   a fully-paid invoice counts every item as fully allocated. */
-function itemPaid(inv, ref) {
+   payment is assigned per line item through the payment popup; allocations are
+   PRE-TAX dollars keyed per LINE (a rental + its transport share a `ref`, so the
+   line index disambiguates — see lineKey). A fully-paid invoice counts every
+   line as fully covered without needing an explicit allocation. */
+function lineKey(li, idx) { return `${idx}:${li.kind || ''}:${li.ref != null ? li.ref : ''}`; }
+function itemPaid(inv, li, idx) {
   const t = invoiceTotals(inv);
   if (t.paid <= 0) return 0;
-  if (inv.allocations && inv.allocations[ref] != null) return Number(inv.allocations[ref]) || 0;
-  if (t.balance <= 0) { const li = (inv.lineItems || []).find((l) => l.ref === ref); return Number(li?.amount) || 0; }
+  const a = inv.allocations && inv.allocations[lineKey(li, idx)];
+  if (a != null) return Math.min(Number(a) || 0, Number(li.amount) || 0);
+  if (t.balance <= 0) return Number(li.amount) || 0;   // paid in full → line fully covered
   return 0;
+}
+/* total assigned across ALL of a rental's line items (its rental line + its
+   transport line). Drives the §7.4 unlink lock: the invoice ✕ stays only while
+   $0 is assigned to this rental. */
+function rentalAllocated(inv, rentalId) {
+  if (!inv) return 0;
+  return (inv.lineItems || []).reduce((s, li, idx) => s + (li.ref === rentalId ? itemPaid(inv, li, idx) : 0), 0);
+}
+/* the allocatable lines for the payment popup: every line still carrying a
+   pre-tax balance, with its tax treatment resolved (exempt customer or
+   exempt line → no tax rides on that line's dollars). */
+function allocLines(inv) {
+  const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
+  const exempt = !!(inv.taxExempt || cust?.salesTaxExempt);
+  return (inv.lineItems || []).map((li, idx) => {
+    const amount = Number(li.amount) || 0;
+    const remaining = Math.max(0, amount - itemPaid(inv, li, idx));
+    return { li, idx, key: lineKey(li, idx), label: li.label || li.kind || 'Line', amount, remaining, taxable: !exempt && !li.taxExempt };
+  }).filter((x) => x.remaining > 0.005);
 }
 /* Jac ─ Site ─ Jac transport journey under an invoice rental line. +Log Delivery /
    +Log Recovery ARE the same captures as the yard tool's +Start/+End (one event,
@@ -1972,7 +1995,7 @@ const DETAIL = {
        (after any assigned payment, removal requires refunding first — Jac's rule).
        No invoice → the combined +Invoice/+Transport pill (transport lives under
        the invoice's rental line items, so no invoice = no transport yet). */
-    const paidForThis = inv ? itemPaid(inv, r.rentalId) : 0;
+    const paidForThis = inv ? rentalAllocated(inv, r.rentalId) : 0;
     const invPill = inv
       ? `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(inv.invoiceId)}">${CARD_ICON.invoices}${esc(invoiceShort(inv.invoiceId))}${paidForThis <= 0 ? `<span class="x" data-x="inv-remove" data-tip="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`
       : (r.mock && cust && s && e ? addBtn('Invoice/+Transport', { link: true, js: 'js-create-invoice', h: 26, icon: CARD_ICON.invoices, data: { rec: r.rentalId } }) : badge('No invoice — link one to set transport'));
@@ -1980,10 +2003,11 @@ const DETAIL = {
     const balColor = invT ? (invT.balance <= 0 && invT.paid > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red') : null;
 
     /* invoice rental line items, each with its own transport journey + ITEM BALANCE */
-    const itemsHtml = (inv ? (inv.lineItems || []).filter((li) => li.kind === 'rental') : []).map((li) => {
+    const itemsHtml = (inv ? (inv.lineItems || []) : []).map((li, idx) => {
+      if (li.kind !== 'rental') return '';
       const r2 = IDX.rental.get(li.ref); if (!r2) return '';
       const u2 = IDX.unit.get(r2.unitId);
-      const paid = itemPaid(inv, li.ref);
+      const paid = itemPaid(inv, li, idx);
       const amt = Number(li.amount) || 0;
       const ibColor = paid >= amt && amt > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red';
       return `<div class="invitem">
@@ -2424,8 +2448,8 @@ const DETAIL = {
     const lines = (i.lineItems || []).map((li, idx) => {
       const ref = li.kind === 'rental' ? `data-pill-card="rentals" data-pill-rec="${esc(li.ref)}"`
         : li.kind === 'WO' ? `data-pill-card="workOrders" data-pill-rec="${esc(li.ref)}"` : '';
-      const x = (!locked && li.kind !== 'transport' && itemPaid(i, li.ref) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
-      const bal = itemPaid(i, li.ref);   // partial-payment item balance (when assigned)
+      const x = (!locked && li.kind !== 'transport' && itemPaid(i, li, idx) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
+      const bal = itemPaid(i, li, idx);   // partial-payment item balance (when assigned)
       return `<div class="hitem inv-line"><span ${ref} class="inv-line-link" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 ? `<span class="dvd c-green derived" data-r="R4" data-tip="paid on this line">${money(bal)}✓</span>` : ''}<b class="derived">${money(li.amount)}</b>${x}</div>`;
     }).join('');
     const ledgerRow = (label, val, cls) => `<div class="hitem inv-tot${cls ? ' ' + cls : ''}"><span class="muted">${esc(label)}</span><span class="spacer"></span><b class="derived">${val}</b></div>`;
@@ -4990,7 +5014,7 @@ function handlePillX(xEl) {
     rec.customerId = null; toast('Customer removed — drag a replacement on (or quick-add one).'); return render();
   } else if (kind === 'inv-remove') {
     const inv = IDX.invoice.get(rec.invoiceId);
-    if (inv && invoiceTotals(inv).paid > 0) { toast('Blocked: invoice has a payment — cannot unlink (§7.4).'); return; }
+    if (inv && rentalAllocated(inv, rec.rentalId) > 0) { toast('Blocked: a payment is assigned to this rental — refund it first to unlink (§7.4).'); return; }
     rec.invoiceId = null; toast('Invoice unlinked.'); render();
   } else if (kind === 'inv-cust-remove') {
     if (invoiceTotals(rec).paid > 0) { toast('Blocked: invoice has a payment — customer locked (§7.5).'); return; }
@@ -4999,7 +5023,7 @@ function handlePillX(xEl) {
     const idx = Number(xEl.dataset.idx);
     const li = rec.lineItems && rec.lineItems[idx];
     if (!li) return;
-    if (itemPaid(rec, li.ref) > 0) { toast('Blocked: payment is assigned to this line — refund first (§7.4).'); return; }
+    if (itemPaid(rec, li, idx) > 0) { toast('Blocked: payment is assigned to this line — refund first (§7.4).'); return; }
     rec.lineItems.splice(idx, 1);
     if (li.kind === 'rental') {
       // drop the paired transport line AND the link — while r.invoiceId is set, syncTransportLine re-adds it
