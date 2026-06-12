@@ -368,8 +368,8 @@ function activeRentalForUnit(unitId) {
    A unit is available for a selected window iff Fleet=Active, Inspection≠Failed,
    and no occupying rental overlaps it. Overlap is half-open (`end>start`) so a
    same-day return frees the unit for a same-day re-rent. Computed live against
-   the draft window during a +New-Rental unit pick (the cascade per §0.3/§10). */
-let availWin = null;   // {start,end,time,selfId} set each render during a windowed unit pick
+   the open rental-window calendar (winpicker) each render — §10 tinting. */
+let availWin = null;   // {start,end,time,selfId} set each render while the calendar is open
 function rentalOverlaps(r, selS, selE) {
   const rs = parseISO(r.startDate), re = parseISO(r.endDate);
   if (!rs || !re || !selS || !selE) return false;
@@ -409,13 +409,11 @@ function isUnitAvailableFor(u, startISO, endISO, selfId) {
 function categoryAvailableCount(catId, startISO, endISO, selfId) {
   return DATA.units.filter((u) => u.categoryId === catId && isUnitAvailableFor(u, startISO, endISO, selfId)).length;
 }
-/** The draft rental window in scope during a unit pick (drives the availability UI). */
+/** The rental window in scope while the calendar is open (drives the availability UI). */
 function activeDraftWindow() {
   const win = (r) => (r && r.startDate && r.endDate) ? { start: r.startDate, end: r.endDate, time: r.startTime, selfId: r.rentalId } : null;
   // live while the window is being PICKED (Categories/Units update before "Done")
   if (state.winpicker) { const w = win(IDX.rental.get(state.winpicker.rentalId)); if (w) return w; }
-  // and during the unit-pick phase on a windowed rental draft
-  if (state.pick && state.pick.slot === 'unit' && entityCardOf(state.pick.card, state.pick.recType) === 'rentals') return win(recOf('rentals', state.pick.recId));
   return null;
 }
 /** True when, under the active window, this row's record is unavailable (red tint). */
@@ -586,7 +584,6 @@ const state = {
   cascade: createCascade(DATA),   // wired with v6 canonical fields (cascade.js DEFAULT_FIELDS)
   overlay: null,       // { kind, ... } for popups
   focusedCard: null,   // clicked card → orange border (§0.1 visual feedback, no anchor)
-  pick: null,          // { card, recId, recType, slot } — §0.3 cascading-picker mode
   winpicker: null,     // { rentalId, monthISO, anchor } — the rental-window range picker
   filterTerms: [],            // §5.4 — AND-narrowing filter terms (type + Enter)
   fleetFilter: null,          // { categoryId, status } — fleet-summary badge → units by status
@@ -599,7 +596,7 @@ const state = {
   overbookOn: (() => { try { return localStorage.getItem('jactec.overbook') === '1'; } catch (e) { return false; } })(),   // §10 allow-overbooking policy (per device, default OFF — drag build)
 };
 const activeSession = () => (state.activeTabId ? state.tabs.find((t) => t.id === state.activeTabId)?.session : state.defaultSession) || state.defaultSession;
-/** Next unique invoice id — a monotonic counter so discarding a draft can't reuse a number. */
+/** Next unique invoice id — a monotonic counter so deleting a Quote-stage invoice can't reuse a number. */
 const nextInvoiceId = () => CFG.invoiceId(TODAY_ISO, ++state.invoiceSeq);
 
 /* ── session actions ──────────────────────────────────────────────────────
@@ -664,66 +661,15 @@ function switchTab(id) {
 function closeTab(id) {
   const i = state.tabs.findIndex((t) => t.id === id);
   if (i < 0) return;
-  discardIfEmptyDraft(state.tabs[i]);
   state.tabs.splice(i, 1);
   if (state.activeTabId === id) state.activeTabId = state.tabs.length ? state.tabs[Math.max(0, i - 1)].id : null;
   render();
 }
-function closeAll() { state.tabs.forEach(discardIfEmptyDraft); state.tabs = []; state.activeTabId = null; state.searchMode = false; state.query = ''; state.winpicker = null; state.pick = null; sweepIncompleteRentalDrafts(); render(); }
-/* Discard a `mock` draft that was abandoned with no meaningful data, so closing
-   the tab doesn't leave an empty "New Rental"/blank invoice cluttering the lists. */
-function discardIfEmptyDraft(tab) {
-  if (!tab) return;
-  const entity = entityCardOf(tab.card, tab.recType);
-  const rec = recOf(entity, tab.recId);
-  if (!rec || !rec.mock) return;
-  const empty = (entity === 'rentals' && rentalDraftIncomplete(rec))   // a +Rental draft needs BOTH a unit & a customer to be kept
-    || (entity === 'inspections' && !rec.unitId)
-    || (entity === 'workOrders' && !rec.unitId && !(rec.lineItems || []).length)
-    || (entity === 'invoices' && !rec.customerId && !(rec.lineItems || []).length);
-  if (!empty) return;
-  const coll = collection(entity);
-  const idx = coll.findIndex((x) => idOf(entity, x) === tab.recId);
-  if (idx >= 0) coll.splice(idx, 1);
-  ({ rentals: IDX.rental, inspections: IDX.insp, workOrders: IDX.wo, invoices: IDX.invoice }[entity])?.delete(tab.recId);
-  IDX.search.delete(entity + ':' + tab.recId);
-}
-/* A rental "counts" (is saved) only once it has BOTH a unit and a customer — the
-   window is optional. Half-built drafts are swept whenever +Rental mode is left. */
-function rentalDraftIncomplete(r) { return !!(r && r.rentalId && String(r.rentalId).startsWith('R-NEW') && (!r.unitId || !r.customerId)); }
-function discardRentalDraft(rentalId) {
-  const r = IDX.rental.get(rentalId); if (!r) return;
-  const i = DATA.rentals.indexOf(r); if (i >= 0) DATA.rentals.splice(i, 1);
-  IDX.rental.delete(rentalId); IDX.search.delete('rentals:' + rentalId);
-  state.tabs = state.tabs.filter((t) => !(t.card === 'rentals' && t.recId === rentalId));
-  for (const s of state.tabs.map((t) => t.session).concat([state.defaultSession])) {
-    if (s && s.anchor && s.anchor.card === 'rentals' && s.anchor.recId === rentalId) { s.anchor = null; s.cascade = null; }
-    if (s && s.cards && s.cards.rentals && s.cards.rentals.recId === rentalId) { s.cards.rentals.mode = 'list'; s.cards.rentals.recId = null; }
-  }
-}
-/** Remove every half-built rental draft (optionally sparing the one in `exceptId`). */
-function sweepIncompleteRentalDrafts(exceptId) {
-  DATA.rentals.filter((r) => rentalDraftIncomplete(r) && r.rentalId !== exceptId)
-    .forEach((r) => discardRentalDraft(r.rentalId));
-}
-/** Drop any item tab whose underlying record no longer exists (e.g. its draft was
- *  just discarded), and re-point activeTabId so nothing renders a dangling record. */
-function pruneOrphanTabs() {
-  const alive = (t) => !!recOf(entityCardOf(t.card, t.recType), t.recId);
-  const before = state.tabs.length;
-  state.tabs = state.tabs.filter(alive);
-  if (before !== state.tabs.length && !state.tabs.find((t) => t.id === state.activeTabId)) {
-    state.activeTabId = state.tabs.length ? state.tabs[state.tabs.length - 1].id : null;
-  }
-}
-/** Bring a card's column to that card in list mode, so its rows can be picked — gives
- *  every +X mode the same "here's the list to choose from" affordance as +Rental. */
-function revealPickList(member) {
-  const cs = activeSession();
-  const col = COLUMN_OF[member];
-  if (cs.cols && col) cs.cols[col] = member;
-  if (cs.cards && cs.cards[member]) cs.cards[member].mode = 'list';
-}
+function closeAll() { state.tabs = []; state.activeTabId = null; state.searchMode = false; state.query = ''; state.winpicker = null; render(); }
+/* Wave 2 (Jac): QUOTES SURVIVE. Nothing is swept on tab close / session switch —
+   a Quote-status rental (or any fresh record) lives until Completed/Cancelled
+   or deliberately deleted. The `mock` flag stays purely a UI affordance gate
+   (slot buttons, window trigger) — the §18b sync persists mock records as-is. */
 
 /** Click a row → standard mode in that card (push back-stack). §0.2 */
 function openStandard(card, recId, recType) {
@@ -1286,7 +1232,6 @@ function rowEl(card, rec) {
   if (card === 'customers' && /Blacklist/i.test(rec.accountType || '')) extra += ' unavailable';   // §9 blacklisted → red
   // §10 — under an active rental window, tint every unavailable unit/category red
   if (availWin && availUnavailable(card, rec)) extra += ' unavailable';
-  if (card === 'categories' && state.pick?.catFilter === rec.categoryId) extra += ' selected';
   const node = el('div', 'row' + extra);
   node.dataset.card = card; node.dataset.rec = id;
   node.innerHTML = `${rowViz(card, rec)}
@@ -1321,7 +1266,7 @@ const ROWS = {
     const gate = gatePill('rentalStatus', dispStatus, 'js-status-pill', { rec: r.rentalId }, { truck });
     const s = parseISO(r.startDate), e = parseISO(r.endDate);
 
-    // no window yet (draft) → a simple bar to set the window
+    // no window yet (a Quote) → a simple bar to set the window
     if (!(s && e)) {
       return `<div class="rtl"><div class="rtl-over">
         <div class="rtl-l"><span class="rtl-name">${esc(name)}</span><span class="rtl-sub">${cust ? refPill('customers', r.customerId, cust.name) : ''}</span></div>
@@ -2018,8 +1963,10 @@ const DETAIL = {
         </div>
       </div>`;
     }
-    const pickUnitBtn = addBtn('Unit', { link: true, js: 'js-pick', h: 26, data: { card: cs?.recType ? 'shop' : 'rentals', rec: r.rentalId, slot: 'unit' } });
-    const pickCustBtn = addBtn('Customer', { link: true, js: 'js-pick', h: 26, data: { card: 'rentals', rec: r.rentalId, slot: 'customer' } });
+    // Wave 2 empty slots: the UNIT slot points at the Units list (drag links it);
+    // the CUSTOMER slot opens quick-add-link. data-slot stays for R19 flash targets.
+    const pickUnitBtn = addBtn('Unit', { link: true, js: 'js-slot-unit', h: 26, data: { rec: r.rentalId, slot: 'unit' } });
+    const pickCustBtn = addBtn('Customer', { link: true, js: 'js-quickadd-cust', h: 26, data: { card: 'rentals', rec: r.rentalId, slot: 'customer' } });
 
     /* invoice pill: ✕ unlink ONLY while $0 is assigned to this rental's line item
        (after any assigned payment, removal requires refunding first — Jac's rule).
@@ -2485,7 +2432,7 @@ const DETAIL = {
     const kinds = ['rental', 'transport', 'parts', 'labor'].filter((k) => subBy(k) > 0);
     const subRows = kinds.length > 1 ? kinds.map((k) => ledgerRow(`${k[0].toUpperCase()}${k.slice(1)} subtotal`, money(subBy(k)))).join('') : '';
     // LEFT — customer · PO · payment · the line-management row (adds / lock / unlock / form)
-    const custCell = cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? addBtn('Customer', { link: true, js: 'js-pick', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer'));
+    const custCell = cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? addBtn('Customer', { link: true, js: 'js-quickadd-cust', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer'));
     const poCell = cust?.requiresPO && !i.po
       ? `<span class="req inline-edit" data-r="R6" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
       : `<span class="${i.po ? 'pill ghost' : 'add-field'} inline-edit" data-r="${i.po ? 'R18' : 'R5c'}" data-edit="invoicePO" data-rec="${i.invoiceId}"${i.po ? '' : ' style="height:26px"'}>${esc(i.po ? 'PO ' + i.po : '+PO')}</span>`;
@@ -2557,7 +2504,7 @@ const DETAIL = {
     </div>`;
     const billToggle = gatePillRaw(`Bill customer: ${w.billCustomer === 'Yes' ? 'Yes' : 'No'}`, w.billCustomer === 'Yes' ? 'orange' : 'gray', 'js-wo-bill', { rec: w.woId }, true);
     const report = `<div class="section"><h4>Report</h4><div class="fieldstack">
-      ${kvPills(`${unit ? unitPill(unit.unitId, { x: 'unit-swap' }) : (w.mock ? `<button class="pill ref js-pick" data-card="shop" data-rec="${w.woId}" data-type="workOrders" data-slot="unit">+ Pick unit</button>` : '<span class="pill c-gray">No unit</span>')}${cat ? refPill('categories', cat.categoryId, cat.name) : ''}${unit ? statusPill('unitInspectionStatus', unit.inspectionStatus, { card: 'units', recId: unit.unitId }) : ''}`)}
+      ${kvPills(`${unit ? unitPill(unit.unitId, { x: 'unit-swap' }) : badge('No unit — WOs are born on the Unit card')}${cat ? refPill('categories', cat.categoryId, cat.name) : ''}${unit ? statusPill('unitInspectionStatus', unit.inspectionStatus, { card: 'units', recId: unit.unitId }) : ''}`)}
       ${kvPills(`${badge(getStatus('woType', w.woType).label, getStatus('woType', w.woType).color)}${cust ? refPill('customers', w.customerId, cust.name) : ''}`)}
       ${efld('workOrders', w, 'woId', 'woReport', 'Report summary')}
       ${efld('workOrders', w, 'woId', 'assignedMechanic', 'Assign mechanic', { sfx: 'mechanic' })}
@@ -2626,7 +2573,7 @@ const DETAIL = {
     // Report = ONLY the gated flow (unit pill + status live in the title now).
     let gate = '';
     if (!unit) {
-      gate = kvPills(`<button class="pill ref js-pick" data-card="shop" data-rec="${n.inspectionId}" data-type="inspections" data-slot="unit">+ Pick unit</button>`);
+      gate = kvPills('<span class="pill c-gray">No unit</span>');
     } else if (!washSet) {
       gate = `<div class="insp-gate"><span class="insp-gate-lbl">Wash</span><button class="pill c-blue js-insp-wash" data-rec="${n.inspectionId}" data-val="Yes">Wash</button><button class="pill c-gray js-insp-wash" data-rec="${n.inspectionId}" data-val="No">Don't wash</button></div>`;
     } else if (!done) {
@@ -2705,20 +2652,6 @@ function historyFor(card, rec) {
    §9 CARDS & GRID — cardEl, listView, the 3-column shell
    ════════════════════════════════════════════════════════════════════════ */
 function listFor(card, session) {
-  // pick mode → the source card lists every record so any can be chosen (§0.3)
-  if (state.pick && card === PICK_SRC[state.pick.slot]) {
-    // adding a rental to an invoice → scope to that invoice's customer (§7.5)
-    if (state.pick.slot === 'rental') { const inv = IDX.invoice.get(state.pick.recId); if (inv?.customerId) return collection('rentals').filter((r) => r.customerId === inv.customerId); }
-    // unit pick → optionally narrow to a clicked category (§0.3 cascade), with or without dates
-    if (card === 'units' && state.pick.catFilter) return collection('units').filter((u) => u.categoryId === state.pick.catFilter);
-    return collection(card);
-  }
-  // §10 — in +Rental mode (window open, even before dates), Categories / Units / Customers
-  // list every record so they can be picked, rather than the empty draft cascade.
-  const rentalMode = inRentalMode();
-  if (rentalMode && card === 'categories') return collection('categories');
-  if (rentalMode && card === 'units') { return state.pick?.catFilter ? collection('units').filter((u) => u.categoryId === state.pick.catFilter) : collection('units'); }
-  if (rentalMode && card === 'customers') return collection('customers');
   // search mode → filtered across all; anchored (cascade) → cascade subset; else → all
   if (state.searchMode) {
     return collection(card).filter((rec) => matchesSearch(IDX.search.get(card + ':' + idOf(card, rec))));
@@ -2731,6 +2664,11 @@ function listFor(card, session) {
       ? units.filter((u) => unitRentalBucket(u) === state.fleetFilter.status)
       : units.filter((u) => u.inspectionStatus === state.fleetFilter.status);
   }
+  // Wave 2 (the modes died): while the anchored Quote/invoice still needs links,
+  // the cards you DRAG FROM list every candidate — an empty Quote cascades to
+  // nothing, and there'd be nothing to drag onto it.
+  const w2 = wave2ListOverride(card, session);
+  if (w2) return w2;
   // anchored card in list mode (js-tolist "browse") → show every item so a different one can be anchored
   if (session.anchor?.card === card && session.cards[card].mode === 'list') return collection(card);
   if (session.anchor && session.cascade) return session.cascade[card] || [];
@@ -2825,27 +2763,45 @@ function shopAlertCount(member, session) {
   if (member === 'serviceOrders') return items.filter((u) => { const s = topServiceForUnit(u); return u.washRequested || (s && s.remaining < 0); }).length;
   return 0;
 }
-/* ── +Rental-mode helpers: the draft, whether the user has "engaged" (opened the
-   window or picked anything), and the broad mode flag that keeps Categories/
-   Customers populated for picking even before a window is set. ── */
-function rentalDraft() { return (state.pick && entityCardOf(state.pick.card, state.pick.recType) === 'rentals') ? recOf('rentals', state.pick.recId) : null; }
-function inRentalMode() { return !!(availWin || state.winpicker || rentalDraft()); }
-function rentalEngaged() { const d = rentalDraft(); return !!(d && (state.winpicker || state.pick.catFilter || d.customerId || d.unitId)); }
+/* ── Wave 2 (the modes died): the side lists stay FULL while the anchored
+   Quote/invoice still needs links, so there's always something to DRAG on.
+   Stateless — derived from the anchor record, never from a mode flag. An
+   anchored unlocked invoice also lists its customer's rentals (§7.5 scoping,
+   same rule the old rental-pick applied). ── */
+function wave2ListOverride(card, session) {
+  const a = session && session.anchor; if (!a) return null;
+  if (a.card === 'rentals') {
+    const r = recOf('rentals', a.recId); if (!r) return null;
+    if (!r.unitId && (card === 'units' || card === 'categories')) return collection(card);
+    if (!r.customerId && card === 'customers') return collection('customers');
+    return null;
+  }
+  if (a.card === 'invoices') {
+    const inv = recOf('invoices', a.recId); if (!inv) return null;
+    if (!inv.customerId && card === 'customers') return collection('customers');
+    if (card === 'rentals' && inv.customerId && !inv.locked) return collection('rentals').filter((r) => r.customerId === inv.customerId);
+    // '+ WO' drag candidates (§7.6): the cascade's units PLUS any unit holding an
+    // open unbilled WO billable to this customer — else there'd be nothing to drag.
+    if (card === 'units' && inv.customerId && !inv.locked) {
+      const casc = (session.cascade && session.cascade.units) || [];
+      const extra = collection('units').filter((u) => { if (casc.includes(u)) return false; const w = unbilledOpenWOForUnit(u.unitId); return !!w && (!w.customerId || w.customerId === inv.customerId); });
+      return extra.length ? casc.concat(extra) : null;   // no billable WOs → the normal cascade
+    }
+    return null;
+  }
+  return null;
+}
 // One column = a tab strip + the single active member's card.
 function columnEl(col, session) {
   const active = (session.cols && session.cols[col.id]) || col.default;
   const wrap = el('div', 'col'); wrap.dataset.col = col.id;
-  // +Rental, nothing engaged yet → keep the side cards blank so the centered
-  // "Select rental window" button + guide own the screen.
-  const blank = col.id !== 'middle' && rentalDraft() && !rentalEngaged();
-  const card = blank ? blankColEl() : memberCardEl(active, session);
+  const card = memberCardEl(active, session);
   card.insertBefore(colTabsEl(col, active, session), card.firstChild);   // toggles live INSIDE the card top
   const tot = card.querySelector('.card-body .list-totals');             // freeze the totals as a card FOOTER (out of the scroll)
   if (tot) card.appendChild(tot);
   wrap.appendChild(card);
   return wrap;
 }
-function blankColEl() { const n = el('div', 'card blank-col'); return n; }
 function colTabsEl(col, active, session) {
   // Jac 2026-06-12: the toggle CHIP stays centered; the nav cluster sits OUTSIDE
   // it, parked at the row's right edge (.tabrow wraps both).
@@ -2901,8 +2857,7 @@ function cardEl(cardDef, session) {
   if (card === 'shop') return shopCardEl(cardDef, session);   // merged WO + Service + Inspections
   const cs = session.cards[card];
   const anchored = session.anchor?.card === card;
-  const pickTarget = state.pick && PICK_SRC[state.pick.slot] === card;
-  const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === card ? ' card-focus' : '') + (pickTarget ? ' pick-target' : ''));
+  const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === card ? ' card-focus' : ''));
   node.dataset.card = card;
 
   // §5.4: global search forces EVERY card into list view (the prior standard/anchor
@@ -2965,13 +2920,6 @@ function listView(cardDef, session) {
     wrap.appendChild(chip);
   }
 
-  // +New Customer is normally header-only, but +Rental mode offers it inline (the app
-  // is "in rental mode" and takes some control of the flow).
-  if (card === 'customers' && inRentalMode()) {
-    const nb = el('div'); nb.style.margin = '0 0 9px';
-    nb.innerHTML = `<button class="bigbtn js-new-cust-rental">${I.plus} New Customer</button>`;
-    wrap.appendChild(nb);
-  }
   let rows = listFor(card, session);
   if (card === 'units') rows = unitsVisible(rows, cs);   // hide Sold/Inactive (or show only them via the sort) (#2)
   if (cs.search.trim() || (cs.filterTerms || []).length) { rows = rows.filter((rec) => blobMatches(IDX.search.get(card + ':' + idOf(card, rec)), cs.search, cs.filterTerms)); }
@@ -3033,13 +2981,10 @@ function shopItemsByType(session) {
   const complete = session.cards.shop.sort.field === 'complete';
   const out = {};
   const q = state.query.trim().toLowerCase();
-  const woPick = state.pick && state.pick.slot === 'wo';
   const browsing = session.anchor?.card === 'shop' && session.cards.shop.mode === 'list';   // js-tolist "browse"
   for (const ty of SHOP_TYPES) {
     let recs;
-    if (woPick && ty === 'workOrders') {
-      recs = collection('workOrders');                 // §0.3 pick — choose from every WO
-    } else if (state.searchMode) {
+    if (state.searchMode) {
       const blobKey = ty === 'serviceOrders' ? 'units' : ty;
       recs = collection(ty).filter((rec) => matchesSearch(IDX.search.get(blobKey + ':' + idOf(ty, rec))));
     } else if (browsing) {
@@ -3081,8 +3026,7 @@ function shopCardEl(cardDef, session, forcedSeg) {
   const anchored = session.anchor?.card === 'shop';
   const byType = shopItemsByType(session);
   const total = forcedSeg ? (byType[forcedSeg] || []).length : SHOP_TYPES.reduce((a, ty) => a + byType[ty].length, 0);
-  const woPick = state.pick && state.pick.slot === 'wo';
-  const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === 'shop' ? ' card-focus' : '') + (woPick ? ' pick-target' : ''));
+  const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === 'shop' ? ' card-focus' : ''));
   node.dataset.card = 'shop';
 
   const inStandard = !state.searchMode && cs.mode === 'standard' && cs.recId != null && cs.recType;
@@ -3140,8 +3084,8 @@ function shopListView(session, byType, forcedSeg) {
     </div>`;
   wrap.appendChild(bar);
 
-  // items for the active segment (a WO pick forces Work Orders; a column tab pins forcedSeg)
-  const segActive = (state.pick && state.pick.slot === 'wo') ? 'workOrders' : (forcedSeg || cs.segment);
+  // items for the active segment (a column tab pins forcedSeg)
+  const segActive = forcedSeg || cs.segment;
   let items = segActive === 'all'
     ? SHOP_TYPES.flatMap((ty) => byType[ty].map((rec) => ({ type: ty, rec })))
     : byType[segActive].map((rec) => ({ type: segActive, rec }));
@@ -3340,16 +3284,14 @@ function headerEl() {
 }
 /** The action toolbar — moved to a fixed bottom bar (Dashboard / +New / tools). */
 function bottomBarEl() {
-  const modeEntity = state.pick ? entityCardOf(state.pick.card, state.pick.recType) : null;
-  const newCls = (entity) => 'iconbtn' + (modeEntity === entity ? ' on' : '') + ' js-newitem';
   const bar = el('div', 'bottombar');
   // rules 5/6: LEFT = labeled actions (icon LEADS label, no "+"), Wash joins them;
   // RIGHT (after divider) = icon-only utilities. The +New collapse button is dropped (Jac).
   bar.innerHTML = `
     <button class="iconbtn js-dashboard">${I.grid} Dashboard</button>
-    <button class="${newCls('rentals')}" data-new="rental">${CARD_ICON.rentals}Rental</button>
-    <button class="${newCls('customers')}" data-new="customer">${CARD_ICON.customers}Customer</button>
-    <button class="${newCls('invoices')}" data-new="invoice">${CARD_ICON.invoices}Invoice</button>
+    <button class="iconbtn js-newitem" data-new="rental">${CARD_ICON.rentals}Rental</button>
+    <button class="iconbtn js-newitem" data-new="customer">${CARD_ICON.customers}Customer</button>
+    <button class="iconbtn js-newitem" data-new="invoice">${CARD_ICON.invoices}Invoice</button>
     <button class="iconbtn js-newitem" data-new="receipt">${CARD_ICON.expenses}Receipt</button>
     <span class="bb-sep"></span>
     <button class="iconbtn js-theme" data-tip="${state.theme === 'dark' ? 'Light' : 'Dark'} mode">${state.theme === 'dark' ? I.sun : I.moon}</button>
@@ -4249,6 +4191,21 @@ function setFunnelStage(custId, which, val) {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render();
 }
+/* §12.1 interested categories — pick mode died (Wave 2): a plain dropdown now
+   attaches a category to the customer (same pattern as the funnel dropdown). */
+function openIntCatDropdown(custId, anchorEl) {
+  const cust = IDX.customer.get(custId); const have = new Set(cust?.interestedCategoryIds || []);
+  const html = DATA.categories.map((k) =>
+    `<button class="dd-item js-setintcat ${have.has(k.categoryId) ? 'on' : ''}" data-rec="${esc(custId)}" data-val="${esc(k.categoryId)}">${esc(k.name)}</button>`).join('');
+  openDropdown(anchorEl, html);
+}
+function addInterestedCategory(custId, catId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  c.interestedCategoryIds = c.interestedCategoryIds || [];
+  if (!c.interestedCategoryIds.includes(catId)) { c.interestedCategoryIds.push(catId); reindex('customers', c); logAction(c, `Interested in ${IDX.category.get(catId)?.name || 'category'}`); }
+  document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
+  reanchorRender();
+}
 function openSortMenu(card, anchorEl) {
   const cs = activeSession().cards[card];
   const html = SORT_FIELDS[card].map((f) =>
@@ -4283,9 +4240,8 @@ function render() {
   // 3-column layout: each column paints its one active member card (+ a tab strip).
   const grid = el('div', 'grid');
   for (const col of COLUMNS) grid.appendChild(columnEl(col, session));
-  const pb = pickBarEl();
   const bottomBar = bottomBarEl();
-  if (pb) $('#app').replaceChildren(header, pb, grid, bottomBar); else $('#app').replaceChildren(header, grid, bottomBar);
+  $('#app').replaceChildren(header, grid, bottomBar);
   // restore the per-card scroll captured above
   Object.keys(scrollMemo).forEach((card) => { const b = document.querySelector(`.card[data-card="${card}"] .card-body`); if (b) b.scrollTop = scrollMemo[card]; });
   document.documentElement.setAttribute('data-theme', state.theme);
@@ -4295,8 +4251,6 @@ function render() {
     if (wr) { const fl = el('div', 'winpicker-float'); fl.innerHTML = winPickerEl(wr); $('#app').appendChild(fl); positionWinPicker(fl); }
     else state.winpicker = null;
   }
-  const guide = guidePopupEl();   // the non-dimming +X-mode guide popup (centered in the middle card)
-  if (guide) { $('#app').appendChild(guide); positionGuide(guide); }
   applyTitles();   // full text on hover wherever we truncate (custom ~0.5s tooltip)
   if (DRAG.active) reapplyDragDecor();   // §15c — re-stamp drop targets after ANY mid-drag rebuild (the card swap IS a render)
   const dt = performance.now() - t0;
@@ -4354,7 +4308,7 @@ function toast(msg) {
    document.body — OUTSIDE #app — so render() mid-drag is SAFE (the same
    survives-render precedent as the hover preview / ctx menu / tooltip).
    Drops dispatch into the EXISTING §16 mutations — no money/safety logic here.
-   Pick mode is untouched: it stays as the fallback link path (drag is additive).
+   Wave 2: pick mode is GONE — drag (+ customer quick-add-link) IS the link path.
    ════════════════════════════════════════════════════════════════════════ */
 const DRAG = { active: false, armed: null, payload: null, point: { x: 0, y: 0 }, ghost: null, restoreCols: null, swappedTo: null, suppressClick: false, raf: null, hot: null };
 const DRAG_SOURCES = new Set(['units', 'rentals', 'customers', 'invoices']);   // shop/categories rows are NOT drag sources (for now)
@@ -4420,7 +4374,7 @@ function initDrag() {
 function dragDown(e) {
   DRAG.suppressClick = false;                                            // any NEW gesture re-enables clicks (a pointercancel can never strand a stuck eater)
   if (DRAG.active || e.button !== 0) return;
-  if (state.pick || state.winpicker || state.overlay) return;            // modes own their clicks (pick stays the fallback linker)
+  if (state.winpicker || state.overlay) return;                          // the calendar / overlays own their clicks
   if (e.target.closest('.inline-edit, .inline-input, input, textarea, select, button, .x, .pill, .seg, .add-field, .linkname, .flag, .jnode, .dropdown-menu, .overlay, .hover-preview, .winpicker-float, .ctx-menu')) return;
   const row = e.target.closest('.row');
   if (!row || !DRAG_SOURCES.has(row.dataset.card) || row.dataset.rec == null) return;   // .rtl rentals rows still carry card/rec on the .row wrapper
@@ -4496,7 +4450,7 @@ function dropTargetAt(x, y, under) {
   if (arcHit(x, y)) return { cancel: true };
   const n = under !== undefined ? under : document.elementFromPoint(x, y);   // ghost + layer are pointer-events:none
   if (!n || !n.closest) return null;
-  if (n.closest('.winpicker-float, .guide-pop, .overlay, .dropdown-menu, .ctx-menu')) return null;   // floaters are dead zones
+  if (n.closest('.winpicker-float, .overlay, .dropdown-menu, .ctx-menu')) return null;   // floaters are dead zones
   const accept = DROP_MATRIX[DRAG.payload.entity] || {};
   const row = n.closest('.row');
   if (row && row.dataset.rec != null) {
@@ -4609,7 +4563,7 @@ function dispatchDrop(p, t) {
     const res = linkUnitToRental(r.rentalId, u.unitId);
     if (!res) return;
     render();
-    toast(`Unit ${u.name} → rental ${fmtWindow(r.startDate, r.endDate)}${res.swapped ? ` (replaced ${res.swapped.name})` : ''}${res.overbooked ? ' — ⚠ OVERBOOKED' : ''}`);
+    toast(`Unit ${u.name} → ${r.startDate && r.endDate ? 'rental ' + fmtWindow(r.startDate, r.endDate) : 'Quote'}${res.swapped ? ` (replaced ${res.swapped.name})` : ''}${res.overbooked ? ' — ⚠ OVERBOOKED' : ''}`);
     dropFlash(`.card[data-card="rentals"] [data-pill-card="units"][data-pill-rec="${u.unitId}"]`, `.row[data-card="rentals"][data-rec="${r.rentalId}"], .card[data-card="rentals"]`);
     return;
   }
@@ -4618,7 +4572,7 @@ function dispatchDrop(p, t) {
   if (pair === 'rentals>invoices' || pair === 'invoices>rentals') {
     const r = pair === 'rentals>invoices' ? p.rec : t.rec, inv = pair === 'rentals>invoices' ? t.rec : p.rec;
     if (inv.locked) { toast(`Blocked: invoice ${invoiceShort(inv.invoiceId)} is locked — unlock it first (§7.5).`); return; }
-    if (!inv.customerId) { flashOr('.js-pick[data-slot="customer"]', 'Blocked: the invoice needs a customer first (§7.5).'); return; }
+    if (!inv.customerId) { flashOr('[data-slot="customer"]', 'Blocked: the invoice needs a customer first (§7.5).'); return; }
     if (r.customerId && inv.customerId !== r.customerId) { toast(`Blocked: that rental belongs to ${IDX.customer.get(r.customerId)?.name || 'another customer'}, not ${IDX.customer.get(inv.customerId)?.name || 'this invoice’s customer'} (§7.5).`); return; }
     addRentalLineToInvoice(inv.invoiceId, r.rentalId);
     if (r.invoiceId === inv.invoiceId) {                                 // the mutation toasts its own failures
@@ -4633,7 +4587,7 @@ function dispatchDrop(p, t) {
     const res = linkCustomerToRental(r.rentalId, c.customerId);
     if (!res) return;
     render();
-    toast(`Customer ${c.name} → rental ${fmtWindow(r.startDate, r.endDate)}${res.swapped ? ` (replaced ${res.swapped.name})` : ''}`);
+    toast(`Customer ${c.name} → ${r.startDate && r.endDate ? 'rental ' + fmtWindow(r.startDate, r.endDate) : 'Quote'}${res.swapped ? ` (replaced ${res.swapped.name})` : ''}`);
     dropFlash(`.card[data-card="rentals"] [data-pill-card="customers"][data-pill-rec="${c.customerId}"]`, `.row[data-card="rentals"][data-rec="${r.rentalId}"], .card[data-card="rentals"]`);
     return;
   }
@@ -4690,45 +4644,11 @@ function onClick(e) {
     if (r) { e.preventDefault(); e.stopPropagation(); return openInNewTab(r.card, r.recId, r.recType); }
   }
 
-  // §0.3 — in +Rental mode, clicking a Category filters the Units; picking a Customer
-  // assigns it. Works whether or not the window is open / dates are set.
-  if (inRentalMode()) {
-    if (closest('.js-new-cust-rental')) { e.stopPropagation(); return startNewCustomer(); }   // +New Customer in rental mode
-    const draftRid = state.winpicker?.rentalId || (state.pick && state.pick.slot === 'unit' ? state.pick.recId : null) || availWin?.selfId;
-    const crow = closest('.row');
-    if (crow && crow.dataset.card === 'categories') {
-      e.stopPropagation();
-      if (!state.pick || state.pick.slot !== 'unit') state.pick = { card: 'rentals', recId: draftRid, recType: undefined, slot: 'unit' };
-      state.pick.catFilter = state.pick.catFilter === crow.dataset.rec ? null : crow.dataset.rec;
-      const cs = activeSession(); if (cs.cols && state.pick.catFilter) cs.cols.left = 'units';   // → the units of that category
-      render();
-      return;
-    }
-    if (crow && crow.dataset.card === 'customers') {   // pick a customer for the new rental
-      e.stopPropagation();
-      const r = draftRid ? recOf('rentals', draftRid) : null;
-      if (r) { r.customerId = crow.dataset.rec; const c = IDX.customer.get(crow.dataset.rec); if (c && /^New Rental/.test(r.rentalName || '')) r.rentalName = `New Rental — ${c.name}`; reindex('rentals', r); render(); }
-      return;
-    }
-  }
-
-  // keep the window open through Category/Unit/Customer picking; close it only when the
-  // user clicks the Rentals card itself (and continue handling that click) or Done.
+  // keep the window open while the user works the side cards; close it only when
+  // they click the Rentals card itself (and continue handling that click) or Done.
   if (state.winpicker && !closest('.winpicker') && !closest('.js-open-winpicker')) {
     const onRentalCard = closest('.card') && closest('.card').dataset.card === 'rentals';
     if (onRentalCard) state.winpicker = null;   // fall through to handle the rental-card click
-  }
-
-  // §0.3 pick mode — a click in the highlighted source card assigns to the draft
-  if (state.pick) {
-    if (closest('.js-cancelpick')) return cancelPick();
-    const prow = closest('.row');
-    if (prow) {
-      const rowEntity = prow.dataset.card === 'shop' ? prow.dataset.type : prow.dataset.card;
-      if (state.pick.slot === 'washunit') {   // Wash mode — clicking a unit flags its wash, then exits
-        if (rowEntity === 'units') { e.stopPropagation(); const uid = prow.dataset.rec; state.pick = null; setWashRequest(uid, true); anchorRecord('shop', uid, 'serviceOrders'); return; }
-      } else if (rowEntity === PICK_SRC[state.pick.slot]) { e.stopPropagation(); return assignPick(prow.dataset.rec); }
-    }
   }
 
   // header / chrome
@@ -4806,18 +4726,12 @@ function onClick(e) {
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
   if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); state.fleetFilter = null; const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
   if (closest('.js-dashboard')) { e.stopPropagation(); toast('Dashboard graphs are coming soon.'); return; }   // Phase-2 per-role KPI graphs (G1/G2)
-  if (closest('.js-dash-ev')) { e.stopPropagation(); state.pick = null; return anchorRecord('rentals', closest('.js-dash-ev').dataset.rec); }
+  if (closest('.js-dash-ev')) { e.stopPropagation(); return anchorRecord('rentals', closest('.js-dash-ev').dataset.rec); }
   if (closest('.js-new-wo-unit')) { e.stopPropagation(); return startNewWorkOrder(closest('.js-new-wo-unit').dataset.rec); }
   if (closest('.js-newitem')) {
     const kind = closest('.js-newitem').dataset.new;
     const cust = activeSession().anchor?.card === 'customers' ? activeSession().anchor.recId : null;
     document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
-    // toggle off: clicking the same +X while already in that mode exits the mode
-    const KIND_ENTITY = { rental: 'rentals', inspection: 'inspections', workOrder: 'workOrders', invoice: 'invoices' };
-    if (state.pick && KIND_ENTITY[kind] && entityCardOf(state.pick.card, state.pick.recType) === KIND_ENTITY[kind]) {
-      cancelPick(true); toast('Exited ' + NEW_MODE[KIND_ENTITY[kind]].name + ' Mode.'); return;
-    }
-    sweepIncompleteRentalDrafts(); pruneOrphanTabs();   // switching to a different +X abandons any half-built rental + drops its dangling tab
     if (kind === 'rental') return startNewRental(cust);
     if (kind === 'inspection') return startNewInspection();
     if (kind === 'workOrder') return startNewWorkOrder();
@@ -4848,23 +4762,40 @@ function onClick(e) {
     return;
   }
   if (closest('.js-clear-fleet')) { e.stopPropagation(); state.fleetFilter = null; render(); return; }
-  if (closest('.js-addcat')) { e.stopPropagation(); return beginPick('customers', closest('.js-addcat').dataset.rec, undefined, 'intcat'); }
+  if (closest('.js-addcat')) { const b = closest('.js-addcat'); e.stopPropagation(); return openIntCatDropdown(b.dataset.rec, b); }
+  if (closest('.js-setintcat')) { const b = closest('.js-setintcat'); e.stopPropagation(); return addInterestedCategory(b.dataset.rec, b.dataset.val); }
   if (closest('.js-act-open')) { const b = closest('.js-act-open'); e.stopPropagation(); state.actMode = b.dataset.val; state.actOpen = b.dataset.rec; const rec = b.dataset.rec; render(); document.querySelector(`.js-act-in[data-rec="${rec}"]`)?.focus(); return; }
   if (closest('.js-schedule-save')) { const b = closest('.js-schedule-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup-body'); const c = IDX.customer.get(b.dataset.rec); const date = o?.when, time = o?.whenTime || '09:00'; const note = (root.querySelector('.js-sch-note')?.value || '').trim(); if (!c || !date) { flashOr('.datefield', 'Pick a date first.'); return; } c.activityLog = c.activityLog || []; c.activityLog.push({ when: date, text: `Scheduled: ${note || 'follow-up'} @ ${date} ${to12(time)}` }); reindex('customers', c); toast('Scheduled — added to the Activity Log.'); state.datepick = null; closeOverlay(); render(); }
-  // draft pickers / creation affordances (§0.3)
-  if (closest('.js-pick')) { const b = closest('.js-pick'); e.stopPropagation(); return beginPick(b.dataset.card, b.dataset.rec, b.dataset.type || undefined, b.dataset.slot); }
+  // Wave 2 — empty slots on a Quote/invoice: the UNIT slot points you at the
+  // Units list (drag IS the link path); the CUSTOMER slot opens quick-add-link.
+  if (closest('.js-slot-unit')) {
+    e.stopPropagation();
+    const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list';
+    render(); attnFlash('.card[data-card="units"] .list');   // R19 — point AT the list
+    toast('Drag a unit from the Units card onto this Quote.');
+    return;
+  }
+  if (closest('.js-quickadd-cust')) { const b = closest('.js-quickadd-cust'); e.stopPropagation(); return openCustomerForm(null, null, { card: b.dataset.card, recId: b.dataset.rec }); }
   if (closest('.js-create-invoice')) { e.stopPropagation(); return createInvoiceForRental(closest('.js-create-invoice').dataset.rec); }
   if (closest('.js-clear-fc')) { e.stopPropagation(); return clearFieldCall(closest('.js-clear-fc').dataset.rec); }
   if (closest('.js-bill-wo')) { e.stopPropagation(); return billWOToInvoice(closest('.js-bill-wo').dataset.rec); }
   if (closest('.js-wo-bill')) { const b = closest('.js-wo-bill'); e.stopPropagation(); const w = IDX.wo.get(b.dataset.rec); if (w) { w.billCustomer = w.billCustomer === 'Yes' ? 'No' : 'Yes'; reindex('workOrders', w); logAction(w, `Bill customer → ${w.billCustomer}`); render(); } return; }
   if (closest('.js-svc-complete')) { const b = closest('.js-svc-complete'); e.stopPropagation(); state.svcPhoto = null; return openOverlay({ kind: 'service', unitId: b.dataset.unit, taskId: b.dataset.task }); }
   if (closest('.js-svc-save')) { const b = closest('.js-svc-save'); e.stopPropagation(); if (!state.svcPhoto) { flashOr('.overlay .insp-photo, .overlay .insp-rephoto, .overlay .cap-drop', 'Photo proof is required to complete a service.'); return; } const root = b.closest('.popup-body'); return recordServiceCompletion(b.dataset.unit, b.dataset.task, root.querySelector('.js-svc-hours')?.value, root.querySelector('.js-svc-date')?.value, root.querySelector('.js-svc-notes')?.value, state.svcPhoto); }
-  // invoice line-item add buttons → enter a pick for the source card
+  // invoice line-item add buttons → point at the card to DRAG FROM (Wave 2)
   if (closest('.js-add-line')) {
     const b = closest('.js-add-line'); e.stopPropagation();
     const inv = IDX.invoice.get(b.dataset.rec);
-    if (b.dataset.kind === 'Rental') { if (inv && !inv.customerId) { attnFlash('[data-slot="customer"]'); return beginPick('invoices', b.dataset.rec, undefined, 'customer'); } return beginPick('invoices', b.dataset.rec, undefined, 'rental'); }
-    if (b.dataset.kind === 'WO') return beginPick('invoices', b.dataset.rec, undefined, 'wo');
+    if (b.dataset.kind === 'Rental') {
+      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
+      const s = activeSession(); if (s.cols) s.cols.middle = 'rentals'; s.cards.rentals.mode = 'list';
+      render(); attnFlash('.card[data-card="rentals"] .list'); toast('Drag a rental onto this invoice.'); return;
+    }
+    if (b.dataset.kind === 'WO') {
+      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', 'The invoice needs a customer first (§7.6) — drag or quick-add one.'); return; }
+      const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list';
+      render(); attnFlash('.card[data-card="units"] .list'); toast('Drag the unit with the open work order onto this invoice (it bills the WO).'); return;
+    }
     state.invLineForm = b.dataset.rec; return render();   // inline custom-line form
   }
   if (closest('.js-line-save')) { const b = closest('.js-line-save'); e.stopPropagation(); const root = b.closest('.lineform'); const label = root.querySelector('.js-lf-label')?.value; const amt = Number(root.querySelector('.js-lf-amt')?.value) || 0; state.invLineForm = null; return addCustomLine(b.dataset.rec, label || 'Custom', amt); }
@@ -5054,16 +4985,16 @@ function handlePillX(xEl) {
 
   if (kind === 'unit-swap') {
     rec.unitId = null; if (entity === 'rentals') rec.categoryId = null;
-    toast('Unit removed — pick a replacement.'); return beginPick(card, recId, recType, 'unit');
+    toast(entity === 'rentals' ? 'Unit removed — drag a replacement on.' : 'Unit removed.'); return render();
   } else if (kind === 'cust-swap') {
-    rec.customerId = null; toast('Customer removed — pick a replacement.'); return beginPick(card, recId, recType, 'customer');
+    rec.customerId = null; toast('Customer removed — drag a replacement on (or quick-add one).'); return render();
   } else if (kind === 'inv-remove') {
     const inv = IDX.invoice.get(rec.invoiceId);
     if (inv && invoiceTotals(inv).paid > 0) { toast('Blocked: invoice has a payment — cannot unlink (§7.4).'); return; }
     rec.invoiceId = null; toast('Invoice unlinked.'); render();
   } else if (kind === 'inv-cust-remove') {
     if (invoiceTotals(rec).paid > 0) { toast('Blocked: invoice has a payment — customer locked (§7.5).'); return; }
-    rec.customerId = null; toast('Customer removed — pick a replacement.'); return beginPick(card, recId, recType, 'customer');
+    rec.customerId = null; toast('Customer removed — drag a replacement onto the invoice (or quick-add one).'); return render();
   } else if (kind === 'inv-line-remove') {
     const idx = Number(xEl.dataset.idx);
     const li = rec.lineItems && rec.lineItems[idx];
@@ -5085,9 +5016,6 @@ function handlePillX(xEl) {
     rec.interestedCategoryIds = (rec.interestedCategoryIds || []).filter((x) => x !== cid);
     reindex('customers', rec); toast('Interested category removed.'); render();
   }
-}
-function highlightCard(card) {
-  setTimeout(() => { const c = document.querySelector(`.card[data-card="${card}"]`); if (c) { c.classList.add('highlight'); setTimeout(() => c.classList.remove('highlight'), 1600); } }, 30);
 }
 
 /** Inline edit (§6.2 #11): click value → input; Enter/blur commits, Esc cancels. */
@@ -5216,7 +5144,7 @@ function clearFieldCall(rentalId) {
 
 /* ════════════════════════════════════════════════════════════════════════
    §16 ACTIONS / MUTATIONS — every state change funnels through here
-   (status setters, picks, drafts, captures, site, WO/invoice lines, +New)
+   (status setters, drag links, Quotes, captures, site, WO/invoice lines, +New)
    ════════════════════════════════════════════════════════════════════════ */
 /* ── v2 BUILD actions: condition/wash segs · yard captures · site popup · WO complete ── */
 function setUnitCondition(unitId, val) {
@@ -5676,10 +5604,13 @@ function parseCustomerSearch(q) {
   const parts = q.split(/\s+/);
   return parts.length >= 2 ? { firstName: parts[0], lastName: parts.slice(1).join(' ') } : { firstName: q };
 }
-function openCustomerForm(editId, prefill) {
+/* `linkTo` { card:'rentals'|'invoices', recId } — the standing quick-add-link
+   contract (Wave 2): the moment the new customer exists it is LINKED to that
+   record via the surviving wrappers; existing customers get DRAGGED on instead. */
+function openCustomerForm(editId, prefill, linkTo) {
   const c = editId ? IDX.customer.get(editId) : null;
   const f = (k, d) => (c && c[k] != null ? c[k] : ((prefill && prefill[k]) || d || ''));
-  openOverlay({ kind: 'newCustomer', error: '', editId: editId || null, draft: {
+  openOverlay({ kind: 'newCustomer', error: '', editId: editId || null, linkTo: (!editId && linkTo) || null, draft: {
     firstName: f('firstName'), lastName: f('lastName'), company: f('company'), phone: f('phone'),
     email: f('email'), industry: f('industry'), accountType: f('accountType', 'Non-Business'),
     accountNotes: f('accountNotes'), selfie: f('selfie'), signature: f('signature'),
@@ -5726,7 +5657,20 @@ function quickSaveCustomer(o) {
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
   logAction(c, 'Customer quick-added');
   o.editId = id;
+  applyCustomerLink(o, id);   // quick-add-link: born from a Quote/invoice slot → linked immediately
   return id;
+}
+/* Wave 2 quick-add-link: consumes o.linkTo exactly once through the surviving
+   wrappers, remembering it in o.linked so the save path can re-anchor the
+   linked Quote/invoice instead of the customer. */
+function applyCustomerLink(o, customerId) {
+  const lt = o && o.linkTo; if (!lt) return null;
+  o.linkTo = null;
+  const res = lt.card === 'rentals' ? linkCustomerToRental(lt.recId, customerId)
+            : lt.card === 'invoices' ? setInvoiceCustomer(lt.recId, customerId) : null;
+  if (!res) return null;   // blocked (the wrapper already toasted why) — fall back to a plain create
+  o.linked = lt;
+  return lt;
 }
 function saveNewCustomer() {
   const o = state.overlay; if (!o || o.kind !== 'newCustomer') return;
@@ -5745,7 +5689,10 @@ function saveNewCustomer() {
     reindex('customers', c);
     if (c.agreementSignedAt && !wasSigned) logAction(c, `${AGREEMENTS[c.agreementType]?.title || 'Agreement'} signed`);
     logAction(c, 'Account details updated');
-    closeOverlay(); anchorRecord('customers', c.customerId); toast(`${c.name} updated.`);
+    const lt = applyCustomerLink(o, c.customerId) || o.linked;   // quick-add-link → land back on the Quote/invoice
+    closeOverlay();
+    if (lt) { anchorRecord(lt.card, lt.recId); toast(`${c.name} saved and linked.`); }
+    else { anchorRecord('customers', c.customerId); toast(`${c.name} updated.`); }
     return;
   }
   const id = nextCustomerId();                       // ── new customer ──
@@ -5760,9 +5707,10 @@ function saveNewCustomer() {
   };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
   logAction(c, 'Customer onboarded');
+  const lt = applyCustomerLink(o, id);   // quick-add-link → land back on the Quote/invoice
   closeOverlay();
-  anchorRecord('customers', id);
-  toast(`${c.name} added.`);
+  if (lt) { anchorRecord(lt.card, lt.recId); toast(`${c.name} added and linked.`); }
+  else { anchorRecord('customers', id); toast(`${c.name} added.`); }
 }
 /* ════════════════════════════════════════════════════════════════════════
  * §17 STRIPE / PAYMENTS — card-on-file + invoice charging (client side).
@@ -5958,107 +5906,69 @@ function startNewReceipt() {
   openOverlay({ kind: 'receiptform', expenseId: null });   // the record is only created on Save — Cancel leaves no stub
 }
 
-function startNewInspection() {
+function startNewInspection(unitId) {
+  // Wave 2: inspections are UNIT-BORN (mirrors startNewWorkOrder) — no pick mode.
+  const u = unitId ? IDX.unit.get(unitId) : null;
+  if (!u) { flashOr('.card[data-card="units"] .list', 'Inspections start from a unit — open the unit first.'); return; }
   const id = 'INS-NEW' + (state.seq++);
-  const draft = { inspectionId: id, unitId: null, date: TODAY_ISO, wash: '', checklist: '', billCustomer: 'No', customerId: null, woId: null, photo: '', description: '', mock: true };
+  const draft = { inspectionId: id, unitId: u.unitId, date: TODAY_ISO, wash: '', checklist: '', billCustomer: 'No', customerId: null, woId: null, photo: '', description: '', mock: true };
   DATA.inspections.push(draft); IDX.insp.set(id, draft); reindex('inspections', draft);
   logAction(draft, 'Inspection created');
   anchorRecord('shop', id, 'inspections');
-  revealPickList('units');   // show the Units list so there's something to click
-  toast('New inspection — pick the unit, then run Wash → Checklist.');
-  beginPick('shop', id, 'inspections', 'unit');
+  toast(`New inspection for ${u.name} — run Wash → Checklist.`);
 }
 function startNewWorkOrder(unitId) {
-  const id = 'WO-NEW' + (state.seq++);
+  // Wave 2: work orders are UNIT-BORN only — no pick mode.
   const u = unitId ? IDX.unit.get(unitId) : null;
-  const draft = { woId: id, unitId: u ? u.unitId : null, customerId: null, woReport: 'New Work Order', woType: 'Manual', description: '', phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  if (!u) { flashOr('.card[data-card="units"] .list', 'Work orders start from a unit — open the unit and use +Work Order.'); return; }
+  const id = 'WO-NEW' + (state.seq++);
+  const draft = { woId: id, unitId: u.unitId, customerId: null, woReport: 'New Work Order', woType: 'Manual', description: '', phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(draft); IDX.wo.set(id, draft); reindex('workOrders', draft);
   logAction(draft, 'Work order created');
-  if (u) {
-    // born on the Unit card (+Work Order above Specs/GPS) — the WO section appears in place
-    render();
-    attnFlash(`.card[data-card="units"] .section.wo-${id}`);
-    return;
-  }
-  anchorRecord('shop', id, 'workOrders');
-  revealPickList('units');   // show the Units list so there's something to click
-  toast('New work order — pick the unit, then add parts / labor.');
-  beginPick('shop', id, 'workOrders', 'unit');
+  // born on the Unit card (+Work Order above Specs/GPS) — the WO section appears in place
+  render();
+  attnFlash(`.card[data-card="units"] .section.wo-${id}`);
 }
 function startNewInvoice(customerId) {
   const cust = customerId ? IDX.customer.get(customerId) : null;
   const id = nextInvoiceId();
   const draft = { invoiceId: id, customerId: customerId || null, rentalIds: [], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
   DATA.invoices.push(draft); IDX.invoice.set(id, draft); reindex('invoices', draft);
-  anchorRecord('invoices', id);
-  if (!customerId) revealPickList('customers');   // show the Customers list so there's something to click
-  toast(cust ? `New invoice for ${cust.name} — add rentals / WOs.` : 'New invoice — pick a customer, then add rentals / WOs.');
-  if (!customerId) beginPick('invoices', id, undefined, 'customer');
+  logAction(draft, cust ? `Invoice created for ${cust.name}` : 'Invoice created');
+  anchorRecord('invoices', id);   // no pick mode — drag links it up (Wave 2)
+  // no customer yet → reveal the Customers list (right column); dragging a
+  // customer swaps the column back to the invoice mid-drag (§15c stacked column).
+  if (!cust) { const s = activeSession(); if (s.cols) s.cols.right = 'customers'; }
+  toast(cust ? `New invoice for ${cust.name} — drag rentals onto it.` : 'New invoice — drag a customer and rentals onto it.');
+  render();
 }
 
 function startNewRental(customerId) {
-  const id = 'R-NEW' + (state.seq++);
+  // Quotes PERSIST across sessions now — the id embeds a time salt so a reloaded
+  // app's seq counter can never mint a colliding R-NEW id.
+  const id = 'R-NEW' + Date.now().toString(36) + '-' + (state.seq++);
   const cust = customerId ? IDX.customer.get(customerId) : null;
-  const draft = { rentalId: id, customerId: customerId || null, unitId: null, categoryId: null, rentalName: cust ? `New Rental — ${cust.name}` : 'New Rental', startDate: '', endDate: '', startTime: '', status: 'Quote', transportType: 'Self', deliveryAddress: '', po: '', invoiceId: null, startHours: null, returnHours: null, notes: '', mock: true };
+  const draft = { rentalId: id, customerId: customerId || null, unitId: null, categoryId: null, rentalName: cust ? `New Quote — ${cust.name}` : 'New Quote', startDate: '', endDate: '', startTime: '', status: 'Quote', transportType: 'Self', deliveryAddress: '', po: '', invoiceId: null, startHours: null, returnHours: null, notes: '', mock: true };
   DATA.rentals.push(draft); IDX.rental.set(id, draft); reindex('rentals', draft);
-  logAction(draft, cust ? `Rental created for ${cust.name}` : 'Rental created');
-  anchorRecord('rentals', id);
-  // +Rental mode columns: left → Categories (pick one to filter Units), right → Customers
-  // (all, to pick or add), middle → the new rental + its window.
-  const s = activeSession(); if (s.cols) { s.cols.left = 'categories'; s.cols.right = 'customers'; s.cols.middle = 'rentals'; s.cards.categories.mode = 'list'; s.cards.customers.mode = 'list'; }
-  beginPick('rentals', id, undefined, 'unit');   // window picker stays closed; the guide popup leads
+  logAction(draft, cust ? `Quote created for ${cust.name}` : 'Quote created');
+  anchorRecord('rentals', id);   // no pick mode — the Quote survives until completed or deliberately deleted (Wave 2)
+  // Quote workspace: left → Units (drag one on), right → Customers (drag on or
+  // quick-add). The dashed "Select rental window" trigger stays on the Quote card.
+  const s = activeSession(); if (s.cols) { s.cols.left = 'units'; s.cols.right = 'customers'; }
+  toast(cust ? `New Quote for ${cust.name} — drag a unit onto it, then pick the window.` : 'New Quote — drag a unit and a customer onto it, then pick the window.');
+  render();
 }
 
-/* ── §0.3 cascading pickers (pick mode) ──────────────────────────────────────
-   A draft (or a swap) puts the app in "pick mode": the source card lists every
-   record and a banner prompts the choice. Clicking a row in that card assigns
-   it to the draft slot and auto-advances to the next empty required slot. */
-const PICK_SRC = { customer: 'customers', unit: 'units', rental: 'rentals', wo: 'workOrders', intcat: 'categories', washunit: 'units' };
-const PICK_LABEL = { customer: 'a customer', unit: 'a unit', rental: 'a rental', wo: 'a work order', intcat: 'an interested category' };
-function draftName(card, rec) {
-  const entity = entityCardOf(card, state.pick?.recType);
-  if (entity === 'rentals') return rec.rentalName || 'this rental';
-  if (entity === 'inspections') return 'this inspection';
-  if (entity === 'workOrders') return rec.woReport || 'this work order';
-  if (entity === 'invoices') return rec.invoiceId || 'this invoice';
-  return 'this record';
-}
-function nextPickFor(card, rec, recType) {
-  const entity = entityCardOf(card, recType);
-  if (entity === 'rentals') { if (!rec.customerId) return 'customer'; if (!rec.unitId) return 'unit'; return null; }
-  if (entity === 'inspections' || entity === 'workOrders') { if (!rec.unitId) return 'unit'; return null; }
-  if (entity === 'invoices') { if (!rec.customerId) return 'customer'; return null; }
-  return null;
-}
-function beginPick(card, recId, recType, slot) {
-  if (!slot) { state.pick = null; render(); return; }
-  state.pick = { card, recId, recType, slot };
-  // §0.3 — the rental window picker stays CLOSED at start; the guide popup points
-  // the user to the big "Select rental window" button (they open it deliberately).
-  if (slot === 'unit' && entityCardOf(card, recType) === 'rentals') {
-    const r = recOf('rentals', recId);
-    if (r && !r.startTime) r.startTime = nowHourLabel();
-  }
-  render();
-  // WOs live inside the Shop card, so highlight that for the 'wo' pick
-  highlightCard(slot === 'wo' ? 'shop' : PICK_SRC[slot]);
-}
-function cancelPick(silent) {
-  if (!state.pick) return;
-  const p = state.pick;
-  state.pick = null;
-  state.winpicker = null;   // leaving the pick exits the whole +X mode, calendar included
-  if (p.slot !== 'washunit') discardIfEmptyDraft(p);   // abandon the half-built draft (inspection/WO/invoice/rental)
-  sweepIncompleteRentalDrafts();   // a rental without BOTH a unit & customer is not saved
-  pruneOrphanTabs();               // drop the tab that was holding a now-discarded draft
-  if (!silent) toast('Picker closed — finish later from the card.');
-  render();
-}
+/* ── Wave 2 (Jac 2026-06-12): pick mode is DEAD. Linking happens by DRAG (§15c
+   wrappers: linkUnitToRental / linkCustomerToRental / setInvoiceCustomer /
+   billWOToInvoiceExplicit / addRentalLineToInvoice) or by the customer
+   quick-add-link (openCustomerForm linkTo). Quotes survive — nothing sweeps. ── */
 function reindexDraft(card, rec) {
-  // a freshly-named "New Rental" draft adopts "{unit} — {customer}" once both are set,
-  // then the comprehensive searchBlob picks up every field.
+  // a freshly-named "New Quote" adopts "{unit} — {customer}" once both are set,
+  // then the comprehensive searchBlob picks up every field. (The old "New Rental"
+  // prefix still matches so pre-Wave-2 persisted Quotes rename correctly.)
   if (rec.rentalId) { const cust = IDX.customer.get(rec.customerId), u = IDX.unit.get(rec.unitId);
-    if (cust && /^New Rental/.test(rec.rentalName || '')) rec.rentalName = `${u?.name || 'Rental'} — ${cust.name}`;
+    if (cust && /^New (Rental|Quote)/.test(rec.rentalName || '')) rec.rentalName = `${u?.name || 'Rental'} — ${cust.name}`;
     return reindex('rentals', rec); }
   if (rec.invoiceId) return reindex('invoices', rec);
   if (rec.inspectionId) return reindex('inspections', rec);
@@ -6067,121 +5977,12 @@ function reindexDraft(card, rec) {
   if (rec.unitId) return reindex('units', rec);
   if (rec.categoryId) return reindex('categories', rec);
 }
-function assignPick(srcId) {
-  const p = state.pick; if (!p) return;
-  // invoice line-item pickers (add a rental or a work order to the invoice)
-  if (p.slot === 'rental') { state.pick = null; addRentalLineToInvoice(p.recId, srcId); return; }
-  if (p.slot === 'wo') { state.pick = null; addWOToInvoice(p.recId, srcId); return; }
-  // §12.1 interested-category attach — push the picked category onto the customer
-  if (p.slot === 'intcat') {
-    const c = IDX.customer.get(p.recId); state.pick = null;
-    if (c) { c.interestedCategoryIds = c.interestedCategoryIds || []; if (!c.interestedCategoryIds.includes(srcId)) { c.interestedCategoryIds.push(srcId); reindex('customers', c); logAction(c, `Interested in ${IDX.category.get(srcId)?.name || 'category'}`); } }
-    reanchorRender(); return;
-  }
-  const entity = entityCardOf(p.card, p.recType);
-  const rec = recOf(entity, p.recId); if (!rec) { state.pick = null; render(); return; }
-  if (p.slot === 'customer') { rec.customerId = srcId; logAction(rec, `Customer → ${IDX.customer.get(srcId)?.name || ''}`); toast(`Customer → ${IDX.customer.get(srcId)?.name || ''}`); }
-  else if (p.slot === 'unit') {
-    const u = IDX.unit.get(srcId);
-    // §9 — a non-Active unit (For Sale / Sold / Inactive…) can't be rented
-    if (entity === 'rentals' && u && u.fleetStatus !== 'Active') { toast(`Blocked: ${u.name} is ${u.fleetStatus} — not rentable (§9).`); return; }
-    rec.unitId = srcId;
-    if (entity === 'rentals' && u) rec.categoryId = u.categoryId;
-    if (entity === 'workOrders' && u) rec.unitHoursAtCreation = u.currentHours;
-    logAction(rec, `Unit → ${u?.name || ''}`);
-    toast(`Unit → ${u?.name || ''}`);
-  }
-  reindexDraft(p.card, rec);
-  state.pick = null;
-  // a "Bill to invoice" that needed a customer first → now auto-bill the WO
-  if (p.slot === 'customer' && state.pendingBillWO === p.recId) { state.pendingBillWO = null; return billWOToInvoice(p.recId); }
-  const session = activeSession();
-  if (session.anchor && session.anchor.card === p.card && session.anchor.recId === p.recId) setAnchor(session, p.card, p.recId, p.recType);
-  const nxt = nextPickFor(p.card, rec, p.recType);
-  if (nxt) { beginPick(p.card, p.recId, p.recType, nxt); return; }
-  render();
-}
 
-/* The pick banner — a floating strip over the grid while in pick mode. */
-// Each "+X" creation mode gets a persistent banner explaining how to leave it:
-// click the same +X button to bail, or finish the listed requirements to commit.
-const NEW_MODE = {
-  rentals:     { name: '+Rental',     btn: '+Rental',     need: 'a Unit &amp; Customer (the Rental Window is optional)' },
-  inspections: { name: '+Inspection', btn: '+Inspection', need: 'a Unit' },
-  workOrders:  { name: '+Work Order', btn: '+Work Order', need: 'a Unit' },
-  invoices:    { name: '+Invoice',    btn: '+Invoice',    need: 'a Customer' },
-};
-function pickBarEl() {
-  const p = state.pick; if (!p) return null;
-  if (p.slot === 'washunit') {   // header "Wash" mode — pick a unit to flag for a wash
-    const bar = el('div', 'pickbar');
-    bar.innerHTML = `<span class="pb-dot"></span><span class="pb-text">You are in <b>Wash Mode</b>. Exit by clicking <b>Wash</b>, or click a <b>Unit</b> to request its wash.</span>
-      <button class="pill ghost js-cancelpick" data-r="R18">Exit</button>`;
-    return bar;
-  }
-  const entity = entityCardOf(p.card, p.recType);
-  if (NEW_MODE[entity]) return null;   // guided +X modes use the floating guide popup instead
-  const bar = el('div', 'pickbar');
-  const rec = recOf(entity, p.recId);   // swaps & other one-off picks keep the original prompt
-  bar.innerHTML = `<span class="pb-dot"></span><span class="pb-text">Pick ${PICK_LABEL[p.slot]} for <b>${esc(draftName(p.card, rec || {}))}</b> — click a row in the highlighted card.</span>
-    <button class="pill ghost js-cancelpick" data-r="R18">Cancel</button>`;
-  return bar;
-}
-/* ── The non-dimming "+X mode" guide popup, centered in the middle card, with arrows
-   pointing at where to click. Stays until the mode is exited. ── */
-const MODE_TITLE = { rentals: '+Rental', inspections: '+Inspection', workOrders: '+Work Order', invoices: '+Invoice' };
-function guideForMode() {
-  const p = state.pick; if (!p) return null;
-  const entity = entityCardOf(p.card, p.recType); if (!NEW_MODE[entity]) return null;
-  if (entity === 'rentals') {
-    const d = rentalDraft(); if (!d) return null;
-    if (!state.winpicker && !rentalEngaged()) return { entity, msg: 'Select a rental window', arrows: ['up'] };
-    const needUnit = !d.unitId, needCust = !d.customerId;
-    if (!needUnit && !needCust) return null;   // both set → workflow done, guide closes
-    const what = [], arrows = [];
-    if (needUnit) { what.push((p.catFilter || d.categoryId) ? 'a unit' : 'a category'); arrows.push('left'); }
-    if (needCust) { what.push('a customer'); arrows.push('right'); }
-    return { entity, msg: 'Select ' + what.join(' and '), arrows };
-  }
-  if (entity === 'inspections' || entity === 'workOrders') return { entity, msg: 'Add a unit', arrows: ['left'] };
-  if (entity === 'invoices') return { entity, msg: 'Select a customer', arrows: ['right'] };
-  return null;
-}
-function guidePopupEl() {
-  const g = guideForMode(); if (!g) return null;
-  const arrow = (d) => `<span class="g-arrow g-${d}">${d === 'up' ? '↑' : d === 'left' ? '←' : '→'}</span>`;
-  const node = el('div', 'guide-pop');
-  node.innerHTML = `${g.arrows.map(arrow).join('')}
-    <div class="g-card"><div class="g-title">${esc(MODE_TITLE[g.entity])} mode</div><div class="g-msg">${esc(g.msg)}</div>
-      <button class="pill ghost js-cancelpick" data-r="R18">Exit</button></div>`;
-  return node;
-}
-function positionGuide(node) {
-  const mid = document.querySelector('.col[data-col="middle"]'); if (!mid) return;
-  const r = mid.getBoundingClientRect();
-  const left = Math.max(10, Math.round(r.left + r.width / 2 - node.offsetWidth / 2));
-  const gh = node.offsetHeight;
-  let top;
-  const wpFloat = state.winpicker ? document.querySelector('.winpicker-float') : null;
-  if (wpFloat) {
-    // the rental-window calendar is open — keep the guide clear of it (don't clash)
-    const wr = wpFloat.getBoundingClientRect();
-    if (window.innerHeight - wr.bottom >= gh + 24) top = wr.bottom + 16;   // below the calendar
-    else if (wr.top >= gh + 24) top = wr.top - gh - 16;                    // above the calendar
-    else top = window.innerHeight - gh - 12;                              // pin near viewport foot
-  } else {
-    // when the up-arrow points at the window button, sit just BELOW the button (don't cover it)
-    const btn = (!state.winpicker && rentalDraft()) ? mid.querySelector('.js-open-winpicker') : null;
-    top = btn ? btn.getBoundingClientRect().bottom + 56
-              : r.top + Math.max(120, r.height * 0.30);
-  }
-  node.style.left = left + 'px'; node.style.top = Math.max(12, Math.round(top)) + 'px';
-}
 
-/* ── draft mutations driven from the detail view ── */
+/* ── Quote mutations driven from the detail view ── */
 function createInvoiceForRental(rentalId) {
   const r = IDX.rental.get(rentalId); if (!r) return;
-  if (!r.customerId) { attnFlash('[data-slot="customer"]'); return beginPick('rentals', rentalId, undefined, 'customer'); }
+  if (!r.customerId) { flashOr('[data-slot="customer"]', 'The Quote needs a customer first — drag one on (or quick-add).'); return; }
   if (!r.startDate || !r.endDate) { flashOr('.timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   const id = nextInvoiceId();
   const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
@@ -6458,9 +6259,8 @@ function addPartToWO(woId, part, cost, hours, phase) {
   // the current card view (the WO may be open via its pill, not as the anchor).
   render();
 }
-/* ── §16 DROP-CALLABLE LINK WRAPPERS (§15c drag engine) — the slot-assignment
-   bodies extracted from assignPick so a drop can run them WITHOUT pick-state
-   plumbing. assignPick itself is unchanged (pick mode stays the fallback). ── */
+/* ── §16 DROP-CALLABLE LINK WRAPPERS (§15c drag engine) — THE surviving link
+   paths (Wave 2: pick mode is gone; drops + quick-add-link do all linking). ── */
 /** Link a unit to a rental — SET when empty, SWAP when safe.
  *  ⚠ MULTI-UNIT SWITCH POINT: when rentals grow `unitIds[]` (the multi-unit
  *  refactor, DRAGDROP-DESIGN.md §2), this drop becomes an ADD — push the unitId
@@ -6468,7 +6268,7 @@ function addPartToWO(woId, part, cost, hours, phase) {
 function linkUnitToRental(rentalId, unitId) {
   const r = IDX.rental.get(rentalId), u = IDX.unit.get(unitId);
   if (!r || !u) return null;
-  if (u.fleetStatus !== 'Active') { toast(`Blocked: ${u.name} is ${u.fleetStatus} — not rentable (§9).`); return null; }   // assignPick's §9 gate, verbatim (app.js:5746)
+  if (u.fleetStatus !== 'Active') { toast(`Blocked: ${u.name} is ${u.fleetStatus} — not rentable (§9).`); return null; }   // the §9 fleet gate
   if (r.unitId === unitId) { toast(`${u.name} is already on this rental.`); return null; }
   const prev = r.unitId ? IDX.unit.get(r.unitId) : null;
   // swap safety: On Rent with logged captures = the old unit is physically out — block
@@ -6486,8 +6286,8 @@ function linkUnitToRental(rentalId, unitId) {
   reindexDraft('rentals', r);
   return { swapped: prev || null, overbooked: conflicts.length > 0 };
 }
-/** Link a customer to a rental — assignPick's customer path + the §9 blacklist
- *  gate pulled up-front (today it only fires later, in setRentalStatus). */
+/** Link a customer to a rental — with the §9 blacklist gate pulled up-front
+ *  (it otherwise only fires later, in setRentalStatus). */
 function linkCustomerToRental(rentalId, customerId) {
   const r = IDX.rental.get(rentalId), c = IDX.customer.get(customerId);
   if (!r || !c) return null;
@@ -6514,7 +6314,7 @@ function setInvoiceCustomer(invoiceId, customerId) {
   return { swapped: prev || null };
 }
 /** Bill a WO to an EXPLICIT invoice — billWOToInvoice's ending without the
- *  auto-pick or the pendingBillWO customer detour (the user chose the invoice).
+ *  open-invoice auto-find (the user chose the invoice).
  *  Adds the customer-mismatch + locked guards the auto path never needed;
  *  addWOToInvoice still enforces bill-once (§7.6) + logs + renders. */
 function billWOToInvoiceExplicit(woId, invoiceId) {
@@ -6534,10 +6334,9 @@ function billWOToInvoice(woId) {
   let custId = w.customerId;
   if (!custId) { const ar = activeRentalForUnit(w.unitId); custId = ar?.customerId || null; }
   if (!custId) {
-    // no bill-to-customer yet → pick one, then auto-bill (see assignPick)
-    flashOr('[data-slot="customer"]', 'Pick the customer to bill this work order to.');
-    state.pendingBillWO = woId;
-    return beginPick('shop', woId, 'workOrders', 'customer');
+    // no bill-to customer (unit isn't on an active rental) — bill by dragging instead
+    toast('No customer to bill — drag the unit onto the customer’s invoice instead (§7.6).');
+    return;
   }
   let inv = DATA.invoices.find((i) => i.customerId === custId && !['Paid', 'Refunded'].includes(invoiceTotals(i).status));
   if (!inv) {
@@ -6548,24 +6347,8 @@ function billWOToInvoice(woId) {
   addWOToInvoice(inv.invoiceId, woId);
   anchorRecord('invoices', inv.invoiceId);   // jump to the invoice we billed to
 }
-/* Wash Request — wash is a recurring Service interval (every 100 HRS, pinned to the top
-   of a unit's Services). A request flags the unit so its wash pill reads "Wash Requested"
-   until the wash is logged complete (which resets the 100-HR countdown). */
-function setWashRequest(unitId, on) {
-  const u = IDX.unit.get(unitId); if (!u) return;
-  u.washRequested = !!on;
-  logAction(u, on ? 'Wash requested' : 'Wash request cleared');
-  reindex('units', u);
-  toast(on ? `Wash requested for ${u.name}.` : `Wash request cleared for ${u.name}.`);
-}
-/* Entry points: a unit-detail button (toggles), or the header "Wash" button (no unit yet
-   → enter a lightweight pick so the user clicks the unit to wash). */
-function startWashRequest(unitId) {
-  if (unitId) { setWashRequest(unitId, true); anchorRecord('shop', unitId, 'serviceOrders'); render(); return; }
-  state.pick = { card: 'units', recId: null, recType: undefined, slot: 'washunit' };
-  const cs = activeSession(); if (cs.cols) cs.cols.left = 'units'; if (cs.cards?.units) cs.cards.units.mode = 'list';
-  render(); highlightCard('units'); toast('Wash mode — click a unit to request its wash.');
-}
+/* Wash requests live on the Unit card's condition segs + the Service tasks
+   ("Wash Now"); Wash Mode + its 'washunit' pick slot died in Wave 2. */
 /* Add a rental (price + transport) as line items on an invoice. */
 function addRentalLineToInvoice(invoiceId, rentalId) {
   const inv = IDX.invoice.get(invoiceId), r = IDX.rental.get(rentalId);
@@ -6802,10 +6585,10 @@ function boot() {
       return;
     }
     if (e.target.classList.contains('nc-in') && e.key === 'Enter' && e.target.tagName !== 'SELECT') { e.preventDefault(); return saveNewCustomer(); }
-    if (e.key === 'Escape') { if (state.winpicker) { closeWinPicker(); } else if (state.overlay) { closeOverlay(); } else if (state.pick) cancelPick(true); }
+    if (e.key === 'Escape') { if (state.winpicker) { closeWinPicker(); } else if (state.overlay) { closeOverlay(); } }
   });
   // mouse hotkeys (§0.1): double-click a row = anchor; right-click = Back
-  const hotkeyGuard = (e) => e.target.closest('.inline-edit, input, textarea, select, .pill, button, .x') || state.pick || state.winpicker;
+  const hotkeyGuard = (e) => e.target.closest('.inline-edit, input, textarea, select, .pill, button, .x') || state.winpicker;
   document.addEventListener('dblclick', (e) => {
     if (hotkeyGuard(e)) return;
     if (e.target.closest('.row')) return;                 // rows are handled by the click discriminator (#10)
@@ -6819,7 +6602,7 @@ function boot() {
     const card = e.target.closest('.card'), bpop = e.target.closest('.overlay .popup'); if (!card && !bpop) return;
     if (e.target.closest('input, textarea, .inline-input')) return;   // allow native menu in fields
     e.preventDefault();
-    if (state.pick || state.winpicker) return;
+    if (state.winpicker) return;
     // R20: right-clicking an ELEMENT opens the Wrangler context menu;
     // right-clicking dead space keeps the old card-to-List / clear-anchor.
     // menu ONLY on real tools (pills/buttons/text/fields/rows) — section + card
@@ -6842,7 +6625,7 @@ function boot() {
     // The row EYE is the one button that IS a preview trigger.
     if (!e.target.closest('.js-roweye') && (e.target.closest('.pill.gate, .js-status-pill, button, .x, .seg, .add-field, .dropdown-menu') || document.querySelector('.dropdown-menu'))) { clearTimeout(hoverTimer); return; }
     const t = hoverTarget(e.target);
-    if (!t || state.pick || state.overlay || state.winpicker) return;
+    if (!t || state.overlay || state.winpicker) return;
     clearTimeout(hoverGrace);            // re-entering a row cancels a pending close
     if (t === hoverEl) return;
     hoverEl = t; hideHoverPreview();
@@ -6924,8 +6707,9 @@ window.JT = {
   state, DATA, IDX, render, rentalPrice, invoiceTotals, buildIndexes, migrateCustomers, fullName,
   saveSoon, flushSave, snapshotSaved, computeChanges,   // persistence hooks (debug + wiring)
   // creation / mutation API (the UI calls these; exposed for scripting + wiring)
-  startNewRental, startNewInspection, startNewWorkOrder, startNewInvoice, startWashRequest,
+  startNewRental, startNewInspection, startNewWorkOrder, startNewInvoice,
   createInvoiceForRental, addRentalLineToInvoice, addWOToInvoice, addCustomLine, addPartToWO,
-  setInspWash, setInspResult, setDraftDate, beginPick, assignPick,
+  setInspWash, setInspResult, setDraftDate,
+  linkUnitToRental, linkCustomerToRental, setInvoiceCustomer, billWOToInvoiceExplicit,   // Wave 2: the surviving link paths
   billWOToInvoice, anchorRecord, startNewCustomer, startNewReceipt, openOverlay,
 };

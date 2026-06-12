@@ -263,7 +263,7 @@ export const BACKOFFICE_BOARDS = [
  * Each column shows ONE active "member" at a time; the rest are a tab away.
  * The 3 shop members (inspections/serviceOrders/workOrders) still render via
  * the single 'shop' engine card with its segment pinned — the engine, anchor,
- * cascade, recType, and pick code are NOT aware of columns. 'calendar' is the
+ * cascade and recType are NOT aware of columns. 'calendar' is the
  * Office Dispatch grid relocated into the middle column (never a pill target).
  * COLUMN_OF maps a member → its column so a link pill can reveal it. */
 export const COLUMNS = [
