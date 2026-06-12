@@ -963,6 +963,7 @@ body.rw-lint .flag:not([data-r]),
 body.rw-lint .linkname:not([data-r]),
 body.rw-lint .inv-line-link:not([data-r]),
 body.rw-lint .req:not([data-r]),
+body.rw-lint .file-drop:not([data-r]),
 body.rw-lint .seg:not([data-r]) {
   outline: 2px dashed var(--red); outline-offset: 2px;
   animation: rwLint 2.2s ease-in-out infinite;
@@ -1197,3 +1198,12 @@ body { font-variant-numeric: tabular-nums; }
 .kv2 { display: flex; gap: 10px; }
 .kv2 .kv { flex: 1; min-width: 0; }
 .fieldstack.centered .kv { justify-content: center; }
+
+/* R21 FILE DROP (Jac 2026-06-12) — the massive popup add-file zone wearing
+   R5b's blue dashed language; .done flips green once a file is attached. */
+.file-drop { border: 1.5px dashed #18b6ff; border-radius: 12px; min-height: 76px; display: flex; align-items: center;
+  justify-content: center; gap: 8px; color: #18b6ff; font-size: 12.5px; cursor: pointer; padding: 10px; }
+.file-drop:hover { filter: brightness(1.25); }
+.file-drop.done { border-style: solid; border-color: var(--green); color: var(--green); }
+.file-drop svg { width: 18px; height: 18px; }
+.popup .file-drop { margin-bottom: 9px; }

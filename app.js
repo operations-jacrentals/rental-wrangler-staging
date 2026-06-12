@@ -1018,6 +1018,11 @@ function flagEl(label, color, { icon, card, recId, title, alert, sect } = {}) {
   return `<span class="flag c-${color}${alert ? ' alert' : ''}" data-r="R9"${nav}${sect ? ` data-sect="${sect}"` : ''}${title ? ` title="${esc(title)}"` : ''}>${icon || ''}${esc(label)}</span>`;
 }
 const flagsStack = (flags, h) => `<span class="flags" data-r="R9"${h ? ` style="height:${h}px"` : ''}>${flags.filter(Boolean).join('')}</span>`;
+/** R21: FILE DROP — the massive add-file zone in popups (Jac 2026-06-12):
+    R5b's blue dashed language at full size, ONE rule for every popup "add a file". */
+function fileDrop(label, { js, accept = 'image/*', capture, done } = {}) {
+  return `<label class="file-drop${done ? ' done' : ''}" data-r="R21">${I.video}<span>${esc(label)}</span><input type="file" accept="${accept}"${capture ? ` capture="${capture}"` : ''} class="${js}" style="display:none"></label>`;
+}
 /** R14: a 3-state segmented toggle. opts: [{label, js, data, on:'green'|'yellow'|...}] */
 function segCtl(buttons, cls) {
   return `<span class="seg${cls ? ' ' + cls : ''}" data-r="R14">${buttons.map((b) => `<button class="${b.js || ''}${b.on ? ` on-${b.on}` : ''}"${dataAttrs(b.data)}>${b.label}</button>`).join('')}</span>`;
@@ -1137,12 +1142,13 @@ const RULE_META = {
   R16: ['Day timeline', 'DETAIL.rentals timeline', 'the rental window in day cells; centered gate + naked price·rate'],
   R17: ['Action pill', 'actionPill', 'commit = blue · money = green · danger = solid red; .locked = gated'],
   R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear'],
+  R21: ['File drop', 'fileDrop', 'the MASSIVE popup add-file zone — R5b blue dashed at full size'],
 };
 /* structural fallbacks so hovering containers also names their rule */
 const CLASS_RULE = [
   ['.c-titlecard', 'R10'], ['.nsec', 'R12'], ['.hvals', 'R13'], ['.history', 'R13'],
   ['.timeline', 'R16'], ['.jnode', 'R15'], ['.jseg', 'R15'], ['.journey', 'R15'],
-  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.section', 'R11'],
+  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.file-drop', 'R21'], ['.section', 'R11'],
 ];
 function ruleOf(target) {
   if (!target || !target.closest) return null;
@@ -3410,23 +3416,17 @@ function renderOverlay() {
     // partform anatomy: photo + every field optional, ✨ Mr. Wrangler fills the blanks.
     const x = o.expenseId != null ? (IDX.expense.get(o.expenseId) || DATA.expenses.find((r) => r.expenseId === o.expenseId)) : null;
     const ven = x?.vendorId ? (IDX.vendor.get(x.vendorId) || DATA.vendors.find((v) => v.vendorId === x.vendorId)) : null;
-    const AI = 'Filled by AI if left empty';
-    const opt = (set, cur) => Object.keys(STATUS[set]).map((v) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(getStatus(set, v).label)}</option>`).join('');
     const pop = el('div', 'popup'); pop.style.width = '400px';
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.expenses}</span><h3>${x ? 'Edit' : 'New'} Receipt</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body">
-        <label class="cap-drop" style="margin-bottom:9px">${I.video}<span>${state.receiptPhoto || x?.photo ? '✓ receipt photo attached' : 'Tap to add the receipt photo'}</span><input type="file" accept="image/*" capture="environment" class="js-rf-file" style="display:none"></label>
-        <input class="lf-in js-rf-vendor" placeholder="Vendor — ${AI} (added to the Vendors board if new)" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:7px">
+        ${fileDrop(state.receiptPhoto || x?.photo ? '✓ receipt photo attached' : 'Tap to add the receipt photo', { js: 'js-rf-file', capture: 'environment', done: !!(state.receiptPhoto || x?.photo) })}
+        <input class="lf-in js-rf-vendor" placeholder="Vendor" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:7px">
         <div style="display:flex;gap:7px;margin-bottom:7px">
-          <input class="lf-in js-rf-amount" type="number" min="0" step="0.01" placeholder="Amount $ — ${AI}" value="${x && x.amount ? x.amount : ''}" style="flex:1">
+          <input class="lf-in js-rf-amount" type="number" min="0" step="0.01" placeholder="$Cost" value="${x && x.amount ? x.amount : ''}" style="flex:1">
           <input class="lf-in js-rf-date" type="date" value="${esc(x?.date || TODAY_ISO)}" style="flex:1">
         </div>
-        <div style="display:flex;gap:7px;margin-bottom:7px">
-          <select class="lf-in js-rf-method" style="flex:1">${opt('paymentMethod', x?.method || 'Cash')}</select>
-          <select class="lf-in js-rf-cat" style="flex:1">${opt('expenseCategory', x?.category || 'Parts')}</select>
-        </div>
-        <input class="lf-in js-rf-notes" placeholder="Notes" value="${esc(x?.notes || '')}" style="width:100%;margin-bottom:4px">
+        <input class="lf-in js-rf-part" placeholder="Part Name" value="" style="width:100%;margin-bottom:4px">
         <p class="muted" style="font-size:11px;margin:4px 0 12px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is read for the vendor, amount, date and category.</p>
         <div class="pillrow" style="justify-content:flex-end">
           ${ghostPill('Cancel', { js: 'js-close' })}
@@ -4894,9 +4894,9 @@ function savePartForm() {
 function saveReceiptForm() {
   const o = state.overlay; if (!o || o.kind !== 'receiptform') return;
   const g = (c) => (document.querySelector(c)?.value || '').trim();
-  const venName = g('.js-rf-vendor'), amt = g('.js-rf-amount'), date = g('.js-rf-date'), method = g('.js-rf-method'), cat = g('.js-rf-cat'), notes = g('.js-rf-notes');
+  const venName = g('.js-rf-vendor'), amt = g('.js-rf-amount'), date = g('.js-rf-date'), partName = g('.js-rf-part');
   const existing = o.expenseId != null ? (IDX.expense.get(o.expenseId) || DATA.expenses.find((r) => r.expenseId === o.expenseId)) : null;
-  if (amt === '' && !state.receiptPhoto && !existing?.photo) return attnFlash('.js-rf-amount, .cap-drop');   // R19: need an amount OR a photo for the AI
+  if (amt === '' && !state.receiptPhoto && !existing?.photo) return attnFlash('.js-rf-amount, .file-drop');   // R19: need a $cost OR a photo for the AI
   const rec = existing || { expenseId: 'E-NEW' + (state.seq++), vendorId: null, date: TODAY_ISO, amount: 0, reconcile: 'Unreconciled', method: 'Cash', category: 'Parts', woId: null, notes: '', mock: true };
   if (venName) {
     let v = DATA.vendors.find((r) => (r.name || '').toLowerCase() === venName.toLowerCase());
@@ -4905,12 +4905,17 @@ function saveReceiptForm() {
   }
   if (amt !== '') rec.amount = Number(amt) || 0;
   if (date) rec.date = date;
-  if (method) rec.method = method;
-  if (cat) rec.category = cat;
-  rec.notes = notes;
   if (state.receiptPhoto) rec.photo = state.receiptPhoto;
   rec.aiPending = !venName || amt === '';
   if (!existing) DATA.expenses.push(rec);
+  // Part Name (Jac 2026-06-12): name-match or create the part and reconcile it
+  // against this receipt — the $cost seeds priceEach on a fresh part.
+  if (partName) {
+    let p = DATA.parts.find((r) => (r.name || '').toLowerCase() === partName.toLowerCase());
+    if (!p) { p = { partId: 'PRT-C' + (state.seq++), name: partName, status: 'Catalog', priceEach: amt !== '' ? Number(amt) || 0 : null, qtyOnHand: null, website: '', orderEmail: '', productNumber: '', vendorId: rec.vendorId || null, imageUrl: '', notes: '', mock: true }; DATA.parts.push(p); }
+    p.receiptId = rec.expenseId; p.receiptQty = p.receiptQty || 1;
+    reindex('parts', p); logAction(rec, `Linked part: ${partName}`);
+  }
   reindex('expenses', rec); logAction(rec, existing ? 'Receipt edited' : 'Receipt created');
   state.receiptPhoto = null;
   openOverlay({ kind: 'board', board: 'expenses', recId: rec.expenseId });   // save lands ON the detail
