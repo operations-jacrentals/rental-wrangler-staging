@@ -884,6 +884,7 @@ const I = {
   qr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM20 14v7M14 20h7"/></svg>',
   mouse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="7"/><path d="M12 6v4"/></svg>',
   video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="m15 10 6-3v10l-6-3z"/></svg>',
+  camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 4h-5L7.5 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3.5z"/><circle cx="12" cy="13" r="3"/></svg>',
   droplet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3s6 6.4 6 10.5a6 6 0 0 1-12 0C6 9.4 12 3 12 3z"/></svg>',
   table: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.5h18M3 15h18M9 4v16"/></svg>',
   sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0M16 18h4"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="14" cy="18" r="2"/></svg>',
@@ -1020,8 +1021,8 @@ function flagEl(label, color, { icon, card, recId, title, alert, sect } = {}) {
 const flagsStack = (flags, h) => `<span class="flags" data-r="R9"${h ? ` style="height:${h}px"` : ''}>${flags.filter(Boolean).join('')}</span>`;
 /** R21: FILE DROP — the massive add-file zone in popups (Jac 2026-06-12):
     R5b's blue dashed language at full size, ONE rule for every popup "add a file". */
-function fileDrop(label, { js, accept = 'image/*', capture, done } = {}) {
-  return `<label class="file-drop${done ? ' done' : ''}" data-r="R21">${I.video}<span>${esc(label)}</span><input type="file" accept="${accept}"${capture ? ` capture="${capture}"` : ''} class="${js}" style="display:none"></label>`;
+function fileDrop(label, { js, accept = 'image/*', capture, done, icon } = {}) {
+  return `<label class="file-drop${done ? ' done' : ''}" data-r="R21">${icon || I.video}<span>${esc(label)}</span><input type="file" accept="${accept}"${capture ? ` capture="${capture}"` : ''} class="${js}" style="display:none"></label>`;
 }
 /** R14: a 3-state segmented toggle. opts: [{label, js, data, on:'green'|'yellow'|...}] */
 function segCtl(buttons, cls) {
@@ -3399,19 +3400,18 @@ function renderOverlay() {
     const w = IDX.wo.get(o.woId);
     const li = o.idx != null ? (w?.lineItems || [])[o.idx] : null;
     const ven = li?.vendorId ? DATA.vendors.find((v) => v.vendorId === li.vendorId) : null;
-    const AI = 'Filled by AI if left empty';
     const pop = el('div', 'popup'); pop.style.width = '400px';
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.parts || CARD_ICON.workOrders}</span><h3>${li ? 'Edit' : 'Add'} Part / Task</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body">
-        <label class="cap-drop" style="margin-bottom:9px">${I.video}<span>${state.partPhoto || li?.photo ? '✓ photo attached' : 'Tap to add a photo'}</span><input type="file" accept="image/*" capture="environment" class="js-pf2-file" style="display:none"></label>
-        <input class="lf-in js-pf2-desc" placeholder="Description — ${AI}" value="${esc(li?.part || '')}" style="width:100%;margin-bottom:7px">
+        ${fileDrop(state.partPhoto || li?.photo ? '✓ photo attached' : 'Add Photo (not required)', { js: 'js-pf2-file', capture: 'environment', done: !!(state.partPhoto || li?.photo), icon: I.camera })}
+        <input class="lf-in js-pf2-desc" placeholder="Part/Task Name" value="${esc(li?.part || '')}" style="width:100%;margin-bottom:7px">
         <div style="display:flex;gap:7px;margin-bottom:7px">
-          <input class="lf-in js-pf2-cost" type="number" min="0" placeholder="Cost $ — ${AI}" value="${li?.cost ?? ''}" style="flex:1">
-          <input class="lf-in js-pf2-hours" type="number" min="0" step="0.5" placeholder="Hours — ${AI}" value="${li?.hours ?? ''}" style="flex:1">
+          <input class="lf-in js-pf2-cost" type="number" min="0" placeholder="$Cost" value="${li?.cost ?? ''}" style="flex:1">
+          <input class="lf-in js-pf2-hours" type="number" min="0" step="0.5" placeholder="Hours" value="${li?.hours ?? ''}" style="flex:1">
         </div>
-        <input class="lf-in js-pf2-url" placeholder="URL link — ${AI}" value="${esc(li?.url || '')}" style="width:100%;margin-bottom:7px">
-        <input class="lf-in js-pf2-vendor" placeholder="Vendor — ${AI} (added to the Vendors board if new)" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:4px">
+        <input class="lf-in js-pf2-url" placeholder="URL link" value="${esc(li?.url || '')}" style="width:100%;margin-bottom:7px">
+        <input class="lf-in js-pf2-vendor" placeholder="Vendor" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:4px">
         <p class="muted" style="font-size:11px;margin:4px 0 12px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is reviewed for the description/cost/url, and hours are estimated from the category + industry standards.</p>
         <div class="pillrow" style="justify-content:flex-end">
           ${ghostPill('Cancel', { js: 'js-close' })}
@@ -4857,7 +4857,7 @@ function savePartForm() {
   const w = IDX.wo.get(o.woId); if (!w) return closeOverlay();
   const g = (c) => (document.querySelector(c)?.value || '').trim();
   const desc = g('.js-pf2-desc'), cost = g('.js-pf2-cost'), hours = g('.js-pf2-hours'), url = g('.js-pf2-url'), vendor = g('.js-pf2-vendor');
-  if (!desc && !state.partPhoto) return attnFlash('.js-pf2-desc, .cap-drop');   // R19: need a description OR a photo for the AI
+  if (!desc && !state.partPhoto) return attnFlash('.js-pf2-desc, .file-drop');   // R19: need a name OR a photo for the AI
   w.lineItems = w.lineItems || [];
   const li = o.idx != null ? w.lineItems[o.idx] : { phase: 'Part Needed?', eta: '' };
   if (!li) return closeOverlay();                  // stale edit index — the line was removed after the popup opened
