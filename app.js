@@ -125,7 +125,7 @@ function cardsSection(c) {
     </div>`;
   }).join('') : '<span class="muted" style="font-size:12px">No cards on file.</span>';
   const flag = cardFlag(c), fm = CARD_FLAG_META[flag];
-  return `<div class="section"><h4>Cards on File${flag !== 'ok' ? `<span class="right">${flagEl(fm.label, fm.color)}</span>` : ''}</h4>
+  return `<div class="section sec-cards"><h4>Cards on File${flag !== 'ok' ? `<span class="right">${flagEl(fm.label, fm.color)}</span>` : ''}</h4>
     <div class="cards-list">${rows}</div>
     ${consent ? `<div style="margin-top:10px">${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: c.customerId } })}</div>`
               : '<span class="muted" style="font-size:11px">Capture a selfie + signature (Edit account) before adding a card.</span>'}</div>`;
@@ -142,6 +142,8 @@ function buildIndexes() {
   IDX.insp     = new Map(DATA.inspections.map((n) => [n.inspectionId, n]));
   IDX.vendor   = new Map(DATA.vendors.map((v) => [v.vendorId, v]));
   IDX.expense  = new Map(DATA.expenses.map((x) => [x.expenseId, x]));
+  IDX.part     = new Map(DATA.parts.map((p) => [p.partId, p]));
+  IDX.file     = new Map(DATA.companyFiles.map((f) => [f.fileId, f]));
   // lowercased comprehensive search blobs per record (§5) — built via the single
   // searchBlob() source of truth so every field is searchable.
   IDX.search = new Map();
@@ -154,9 +156,11 @@ function buildIndexes() {
   DATA.inspections.forEach((n) => reindex('inspections', n));
   DATA.vendors.forEach((v) => reindex('vendors', v));   // §7.10 v2 — vendors are globally searchable
   DATA.expenses.forEach((x) => reindex('expenses', x)); // §7.11 v2 — receipts are globally searchable
+  DATA.parts.forEach((p) => reindex('parts', p));        // §7.12 v2 — parts are searchable
+  DATA.companyFiles.forEach((f) => reindex('files', f)); // §7.13 v2 — files are searchable
 }
-const idOf   = (card, rec) => rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId', expenses: 'expenseId' }[card]];
-const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit, vendors: IDX.vendor, expenses: IDX.expense }[card])?.get(id);
+const idOf   = (card, rec) => rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId', expenses: 'expenseId', files: 'fileId' }[card]];
+const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit, vendors: IDX.vendor, expenses: IDX.expense, parts: IDX.part, files: IDX.file }[card])?.get(id);
 
 /* ── §5 comprehensive search blob — ONE source of truth for what's searchable.
    Emits every raw field, foreign-key DISPLAY names, AND the getStatus(...) labels
@@ -221,6 +225,12 @@ function searchBlob(card, rec) {
         rec.wash, rec.billCustomer, L('billCustomer', rec.billCustomer),
         rec.description, rec.notes, un(rec.unitId)?.name];
       break;
+    case 'parts':
+      p = [rec.name, rec.productNumber, rec.notes, rec.website, rec.orderEmail, String(rec.priceEach ?? ''), money(rec.priceEach), rec.status, ve(rec.vendorId)?.name, 'part'];
+      break;
+    case 'files':
+      p = [rec.name, rec.group, rec.notes, rec.link, rec.type, L('companyFileType', rec.type), rec.reviewByDate, fmtShortDate(rec.reviewByDate), 'file'];
+      break;
     case 'expenses':
       p = [String(rec.amount ?? ''), money(rec.amount), rec.date, fmtShortDate(rec.date), rec.notes, rec.woId, 'receipt expense',
         rec.reconcile, L('expenseReconcile', rec.reconcile), rec.method, L('paymentMethod', rec.method),
@@ -236,7 +246,7 @@ function searchBlob(card, rec) {
 /** (Re)build a record's search blob in IDX.search. Call after any create/edit.
     Vendors are auto-created mid-session (savePartForm) with no IDX set at the
     call site, so reindex also keeps the IDX.vendor identity map in sync. */
-const reindex = (card, rec) => { const id = idOf(card, rec); if (id != null) { IDX.search.set(card + ':' + id, searchBlob(card, rec)); if (card === 'vendors') IDX.vendor.set(id, rec); if (card === 'expenses') IDX.expense.set(id, rec); } saveSoon(); };
+const reindex = (card, rec) => { const id = idOf(card, rec); if (id != null) { IDX.search.set(card + ':' + id, searchBlob(card, rec)); if (card === 'vendors') IDX.vendor.set(id, rec); if (card === 'expenses') IDX.expense.set(id, rec); if (card === 'parts') IDX.part.set(id, rec); if (card === 'files') IDX.file.set(id, rec); } saveSoon(); };
 
 /* ════════════════════════════════════════════════════════════════════════
    §3 DERIVATIONS (SPEC §10) — money, availability, statuses, countdowns
@@ -784,6 +794,15 @@ function showHoverPreview(target) {
   top = Math.max(pad, Math.min(top, window.innerHeight - h - pad));
   node.style.left = left + 'px'; node.style.top = top + 'px';
 }
+/* Jac 2026-06-12: flags/pills that NAME a section also scroll to it on arrival
+   (e.g. "No Card" → Cards on File) — smooth scroll + the R19 glow. */
+function scrollToSect(card, sect) {
+  setTimeout(() => {
+    const ec = SHOP_TYPES.includes(card) ? 'shop' : card;
+    const n = document.querySelector(`.card[data-card="${ec}"] .${sect}`);
+    if (n) { n.scrollIntoView({ behavior: 'smooth', block: 'start' }); attnFlash(`.card[data-card="${ec}"] .${sect}`); }
+  }, 60);
+}
 function pillTo(card, recId) {
   if (recId == null) return;
   // 3-column display: a link pill forces its column to reveal the target card.
@@ -922,7 +941,7 @@ const RING_ICON = {
    R17 actionPill            commit (blue) / money (green) / danger (red)
    ════════════════════════════════════════════════════════════════════════ */
 // R3: each status badge carries the icon of the card the status belongs to
-const SET_CARD = { rentalStatus: 'rentals', unitRentalStatus: 'rentals', invoiceStatus: 'invoices', unitInspectionStatus: 'inspections', inspectionResult: 'inspections', unitFleetStatus: 'units', gpsStatus: 'units', unitOrderStatus: 'workOrders', woPhase: 'workOrders', woType: 'workOrders', customerPayStatus: 'customers', accountType: 'customers', serviceStatus: 'serviceOrders', expenseReconcile: 'expenses', vendorType: 'vendors' };
+const SET_CARD = { rentalStatus: 'rentals', unitRentalStatus: 'rentals', invoiceStatus: 'invoices', unitInspectionStatus: 'inspections', inspectionResult: 'inspections', unitFleetStatus: 'units', gpsStatus: 'units', unitOrderStatus: 'workOrders', woPhase: 'workOrders', woType: 'workOrders', customerPayStatus: 'customers', accountType: 'customers', serviceStatus: 'serviceOrders', expenseReconcile: 'expenses', vendorType: 'vendors', companyFileType: 'files' };
 const dataAttrs = (data) => Object.entries(data || {}).map(([k, v]) => ` data-${k}="${esc(String(v))}"`).join('');
 function statusPill(set, value, { card, recId, x, truck } = {}) {
   const st = getStatus(set, value);
@@ -992,10 +1011,11 @@ function linkName(label, { card, recId, js, data } = {}) {
   return `<span class="linkname${js ? ' ' + js : ''}" data-r="R7"${nav}${dataAttrs(data)}>${esc(label)}</span>`;
 }
 /** R9: a title mini-flag + the ≤2-row stack that matches the 30px title chip. */
-function flagEl(label, color, { icon, card, recId, title, alert } = {}) {
+function flagEl(label, color, { icon, card, recId, title, alert, sect } = {}) {
   // alert: big-deal flags pulse (No Card, active rental, bad pay status — Jac 2026-06-12)
+  // sect: clicking also SCROLLS to that section (class) — same card or after nav
   const nav = card ? ` data-pill-card="${card}" data-pill-rec="${esc(recId)}"` : '';
-  return `<span class="flag c-${color}${alert ? ' alert' : ''}" data-r="R9"${nav}${title ? ` title="${esc(title)}"` : ''}>${icon || ''}${esc(label)}</span>`;
+  return `<span class="flag c-${color}${alert ? ' alert' : ''}" data-r="R9"${nav}${sect ? ` data-sect="${sect}"` : ''}${title ? ` title="${esc(title)}"` : ''}>${icon || ''}${esc(label)}</span>`;
 }
 const flagsStack = (flags, h) => `<span class="flags" data-r="R9"${h ? ` style="height:${h}px"` : ''}>${flags.filter(Boolean).join('')}</span>`;
 /** R14: a 3-state segmented toggle. opts: [{label, js, data, on:'green'|'yellow'|...}] */
@@ -1841,8 +1861,9 @@ function headFlagsHtml(card, rec) {
     const rSt = activeR ? getStatus('rentalStatus', rentalDisplayStatus(activeR)) : null;
     const noCard = cardFlag(rec) === 'none';
     const acctDone = !!(rec.selfie && rec.signature);
-    return flagsStack([flagEl(acct.label, acct.color, { icon: CARD_ICON.customers }), pay ? flagEl(pay.label, pay.color, { icon: CARD_ICON.invoices, alert: payBad }) : ''])
-      + (rSt || noCard ? flagsStack([rSt ? flagEl(rSt.label, rSt.color, { icon: CARD_ICON.rentals, card: 'rentals', recId: activeR.rentalId, alert: true }) : '', noCard ? flagEl('No Card', 'red', { alert: true }) : '']) : '')
+    return flagsStack([rec.phone ? flagEl(rec.phone, 'gray') : '', flagEl(acct.label, acct.color, { icon: CARD_ICON.customers })])
+      + flagsStack([pay ? flagEl(pay.label, pay.color, { icon: CARD_ICON.invoices, alert: payBad }) : '', rSt ? flagEl(rSt.label, rSt.color, { icon: CARD_ICON.rentals, card: 'rentals', recId: activeR.rentalId, alert: true }) : ''])
+      + (noCard ? flagsStack([flagEl('No Card', 'red', { alert: true, sect: 'sec-cards' })]) : '')
       + `<span style="margin-left:auto">${gatePillRaw(acctDone ? 'Account' : 'Incomplete', acctDone ? 'green' : 'yellow', 'js-edit-customer', { rec: rec.customerId }, true)}</span>`;
   }
   return '';
@@ -2144,6 +2165,62 @@ const DETAIL = {
     </div>`;
   },
 
+  /* ── PARTS — v2 (§7.12): catalog records live in the BOARD POPUP like vendors.
+     Every field edits inline via efld (recOf routes 'parts') — this detail IS the
+     part editor; the WO partform stays line-scoped (no dual-mode fork). ── */
+  parts: (p, cs) => {
+    const ven = p.vendorId ? (IDX.vendor.get(p.vendorId) || DATA.vendors.find((v) => v.vendorId === p.vendorId)) : null;
+    const rcpt = p.receiptId ? (IDX.expense.get(p.receiptId) || DATA.expenses.find((x) => x.expenseId === p.receiptId)) : null;
+    const webUrl = (w) => (/^https?:\/\//i.test(w) ? w : 'https://' + w);   // bare-domain links (the vendors idiom)
+    const thumb = p.imageUrl ? `<img class="insp-thumb js-open-link" data-url="${esc(webUrl(p.imageUrl))}" src="${esc(p.imageUrl)}" alt="part" data-tip="Open image">` : '';
+    const details = `<div class="section"><h4>Details</h4><div class="fieldstack">
+      ${efld('parts', p, 'partId', 'priceEach', 'Add cost', { type: 'number', pfx: 'Cost', fmt: money })}
+      ${efld('parts', p, 'partId', 'qtyOnHand', 'Add qty', { type: 'number', pfx: 'On Hand' })}
+      ${efld('parts', p, 'partId', 'productNumber', 'Add product #', { pfx: 'Product #' })}
+      ${ven ? kvPills(linkName(ven.name, { js: 'js-vendor-open', data: { rec: ven.vendorId } })) : efld('parts', p, 'partId', 'vendorId', 'Add vendor ID')}
+      ${rcpt ? kvPills(linkName('Receipt ' + money(rcpt.amount) + (p.receiptQty ? ' ×' + p.receiptQty : ''), { js: 'js-expense-open', data: { rec: rcpt.expenseId } })) : ''}
+    </div></div>`;
+    const order = `<div class="section"><h4>Order From</h4><div class="fieldstack">
+      ${p.orderEmail ? kvPills(linkName(p.orderEmail, { js: 'js-open-link', data: { url: 'mailto:' + p.orderEmail } })) : efld('parts', p, 'partId', 'orderEmail', 'Add order email')}
+      ${p.website ? kvPills(linkName(p.website, { js: 'js-open-link', data: { url: webUrl(p.website) } })) : efld('parts', p, 'partId', 'website', 'Add website')}
+    </div></div>`;
+    const used = DATA.workOrders.filter((w) => (w.lineItems || []).some((li) => li.partId === p.partId || (li.part || '').toLowerCase() === (p.name || '').toLowerCase()));
+    const usedRows = used.map((w) => `<div class="hitem">${refPill('workOrders', w.woId, w.woReport.slice(0, 16))}<span class="spacer"></span><span class="derived">${esc(getStatus('woPhase', w.phase).label)}</span></div>`).join('');
+    const usedSec = usedRows ? `<div class="section"><h4>Used On</h4><div class="hlog">${usedRows}</div></div>` : '';
+    const notes = notesSection('parts', p, 'partId');
+    return `<div class="detail">
+      <div class="detail-head">${thumb}<span class="d-title inline-edit" data-edit="field" data-card="parts" data-field="name" data-rec="${esc(p.partId)}" data-ph="Part name">${esc(p.name || 'New Part')}</span>${p.aiPending ? badge('✨ AI pending', 'purple') : ''}</div>
+      ${notes.top}
+      <div class="detail-cols">${details}${order}</div>
+      ${usedSec}
+      ${notes.bottom}
+      ${historySection('parts', p, cs)}
+    </div>`;
+  },
+
+  /* ── FILES — v2 (§7.13): links-only library in the BOARD POPUP. Name/group/link/
+     review-by edit inline via efld; reviewState (overdue=red, ≤30d=yellow) replaces
+     the old reviewSoon, which rendered blown dates bare. ── */
+  files: (f, cs) => {
+    const webUrl = (w) => (/^https?:\/\//i.test(w) ? w : 'https://' + w);
+    const rstate = reviewState(f.reviewByDate);
+    const details = `<div class="section"><h4>Details</h4><div class="fieldstack">
+      ${kvPills(statusPill('companyFileType', f.type))}
+      ${efld('files', f, 'fileId', 'group', 'Add group', { pfx: 'Group' })}
+      ${efld('files', f, 'fileId', 'link', 'Add link', { pfx: 'Link', wrap: true })}
+      ${efld('files', f, 'fileId', 'reviewByDate', 'Add review-by date', { type: 'date', pfx: 'Review-By', fmt: fmtShortDate })}
+      ${rstate ? kvPills(rstate) : ''}
+    </div></div>`;
+    const notes = notesSection('files', f, 'fileId');
+    return `<div class="detail">
+      <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="files" data-field="name" data-rec="${esc(f.fileId)}" data-ph="File name">${esc(f.name || 'New File')}</span>${f.link ? linkName('Open file', { js: 'js-open-link', data: { url: webUrl(f.link) } }) : ''}</div>
+      ${notes.top}
+      ${details}
+      ${notes.bottom}
+      ${historySection('files', f, cs)}
+    </div>`;
+  },
+
   /* ── CUSTOMERS — fully built (§12.1 standard mode: contact · account · funnels) ── */
   customers: (c, cs) => {
     const d = c._digest || {};
@@ -2160,7 +2237,7 @@ const DETAIL = {
     const account = `<div class="section"><h4>Account</h4>
       <div class="split">
         <div class="side">
-          ${efield('firstName', 'First name')}${efield('lastName', 'Last name')}
+          <div class="kv2">${efield('firstName', 'First name')}${efield('lastName', 'Last name')}</div>
           ${efield('phone', 'Add phone')}${efield('email', 'Add email')}
           ${efield('company', 'Add company')}${efield('industry', 'Add industry')}
           ${efield('address', 'Add address', true)}
@@ -2179,11 +2256,11 @@ const DETAIL = {
     const activeBar = `<div class="active-bar wide"><div class="active-spectrum" style="clip-path:inset(0 ${100 - (d.activePct || 0)}% 0 0)"></div><span class="active-lbl">${d.activePct || 0}% Active</span></div>`;
 
     const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id }) : ''; }).join('');
-    const usedSales = `<div class="section"><h4>Used Sales</h4><div class="fieldstack">
+    const usedSales = `<div class="section"><h4>Used Sales</h4><div class="fieldstack centered">
       ${kvPills(funnelPill(c.customerId, 'usedSales', c.usedSalesStage || 'Inbound Lead'))}
       <div class="kv pillrow">${intCats}${addBtn('Category', { link: true, js: 'js-addcat', h: 26, data: { rec: c.customerId } })}</div>
     </div></div>`;
-    const membership = `<div class="section"><h4>Membership</h4><div class="fieldstack">
+    const membership = `<div class="section"><h4>Membership</h4><div class="fieldstack centered">
       ${kvPills(funnelPill(c.customerId, 'membership', c.membershipStage || 'Inbound Lead'))}
       ${isMember && c.paidUntil ? kv(yr(c.paidUntil), { sfx: 'paid until' }) : ''}
       ${c.paidCadence ? kvPills(`${badge('Paid ' + c.paidCadence, 'green')}${c.unlimitedTransport ? badge('Unlimited Transport', 'purple') : ''}`) : ''}
@@ -2194,7 +2271,7 @@ const DETAIL = {
        +Log Action / +Schedule Action. Either opens the entry field UNDER the bar,
        which is the TOP of the Activity Log. Enter commits + stays open (rapid);
        click-away commits + closes; Esc closes. */
-    const actBtns = `<div class="pillrow" style="justify-content:center">${addBtn('Log Action', { line: true, js: 'js-act-open', h: 26, data: { rec: c.customerId, val: 'record' } })}${addBtn('Schedule Action', { line: true, js: 'js-act-open', h: 26, data: { rec: c.customerId, val: 'schedule' } })}</div>`;
+    const actBtns = `<div class="pillrow" style="justify-content:center">${addBtn('Log Actions', { line: true, js: 'js-act-open', h: 26, data: { rec: c.customerId, val: 'record' } })}${addBtn('Schedule Actions', { line: true, js: 'js-act-open', h: 26, data: { rec: c.customerId, val: 'schedule' } })}</div>`;
     const actEntry = state.actOpen === c.customerId
       ? `<div class="act-entry"><input class="act-in js-act-in" data-rec="${c.customerId}" placeholder="${state.actMode === 'schedule' ? 'Schedule an action…' : 'Log an action…'}" /></div>`
       : '';
@@ -2205,8 +2282,8 @@ const DETAIL = {
        (the log tops out under the bar) → funnels → merged Account → Cards → Notes → History */
     return `<div class="detail">
       <div class="detail-head">${title}</div>
-      ${actBtns}
       ${activeBar}
+      ${actBtns}
       ${actEntry}
       ${activity}
       ${notes.top}
@@ -3477,6 +3554,8 @@ function renderOverlay() {
     const BOARD_DETAIL = {
       vendors:  { back: '← Vendors',  rec: (id) => IDX.vendor.get(id) || DATA.vendors.find((x) => x.vendorId === id),    title: (r) => r.name || 'Vendor' },
       expenses: { back: '← Expenses', rec: (id) => IDX.expense.get(id) || DATA.expenses.find((x) => x.expenseId === id), title: (r) => `${money(r.amount)} — ${IDX.vendor.get(r.vendorId)?.name || 'Receipt'}` },
+      parts:    { back: '← Parts',    rec: (id) => IDX.part.get(id) || DATA.parts.find((x) => x.partId === id),               title: (r) => r.name || 'Part' },
+      files:    { back: '← Files',    rec: (id) => IDX.file.get(id) || DATA.companyFiles.find((x) => x.fileId === id),        title: (r) => r.name || 'File' },
     };
     const bdef = o.recId != null ? BOARD_DETAIL[o.board] : null;
     const vrec = bdef ? bdef.rec(o.recId) : null;
@@ -3487,8 +3566,8 @@ function renderOverlay() {
       <div class="popup-body"><div class="board-detail">${DETAIL[o.board](vrec, { historySearch: o.historySearch || '', histKind: o.histKind || null, partForm: o.partForm || false, backStack: [], mode: 'standard' })}</div></div>`;
     } else {
     pop.innerHTML = `
-      <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
-      <div class="popup-body board-body">${boardTable(board.id)}</div>`;
+      <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span>${board.id === 'files' ? addBtn('File', { link: true, js: 'js-file-add' }) : ''}<span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body board-body">${board.id === 'files' && o.fileForm ? `<div class="kv pillrow" style="gap:7px;margin:0 0 10px"><input class="lf-in js-ff-name" placeholder="File name" style="flex:2;min-width:140px"><input class="lf-in js-ff-link" placeholder="Link (URL)" style="flex:2;min-width:140px">${ghostPill('Cancel', { js: 'js-ff-cancel' })}${actionPill('commit', 'Add file', { js: 'js-ff-save' })}</div>` : ''}${boardTable(board.id)}</div>`;
     }
     overlay.appendChild(pop);
   } else if (o.kind === 'boardview') {
@@ -3745,12 +3824,12 @@ function vendorTotals(vendorId) {
    part.receiptId (+receiptQty); Unaccounted = amount − Σ qty×priceEach — green at $0. */
 const receiptParts = (expenseId) => DATA.parts.filter((p) => p.receiptId === expenseId);
 const receiptLineTotal = (expenseId) => receiptParts(expenseId).reduce((a, p) => a + (Number(p.receiptQty) || 1) * (Number(p.priceEach) || 0), 0);
-const reviewSoon = (iso) => { const d = parseISO(iso); return d && (d - TODAY) / 86400000 <= 30 && d >= TODAY; };
+const reviewState = (iso) => { const d = parseISO(iso); if (!d) return ''; if (d < TODAY) return badge('Overdue', 'red'); return (d - TODAY) / 86400000 <= 30 ? badge('Review soon', 'yellow') : ''; };   // 3-state (audit fix): overdue was invisible under the old d >= TODAY clause
 const boardRows = (boardId) => ({ parts: DATA.parts, vendors: DATA.vendors, expenses: DATA.expenses, files: DATA.companyFiles }[boardId] || []);
 const BOARD_DEF = {
   parts: {
     cols: ['Part', 'Vendor', 'Cost', 'Qty', 'Product #', 'Order from'],
-    row: (p) => [esc(p.name), esc(IDX.vendor.get(p.vendorId)?.name || '—'), p.priceEach != null ? money(p.priceEach) : '—', p.qtyOnHand != null ? `${p.qtyOnHand}` : '—', esc(p.productNumber || '—'), esc(p.orderEmail || p.website || '—')],
+    row: (p) => [(p.aiPending ? '✨ ' : '') + esc(p.name), IDX.vendor.get(p.vendorId) ? linkName(IDX.vendor.get(p.vendorId).name, { js: 'js-vendor-open', data: { rec: p.vendorId } }) : '—', p.priceEach != null ? money(p.priceEach) : '—', p.qtyOnHand != null ? `${p.qtyOnHand}` : '—', esc(p.productNumber || '—'), esc(p.orderEmail || p.website || '—')],
   },
   vendors: {
     cols: ['Vendor', 'Type', 'Phone', 'Total Spent', 'Parts', 'Avg Cost'],
@@ -3762,15 +3841,15 @@ const BOARD_DEF = {
   },
   files: {
     cols: ['Title', 'Type', 'Group', 'Review-By'],
-    row: (f) => [f.link ? linkName(f.name, { js: 'js-open-link', data: { url: f.link } }) : esc(f.name), badge(getStatus('companyFileType', f.type).label, getStatus('companyFileType', f.type).color), esc(f.group || '—'), f.reviewByDate ? esc(fmtShortDate(f.reviewByDate)) + (reviewSoon(f.reviewByDate) ? ' <span class="pill c-yellow">review soon</span>' : '') : '—'],
+    row: (f) => [f.link ? linkName(f.name, { js: 'js-open-link', data: { url: f.link } }) : esc(f.name), statusPill('companyFileType', f.type), esc(f.group || '—'), f.reviewByDate ? esc(fmtShortDate(f.reviewByDate)) + (reviewState(f.reviewByDate) ? ' ' + reviewState(f.reviewByDate) : '') : '—'],
   },
 };
 function boardTable(boardId) {
   const def = BOARD_DEF[boardId]; const rows = boardRows(boardId);
   if (!def) return '<p class="muted">—</p>';
   const head = `<tr>${def.cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>`;
-  // §7.10/§7.11 v2 — vendors + expenses rows open the record's detail inside the popup (parts/files stay inert until they grow details)
-  const ROW_ID = { vendors: 'vendorId', expenses: 'expenseId' };
+  // §7.10–§7.13 v2 — every board row opens the record's detail inside the popup
+  const ROW_ID = { vendors: 'vendorId', expenses: 'expenseId', parts: 'partId', files: 'fileId' };
   const rowAttr = ROW_ID[boardId] ? (r) => ` class="js-board-row" data-rec="${esc(String(r[ROW_ID[boardId]]))}"` : () => '';
   const body = rows.map((r) => `<tr${rowAttr(r)}>${def.row(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
   return `<table class="board-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
@@ -4241,11 +4320,15 @@ function onClick(e) {
   if (closest('.js-fb-type')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'feedback') { const ta = document.querySelector('.overlay .js-fb-text'); if (ta) o.text = ta.value; o.fbType = closest('.js-fb-type').dataset.val; renderOverlay(); } return; }
   if (closest('.js-fb-shot-x')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'feedback') { const ta = document.querySelector('.overlay .js-fb-text'); if (ta) o.text = ta.value; o.shot = ''; renderOverlay(); } return; }
   if (closest('.js-fb-send')) { e.stopPropagation(); return sendFeedback(); }
-  if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener'); return; }
+  if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^(https?:\/\/|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener'); return; }
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
   if (closest('.js-vendor-open')) { e.stopPropagation(); return openOverlay({ kind: 'board', board: 'vendors', recId: closest('.js-vendor-open').dataset.rec }); }   // WO-line vendor names → vendor detail in the board popup
+  if (closest('.js-expense-open')) { e.stopPropagation(); return openOverlay({ kind: 'board', board: 'expenses', recId: closest('.js-expense-open').dataset.rec }); }   // part-detail receipt link → expense detail in the board popup
   if (closest('.js-board-row') && !closest('.js-reconcile') && !closest('[data-pill-card]')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = closest('.js-board-row').dataset.rec; o.historySearch = ''; o.histKind = null; o.partForm = false; renderOverlay(); } return; }   // in-row gates/ref-pills fall through to their own handlers below
   if (closest('.js-board-back')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = null; o.partForm = false; renderOverlay(); } return; }
+  if (closest('.js-file-add')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.fileForm = !o.fileForm; renderOverlay(); } return; }   // §7.13: +File inline create (toggle)
+  if (closest('.js-ff-cancel')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.fileForm = false; renderOverlay(); } return; }
+  if (closest('.js-ff-save')) { e.stopPropagation(); return saveFileForm(); }
   if (closest('.js-vendor-tax')) { e.stopPropagation(); const b = closest('.js-vendor-tax'); const v = recOf('vendors', b.dataset.rec); if (v) { const ex = b.dataset.val === '1'; if (!!v.salesTaxExempt !== ex) { v.salesTaxExempt = ex; reindex('vendors', v); logAction(v, `Sales tax → ${ex ? 'Exempt' : 'Taxed'}`); } if (state.overlay?.kind === 'board') renderOverlay(); render(); } return; }
   if (closest('.js-boardview')) { e.stopPropagation(); return openBoardView(closest('.js-boardview').dataset.card); }
   if (closest('.js-bv-sort') && !closest('.js-bv-inscol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const key = closest('.js-bv-sort').dataset.col; if (o.sort?.key === key) o.sort.dir = o.sort.dir === 'asc' ? 'desc' : 'asc'; else o.sort = { key, dir: 'asc' }; renderOverlay(); } return; }
@@ -4446,6 +4529,16 @@ function onClick(e) {
   if (closest('.js-showmore')) { const b = closest('.js-showmore'); e.stopPropagation(); const cs = activeSession().cards[b.dataset.card]; if (cs) { cs.listLimit = (cs.listLimit || VIRT_CAP) + SHOW_MORE_BATCH; render(); } return; }
   if (closest('.js-tolist')) { const card = closest('.card').dataset.card; activeSession().cards[card].mode = 'list'; render(); return; }
 
+  // a flag naming a section WITHOUT a nav target scrolls within its own card
+  // (e.g. "No Card" → Cards on File — Jac 2026-06-12)
+  const sectEl = closest('[data-sect]');
+  if (sectEl && !sectEl.dataset.pillCard) {
+    e.stopPropagation();
+    const host = sectEl.closest('.card');
+    if (host) scrollToSect(host.dataset.card, sectEl.dataset.sect);
+    return;
+  }
+
   // universal pill rule — single-click navigates; double-click anchors; ctrl+click = new
   // tab (handled by the early hotkey branch). Same discriminator as rows (#1).
   const pill = closest('[data-pill-card]');
@@ -4453,8 +4546,9 @@ function onClick(e) {
     e.stopPropagation();
     if (state.overlay?.kind === 'board') closeOverlay();   // a link pill inside the board popup navigates the grid — close the popup first
     const pc = pill.dataset.pillCard, prec = castId(pc, pill.dataset.pillRec);
+    const psect = pill.dataset.sect;
     const anchor = SHOP_TYPES.includes(pc) ? { card: 'shop', recId: prec, recType: pc } : { card: pc, recId: prec, recType: null };
-    return deferOrAnchor('pill:' + pc + ':' + prec, () => pillTo(pc, prec), anchor);
+    return deferOrAnchor('pill:' + pc + ':' + prec, () => { pillTo(pc, prec); if (psect) scrollToSect(pc, psect); }, anchor);
   }
 
   // click a row → open in Standard, BUT deferred a beat so a double-click anchors
@@ -4768,9 +4862,22 @@ function savePartForm() {
     if (!v) { v = { vendorId: 'VEN-C' + (state.seq++), name: vendor, mock: true }; DATA.vendors.push(v); reindex('vendors', v); }
     li.vendorId = v.vendorId;
   }
-  if (desc && !DATA.parts.find((p) => (p.name || '').toLowerCase() === desc.toLowerCase())) {
-    const p = { partId: 'PRT-C' + (state.seq++), name: desc, priceEach: cost !== '' ? Number(cost) || 0 : null, website: url || '', vendorId: li.vendorId || null, woId: w.woId, mock: true };
-    DATA.parts.push(p); reindex('parts', p);
+  if (desc) {
+    let p = li.partId ? DATA.parts.find((r) => r.partId === li.partId) : null;   // the li↔part link (stamped below) survives renames
+    if (!p) p = DATA.parts.find((r) => (r.name || '').toLowerCase() === desc.toLowerCase());
+    if (!p) {
+      p = { partId: 'PRT-C' + (state.seq++), name: desc, status: 'Catalog', priceEach: cost !== '' ? Number(cost) || 0 : null, qtyOnHand: null, website: url || '', orderEmail: '', productNumber: '', vendorId: li.vendorId || null, imageUrl: '', notes: '', woId: w.woId, aiPending: li.aiPending, mock: true };
+      DATA.parts.push(p);
+    } else {
+      // write-back (was create-only): edited name/cost/url/vendor on the WO line sync to the catalog part
+      if (p.name !== desc) { logAction(p, `Renamed via WO line: ${auditVal(p.name)} → ${auditVal(desc)}`); p.name = desc; }
+      if (cost !== '') p.priceEach = Number(cost) || 0;
+      if (url) p.website = url;
+      if (li.vendorId) p.vendorId = li.vendorId;
+      if (!li.aiPending) p.aiPending = false;   // blanks filled — clear the ✨
+    }
+    li.partId = p.partId;   // forward link: exact USED-ON + rename-safe sync
+    reindex('parts', p);
   }
   if (o.idx == null) w.lineItems.push(li);
   if (w.phase === 'Complete') w.phase = 'Part Needed?';
@@ -4836,6 +4943,21 @@ function unlinkReceiptPart(expenseId, partId) {
   reindex('parts', p);
   logAction(x, `Unlinked part: ${p.name}`);
   render(); renderOverlay();
+}
+/* +File inline create (§7.13): name + optional link, every other field deferred to
+   inline edit on the detail. The saveReceiptForm idiom: save lands ON the new
+   detail + R19 glow; Cancel leaves no stub. */
+function saveFileForm() {
+  const o = state.overlay; if (!o || o.kind !== 'board' || o.board !== 'files') return;
+  const g = (c) => (document.querySelector(c)?.value || '').trim();
+  const name = g('.js-ff-name'), link = g('.js-ff-link');
+  if (!name) return attnFlash('.js-ff-name');   // R19
+  const f = { fileId: 'FIL-C' + (state.seq++), name, group: '', type: link ? 'Link' : 'Note', reviewByDate: '', link, notes: '', mock: true };
+  DATA.companyFiles.push(f); reindex('files', f);   // reindex also sets IDX.file (sync clause)
+  logAction(f, 'File created');
+  o.fileForm = false; o.recId = f.fileId;   // save lands ON the new detail
+  render(); renderOverlay();
+  attnFlash('.board-detail .detail-head');  // R19: glow the fresh file
 }
 function completeWOAttempt(woId) {
   const w = IDX.wo.get(woId); if (!w) return;
@@ -6088,7 +6210,7 @@ function boot() {
   // right-click = send the card to its List View; double right-click = drop the anchor.
   let lastCtx = { t: 0, card: null };
   document.addEventListener('contextmenu', (e) => {
-    const card = e.target.closest('.card'); if (!card) return;
+    const card = e.target.closest('.card'), bpop = e.target.closest('.overlay .popup'); if (!card && !bpop) return;
     if (e.target.closest('input, textarea, .inline-input')) return;   // allow native menu in fields
     e.preventDefault();
     if (state.pick || state.winpicker) return;
@@ -6099,6 +6221,7 @@ function boot() {
     const leaf = e.target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .hvals, .x, a, .d-title, .derived, .row');
     const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
     if (hit) return openCtxMenu(e, hit);
+    if (!card) return;   // popup dead space — no card-to-List / clear-anchor
     const dc = card.dataset.card, now = performance.now();
     if (now - lastCtx.t < 450 && lastCtx.card === dc) { lastCtx = { t: 0, card: null }; return clearAnchor(); }   // double right-click
     lastCtx = { t: now, card: dc };

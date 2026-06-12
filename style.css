@@ -1190,3 +1190,8 @@ body { font-variant-numeric: tabular-nums; }
 
 /* right-side split columns: row CONTENTS hug the right edge too (Jac 2026-06-12) */
 .split .side.r .kv { justify-content: flex-end; width: 100%; }
+
+/* Jac 2026-06-12: first+last name share a row; funnel section contents centered */
+.kv2 { display: flex; gap: 10px; }
+.kv2 .kv { flex: 1; min-width: 0; }
+.fieldstack.centered .kv { justify-content: center; }
