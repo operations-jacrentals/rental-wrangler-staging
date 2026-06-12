@@ -1187,3 +1187,6 @@ body { font-variant-numeric: tabular-nums; }
 
 /* Jac 2026-06-12: the nav cluster rides the toggle row, right-aligned */
 .col-tabs .c-actions { margin-left: auto; display: flex; gap: 4px; }
+
+/* right-side split columns: row CONTENTS hug the right edge too (Jac 2026-06-12) */
+.split .side.r .kv { justify-content: flex-end; width: 100%; }

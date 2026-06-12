@@ -2167,7 +2167,10 @@ const DETAIL = {
         </div>
         <div class="side r">
           ${kvPills(`${selfieThumb}${badge(acct.label, acct.color)}${c.requiresPO ? badge('PO Required', 'yellow') : ''}${agPill}`)}
-          ${kv(`${money(d.totalPaid)} total · ${d.visits || 0} visits · ${d.years || 0} yrs · every ${d.avgFrequencyDays || 0} days`, { wrap: true, derived: true })}
+          ${kv(money(d.totalPaid), { pfx: 'Total', derived: true })}
+          ${kv(`${d.visits || 0}`, { pfx: 'Visits', derived: true })}
+          ${kv(`${d.years || 0} yrs`, { pfx: 'Customer for', derived: true })}
+          ${kv(`every ${d.avgFrequencyDays || 0} days`, { pfx: 'Rents', derived: true })}
         </div>
       </div></div>`;
     // Jac 2026-06-12: NO badge row — account type + pay status are R9 title flags,
