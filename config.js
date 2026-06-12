@@ -151,6 +151,10 @@ const RAW_STATUS = {
     'Supplies': { label: 'Supplies', color: 'gray'   },
     'Other':    { label: 'Other',    color: 'gray'   },
   },
+  vendorType: {
+    'Local':  { label: 'Local',  color: 'gray' },
+    'Online': { label: 'Online', color: 'navy' },
+  },
   paymentMethod: {
     'Visa':  { label: 'Visa',  color: 'blue'  },
     'Amex':  { label: 'Amex',  color: 'navy'  },

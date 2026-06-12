@@ -720,6 +720,9 @@ input { font-family: inherit; }
 .board-table td:first-child { font-weight: 600; }
 .board-table tbody tr:hover { background: var(--panel); }
 .board-table .badge { margin-left: 6px; }
+/* §7.10 v2 vendors — clickable board rows + the in-popup record detail */
+.board-table tbody tr.js-board-row { cursor: pointer; }
+.board-detail { max-width: 820px; margin: 0 auto; }
 
 /* §13 — Board-View icon (left of each card's search) + List-View totals row */
 .listbar { display: flex; align-items: center; gap: 8px; }

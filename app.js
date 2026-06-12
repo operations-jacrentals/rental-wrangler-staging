@@ -151,9 +151,10 @@ function buildIndexes() {
   DATA.invoices.forEach((i) => reindex('invoices', i));
   DATA.workOrders.forEach((w) => reindex('workOrders', w));
   DATA.inspections.forEach((n) => reindex('inspections', n));
+  DATA.vendors.forEach((v) => reindex('vendors', v));   // §7.10 v2 — vendors are globally searchable
 }
 const idOf   = (card, rec) => rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId' }[card]];
-const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit }[card])?.get(id);
+const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit, vendors: IDX.vendor }[card])?.get(id);
 
 /* ── §5 comprehensive search blob — ONE source of truth for what's searchable.
    Emits every raw field, foreign-key DISPLAY names, AND the getStatus(...) labels
@@ -217,6 +218,10 @@ function searchBlob(card, rec) {
       p = ['inspection', rec.checklist, L('inspectionChecklist', rec.checklist),
         rec.wash, rec.billCustomer, L('billCustomer', rec.billCustomer),
         rec.description, rec.notes, un(rec.unitId)?.name];
+      break;
+    case 'vendors':
+      p = [rec.name, rec.phone, rec.email, rec.address, rec.website, rec.primaryContact, rec.notes,
+        rec.vendorType, L('vendorType', rec.vendorType), rec.salesTaxExempt ? 'tax exempt tax-exempt' : ''];
       break;
   }
   return p.filter(Boolean).join(' ').toLowerCase();
@@ -910,7 +915,7 @@ const RING_ICON = {
    R17 actionPill            commit (blue) / money (green) / danger (red)
    ════════════════════════════════════════════════════════════════════════ */
 // R3: each status badge carries the icon of the card the status belongs to
-const SET_CARD = { rentalStatus: 'rentals', unitRentalStatus: 'rentals', invoiceStatus: 'invoices', unitInspectionStatus: 'inspections', inspectionResult: 'inspections', unitFleetStatus: 'units', gpsStatus: 'units', unitOrderStatus: 'workOrders', woPhase: 'workOrders', woType: 'workOrders', customerPayStatus: 'customers', accountType: 'customers', serviceStatus: 'serviceOrders', expenseReconcile: 'expenses' };
+const SET_CARD = { rentalStatus: 'rentals', unitRentalStatus: 'rentals', invoiceStatus: 'invoices', unitInspectionStatus: 'inspections', inspectionResult: 'inspections', unitFleetStatus: 'units', gpsStatus: 'units', unitOrderStatus: 'workOrders', woPhase: 'workOrders', woType: 'workOrders', customerPayStatus: 'customers', accountType: 'customers', serviceStatus: 'serviceOrders', expenseReconcile: 'expenses', vendorType: 'vendors' };
 const dataAttrs = (data) => Object.entries(data || {}).map(([k, v]) => ` data-${k}="${esc(String(v))}"`).join('');
 function statusPill(set, value, { card, recId, x, truck } = {}) {
   const st = getStatus(set, value);
@@ -1754,7 +1759,7 @@ function woSectionHtml(w) {
     const ven = li.vendorId ? IDX.vendor?.get?.(li.vendorId) || DATA.vendors.find((v) => v.vendorId === li.vendorId) : null;
     const tip = [ven ? `Vendor: ${ven.name}` : '', li.url ? li.url : '', li.aiPending ? '🤠 Mr. Wrangler will fill the empty fields' : ''].filter(Boolean).join(' · ');
     // the description re-opens the part popup; vendor/url live in its tooltip
-    return `<div class="woline">${gatePillRaw(lbl, ph.color, 'js-wophase-line', { rec: w.woId, idx })}<span class="js-partedit" data-rec="${w.woId}" data-idx="${idx}" style="cursor:pointer"${tip ? ` data-tip="${esc(tip)}"` : ''}>${li.aiPending ? '✨ ' : ''}${esc(li.part)}</span><span class="nums"><b>${money(li.cost)}</b><span>${li.hours || 0}h</span></span></div>`;
+    return `<div class="woline">${gatePillRaw(lbl, ph.color, 'js-wophase-line', { rec: w.woId, idx })}<span class="js-partedit" data-rec="${w.woId}" data-idx="${idx}" style="cursor:pointer"${tip ? ` data-tip="${esc(tip)}"` : ''}>${li.aiPending ? '✨ ' : ''}${esc(li.part)}${ven ? ' ' + linkName(ven.name, { js: 'js-vendor-open', data: { rec: ven.vendorId } }) : ''}</span><span class="nums"><b>${money(li.cost)}</b><span>${li.hours || 0}h</span></span></div>`;
   }).join('');
   return `<div class="section sec-${secColor} wo-${w.woId}">
     <h4 class="h-name"><span style="font-weight:800;margin-right:1px">WO:</span> <span class="inline-edit" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span>
@@ -2032,6 +2037,48 @@ const DETAIL = {
     </div>`;
   },
 
+  /* ── VENDORS — v2 (§7.10): lives in the BOARD POPUP, not the grid (no grid card,
+     no cascade). Contact is click-to-edit via efld (recOf routes 'vendors'); Terms =
+     registry vendorType pill + tax segCtl; derived spend stats per CARD ANATOMY. ── */
+  vendors: (v, cs) => {
+    const t = vendorTotals(v.vendorId);
+    const vparts = DATA.parts.filter((p) => p.vendorId === v.vendorId);
+    const vexp = DATA.expenses.filter((e) => e.vendorId === v.vendorId);
+    const vwos = DATA.workOrders.filter((w) => (w.lineItems || []).some((li) => li.vendorId === v.vendorId));
+    const webUrl = (w) => (/^https?:\/\//i.test(w) ? w : 'https://' + w);   // vendor sites are stored bare ('amazon.com') — js-open-link requires a scheme
+    const contact = `<div class="section"><h4>Contact</h4><div class="fieldstack">
+      ${efld('vendors', v, 'vendorId', 'primaryContact', 'Add contact', { sfx: 'contact' })}
+      ${efld('vendors', v, 'vendorId', 'phone', 'Add phone')}
+      ${efld('vendors', v, 'vendorId', 'email', 'Add email')}
+      ${v.website ? kvPills(linkName(v.website, { js: 'js-open-link', data: { url: webUrl(v.website) } })) : efld('vendors', v, 'vendorId', 'website', 'Add website')}
+      ${efld('vendors', v, 'vendorId', 'address', 'Add address', { wrap: true })}
+    </div></div>`;
+    const terms = `<div class="section"><h4>Terms</h4><div class="fieldstack">
+      ${kvPills(statusPill('vendorType', v.vendorType))}
+      ${kvPills(segCtl([
+        { label: 'Exempt', js: 'js-vendor-tax', data: { rec: v.vendorId, val: '1' }, on: v.salesTaxExempt ? 'green' : null },
+        { label: 'Taxed', js: 'js-vendor-tax', data: { rec: v.vendorId, val: '0' }, on: v.salesTaxExempt ? null : 'blue' },
+      ]))}
+      ${kv(money(t.totalSpent), { pfx: 'Total Spent', derived: true })}
+      ${kv(`${t.partsCount} parts${t.partsCount ? ` · ${money(t.avgCost)} avg` : ''}`, { derived: true })}
+    </div></div>`;
+    const partRows = vparts.map((p) => `<div class="hitem">${linkName(p.name, { js: 'js-board', data: { board: 'parts' } })}<span class="spacer"></span><span class="derived">${p.priceEach != null ? money(p.priceEach) : '—'}${p.qtyOnHand != null ? ` · ${p.qtyOnHand} on hand` : ''}</span></div>`).join('');
+    const partsSec = vparts.length ? `<div class="section"><h4>Parts from this Vendor</h4><div class="hlog">${partRows}</div></div>` : '';
+    const notes = notesSection('vendors', v, 'vendorId');
+    const hchips = [
+      { kind: 'exp', label: `${vexp.length} Receipts`, cls: 'g', re: /receipt/i },
+      { kind: 'wo', label: `${vwos.length} WOs`, cls: 'r', re: /\bWO\b|part sourced/i },
+    ];
+    return `<div class="detail">
+      <div class="detail-head"><span class="d-title inline-edit" data-edit="field" data-card="vendors" data-field="name" data-rec="${esc(v.vendorId)}" data-ph="Vendor name">${esc(v.name || 'New Vendor')}</span>${v.salesTaxExempt ? badge('Tax-Exempt', 'green') : ''}</div>
+      ${notes.top}
+      <div class="detail-cols">${contact}${terms}</div>
+      ${partsSec}
+      ${notes.bottom}
+      ${historySection('vendors', v, cs, hchips)}
+    </div>`;
+  },
+
   /* ── CUSTOMERS — fully built (§12.1 standard mode: contact · account · funnels) ── */
   customers: (c, cs) => {
     const d = c._digest || {};
@@ -2211,7 +2258,7 @@ const DETAIL = {
     const journey = (w.lineItems || []).map((li, idx) => {
       const ven = li.vendorId ? IDX.vendor?.get?.(li.vendorId) || DATA.vendors.find((v) => v.vendorId === li.vendorId) : null;
       const venName = ven?.name || li.vendor || '';
-      return `<div class="hitem"><span data-r="R1" class="pill gate c-${getStatus('woPhase', li.phase).color} js-wophase-line" data-rec="${w.woId}" data-idx="${idx}" style="min-width:88px;justify-content:center">${esc(getStatus('woPhase', li.phase).label)} ${I.chev}</span><span>${esc(li.part)}</span><span class="spacer"></span><span class="muted">${li.eta ? fmtShortDate(li.eta) + ' · ' : ''}${li.hours || 0}h${venName ? ' · ' + esc(venName) : ''}</span><b>${money(li.cost)}</b></div>`;
+      return `<div class="hitem"><span data-r="R1" class="pill gate c-${getStatus('woPhase', li.phase).color} js-wophase-line" data-rec="${w.woId}" data-idx="${idx}" style="min-width:88px;justify-content:center">${esc(getStatus('woPhase', li.phase).label)} ${I.chev}</span><span>${esc(li.part)}</span><span class="spacer"></span><span class="muted">${li.eta ? fmtShortDate(li.eta) + ' · ' : ''}${li.hours || 0}h${venName ? ' · ' : ''}${venName ? (ven ? linkName(venName, { js: 'js-vendor-open', data: { rec: ven.vendorId } }) : esc(venName)) : ''}</span><b>${money(li.cost)}</b></div>`;
     }).join('');
     const billable = partsCost > 0 || labor > 0;
     const alreadyBilled = DATA.invoices.some((i) => (i.lineItems || []).some((li) => li.kind === 'WO' && li.ref === w.woId));
@@ -2359,6 +2406,11 @@ function historyFor(card, rec) {
     const insp = DATA.inspections.filter((n) => n.unitId === rec.unitId).map((n) => { const ir = inspResult(n); return { when: fmtShortDate(n.date), pill: `<span class="pill c-${ir.color}" data-r="R3" data-pill-card="inspections" data-pill-rec="${esc(n.inspectionId)}">${esc(ir.label)}</span>`, text: 'Inspection', search: `${fmtShortDate(n.date)} inspection ${ir.label} ${n.description || ''}` }; });
     const wos = DATA.workOrders.filter((w) => w.unitId === rec.unitId).map((w) => ({ when: fmtShortDate(w.date), pill: refPill('workOrders', w.woId, w.woReport.slice(0, 16)), text: getStatus('woPhase', w.phase).label, search: `${fmtShortDate(w.date)} ${w.woReport} ${w.phase} ${w.woType}` }));
     return [...insp, ...wos].sort((a, b) => (b.when > a.when ? 1 : -1));
+  }
+  if (card === 'vendors') {
+    const exp = DATA.expenses.filter((e) => e.vendorId === rec.vendorId).map((e) => ({ when: fmtShortDate(e.date), text: `${money(e.amount)} receipt — ${e.category || 'Expense'}${e.method ? ' · ' + e.method : ''}`, search: `${fmtShortDate(e.date)} receipt expense ${e.amount} ${e.category || ''} ${e.method || ''}` }));
+    const wos = DATA.workOrders.filter((w) => (w.lineItems || []).some((li) => li.vendorId === rec.vendorId)).map((w) => ({ when: fmtShortDate(w.date), pill: refPill('workOrders', w.woId, w.woReport.slice(0, 16)), text: 'Part sourced', search: `${fmtShortDate(w.date)} WO part sourced ${w.woReport}` }));
+    return [...exp, ...wos].sort((a, b) => (b.when > a.when ? 1 : -1));
   }
   if (card === 'customers') {
     return DATA.rentals.filter((r) => r.customerId === rec.customerId).map((r) => ({ when: fmtShortDate(r.startDate) || '—', pill: refPill('rentals', r.rentalId, IDX.unit.get(r.unitId)?.name || 'Rental'), text: getStatus('rentalStatus', rentalDisplayStatus(r)).label, search: `${r.rentalName} ${r.status} ${IDX.unit.get(r.unitId)?.name || ''}` }));
@@ -3307,9 +3359,18 @@ function renderOverlay() {
   } else if (o.kind === 'board') {
     const board = BACKOFFICE_BOARDS.find((b) => b.id === o.board);
     const pop = el('div', 'popup board-popup');
+    // v2 (§7.10): a clicked vendor row stashes o.recId on the overlay state — the detail
+    // renders INSIDE this popup; back (js-board-back) nulls recId + renderOverlay().
+    const vrec = (o.board === 'vendors' && o.recId != null) ? (IDX.vendor.get(o.recId) || DATA.vendors.find((x) => x.vendorId === o.recId)) : null;
+    if (vrec) {
+      pop.innerHTML = `
+      <div class="popup-head">${ghostPill('← Vendors', { js: 'js-board-back' })}<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON.vendors}</span><h3>${esc(vrec.name || 'Vendor')}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body"><div class="board-detail">${DETAIL.vendors(vrec, { historySearch: o.historySearch || '', histKind: o.histKind || null, backStack: [], mode: 'standard' })}</div></div>`;
+    } else {
     pop.innerHTML = `
       <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body board-body">${boardTable(board.id)}</div>`;
+    }
     overlay.appendChild(pop);
   } else if (o.kind === 'boardview') {
     const session = activeSession();
@@ -3570,7 +3631,7 @@ const BOARD_DEF = {
   },
   vendors: {
     cols: ['Vendor', 'Type', 'Phone', 'Total Spent', 'Parts', 'Avg Cost'],
-    row: (v) => { const t = vendorTotals(v.vendorId); return [esc(v.name) + (v.salesTaxExempt ? ' <span class="badge">tax-exempt</span>' : ''), badge(v.vendorType || '—', v.vendorType === 'Online' ? 'navy' : 'gray'), esc(v.phone || '—'), money(t.totalSpent), `${t.partsCount}`, t.partsCount ? money(t.avgCost) : '—']; },
+    row: (v) => { const t = vendorTotals(v.vendorId); return [esc(v.name) + (v.salesTaxExempt ? ' ' + badge('Tax-Exempt', 'green') : ''), statusPill('vendorType', v.vendorType), esc(v.phone || '—'), money(t.totalSpent), `${t.partsCount}`, t.partsCount ? money(t.avgCost) : '—']; },
   },
   expenses: {
     cols: ['Vendor', 'Date', 'Amount', 'Reconcile', 'Method', 'Category', 'WO'],
@@ -3585,7 +3646,9 @@ function boardTable(boardId) {
   const def = BOARD_DEF[boardId]; const rows = boardRows(boardId);
   if (!def) return '<p class="muted">—</p>';
   const head = `<tr>${def.cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>`;
-  const body = rows.map((r) => `<tr>${def.row(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  // §7.10 v2 — vendors rows open the record's detail inside the popup (other boards stay inert until they grow details)
+  const rowAttr = boardId === 'vendors' ? (r) => ` class="js-board-row" data-rec="${esc(String(r.vendorId))}"` : () => '';
+  const body = rows.map((r) => `<tr${rowAttr(r)}>${def.row(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
   return `<table class="board-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 
@@ -4055,6 +4118,10 @@ function onClick(e) {
   if (closest('.js-fb-send')) { e.stopPropagation(); return sendFeedback(); }
   if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener'); return; }
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
+  if (closest('.js-vendor-open')) { e.stopPropagation(); return openOverlay({ kind: 'board', board: 'vendors', recId: closest('.js-vendor-open').dataset.rec }); }   // WO-line vendor names → vendor detail in the board popup
+  if (closest('.js-board-row')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = closest('.js-board-row').dataset.rec; o.historySearch = ''; o.histKind = null; renderOverlay(); } return; }
+  if (closest('.js-board-back')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = null; renderOverlay(); } return; }
+  if (closest('.js-vendor-tax')) { e.stopPropagation(); const b = closest('.js-vendor-tax'); const v = recOf('vendors', b.dataset.rec); if (v) { const ex = b.dataset.val === '1'; if (!!v.salesTaxExempt !== ex) { v.salesTaxExempt = ex; reindex('vendors', v); logAction(v, `Sales tax → ${ex ? 'Exempt' : 'Taxed'}`); } if (state.overlay?.kind === 'board') renderOverlay(); render(); } return; }
   if (closest('.js-boardview')) { e.stopPropagation(); return openBoardView(closest('.js-boardview').dataset.card); }
   if (closest('.js-bv-sort') && !closest('.js-bv-inscol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const key = closest('.js-bv-sort').dataset.col; if (o.sort?.key === key) o.sort.dir = o.sort.dir === 'asc' ? 'desc' : 'asc'; else o.sort = { key, dir: 'asc' }; renderOverlay(); } return; }
   if (closest('.js-bv-addcol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.colOrder = o.colOrder || []; o.colOrder.push({ kind: 'extra', id: 'xc' + (++o.seq), label: '' }); renderOverlay(); } return; }
@@ -4168,7 +4235,7 @@ function onClick(e) {
   }
   if (closest('.js-wo-complete')) { const b = closest('.js-wo-complete'); return completeWOAttempt(b.dataset.rec); }
   if (closest('.js-wodone-confirm')) { const b = closest('.js-wodone-confirm'); state.overlay = null; setWoPhase(b.dataset.rec, 'Complete'); renderOverlay(); return; }
-  if (closest('.js-hchip')) { const b = closest('.js-hchip'); const session = activeSession(); const cs = session.cards[b.dataset.card] || session.cards.shop; cs.histKind = cs.histKind === b.dataset.kind ? null : b.dataset.kind; return render(); }
+  if (closest('.js-hchip')) { const b = closest('.js-hchip'); const o = state.overlay; if (o?.kind === 'board') { o.histKind = o.histKind === b.dataset.kind ? null : b.dataset.kind; return renderOverlay(); } const session = activeSession(); const cs = session.cards[b.dataset.card] || session.cards.shop; cs.histKind = cs.histKind === b.dataset.kind ? null : b.dataset.kind; return render(); }
   if (closest('.js-complete-rental')) {
     const b = closest('.js-complete-rental'); const r = IDX.rental.get(b.dataset.rec); if (!r) return;
     if (r.status !== 'Returned') return flashOr(`.js-yard[data-cap="end"][data-rec="${r.rentalId}"]`, '🔒 Available once the rental is Returned — log the End/Recovery video on the unit.');
@@ -4253,6 +4320,7 @@ function onClick(e) {
   const pill = closest('[data-pill-card]');
   if (pill && pill.dataset.pillRec != null) {
     e.stopPropagation();
+    if (state.overlay?.kind === 'board') closeOverlay();   // a link pill inside the board popup navigates the grid — close the popup first
     const pc = pill.dataset.pillCard, prec = castId(pc, pill.dataset.pillRec);
     const anchor = SHOP_TYPES.includes(pc) ? { card: 'shop', recId: prec, recType: pc } : { card: pc, recId: prec, recType: null };
     return deferOrAnchor('pill:' + pc + ':' + prec, () => pillTo(pc, prec), anchor);
@@ -4361,7 +4429,7 @@ function startInlineEdit(span) {
     input.placeholder = span.dataset.ph || '';
     if (type === 'number') input.type = 'number';
     else if (type === 'date') input.type = 'date';
-    commit = () => { if (done) return; done = true; if (rec) { let v = input.value.trim(); if (type === 'number') v = (v === '' ? null : Number(v)); const old = rec[f]; const oldDot = rec[f + 'Color'] || ''; const newDot = (span.dataset.dot === '1' && v) ? (input._dotPick ?? oldDot) : ''; if (String(old ?? '') !== String(v ?? '') || oldDot !== newDot) { rec[f] = v; if (span.dataset.dot === '1') rec[f + 'Color'] = newDot; reindex(card, rec); logAction(rec, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); };
+    commit = () => { if (done) return; done = true; if (rec) { let v = input.value.trim(); if (type === 'number') v = (v === '' ? null : Number(v)); const old = rec[f]; const oldDot = rec[f + 'Color'] || ''; const newDot = (span.dataset.dot === '1' && v) ? (input._dotPick ?? oldDot) : ''; if (String(old ?? '') !== String(v ?? '') || oldDot !== newDot) { rec[f] = v; if (span.dataset.dot === '1') rec[f + 'Color'] = newDot; reindex(card, rec); logAction(rec, `${humanizeField(f)}: ${auditVal(old)} → ${auditVal(v)}`); } } render(); if (state.overlay?.kind === 'board') renderOverlay(); };
   } else { return; }
   if (kind === 'field' && span.dataset.dot === '1') {
     // rule 8 — notes get the 3-color dot picker (white/red/green) while entering
@@ -4385,7 +4453,7 @@ function startInlineEdit(span) {
   input.focus(); input.select();
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    else if (e.key === 'Escape') { done = true; render(); }
+    else if (e.key === 'Escape') { done = true; render(); if (state.overlay?.kind === 'board') renderOverlay(); }
   });
   input.addEventListener('blur', commit);
 }
@@ -4612,6 +4680,12 @@ function onInput(e) {
     return;
   }
   if (e.target.classList.contains('js-history-search')) {
+    if (state.overlay?.kind === 'board') {   // vendor detail in the board popup — history search rides the overlay state
+      state.overlay.historySearch = e.target.value;
+      const sel = e.target.selectionStart; renderOverlay();
+      const hs = document.querySelector('.overlay .js-history-search'); if (hs) { hs.focus(); hs.setSelectionRange(sel, sel); }
+      return;
+    }
     const card = e.target.closest('.card')?.dataset.card; if (!card) return;
     activeSession().cards[card].historySearch = e.target.value;
     const sel = e.target.selectionStart; render();
