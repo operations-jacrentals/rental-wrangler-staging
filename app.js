@@ -1756,7 +1756,7 @@ function woSectionHtml(w) {
     // the description re-opens the part popup; vendor/url live in its tooltip
     return `<div class="woline">${gatePillRaw(lbl, ph.color, 'js-wophase-line', { rec: w.woId, idx })}<span class="js-partedit" data-rec="${w.woId}" data-idx="${idx}" style="cursor:pointer"${tip ? ` data-tip="${esc(tip)}"` : ''}>${li.aiPending ? '✨ ' : ''}${esc(li.part)}</span><span class="nums"><b>${money(li.cost)}</b><span>${li.hours || 0}h</span></span></div>`;
   }).join('');
-  return `<div class="section sec-${secColor}">
+  return `<div class="section sec-${secColor} wo-${w.woId}">
     <h4 class="h-name"><span style="font-weight:800;margin-right:1px">WO:</span> <span class="inline-edit" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span>
       <span class="right">${flagsStack([typeFlag, flagEl(fmtShortDate(w.date), 'gray')], 24)}</span></h4>
     <div class="wototals">${addBtn('Part/Task', { anchor: true, js: 'js-add-part', h: 26, data: { rec: w.woId } })}<span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>
@@ -2024,6 +2024,7 @@ const DETAIL = {
       ${notes.top}
       ${inspSec}
       ${woSecs}
+      <div class="add-row">${addBtn('Work Order', { js: 'js-new-wo-unit', link: true, data: { rec: u.unitId } })}</div>
       <div class="detail-cols">${specs}${gps}</div>
       ${investment}
       ${notes.bottom}
@@ -2355,7 +2356,7 @@ function historyFor(card, rec) {
     return out;
   }
   if (card === 'units' || card === 'serviceOrders') {
-    const insp = DATA.inspections.filter((n) => n.unitId === rec.unitId).map((n) => { const ir = inspResult(n); return { when: fmtShortDate(n.date), pill: `<span class="pill c-${ir.color}" data-pill-card="inspections" data-pill-rec="${esc(n.inspectionId)}">${esc(ir.label)}</span>`, text: 'Inspection', search: `${fmtShortDate(n.date)} inspection ${ir.label} ${n.description || ''}` }; });
+    const insp = DATA.inspections.filter((n) => n.unitId === rec.unitId).map((n) => { const ir = inspResult(n); return { when: fmtShortDate(n.date), pill: `<span class="pill c-${ir.color}" data-r="R3" data-pill-card="inspections" data-pill-rec="${esc(n.inspectionId)}">${esc(ir.label)}</span>`, text: 'Inspection', search: `${fmtShortDate(n.date)} inspection ${ir.label} ${n.description || ''}` }; });
     const wos = DATA.workOrders.filter((w) => w.unitId === rec.unitId).map((w) => ({ when: fmtShortDate(w.date), pill: refPill('workOrders', w.woId, w.woReport.slice(0, 16)), text: getStatus('woPhase', w.phase).label, search: `${fmtShortDate(w.date)} ${w.woReport} ${w.phase} ${w.woType}` }));
     return [...insp, ...wos].sort((a, b) => (b.when > a.when ? 1 : -1));
   }
@@ -3002,11 +3003,8 @@ function bottomBarEl() {
     <button class="iconbtn js-dashboard">${I.grid} Dashboard</button>
     <button class="${newCls('rentals')}" data-new="rental">${CARD_ICON.rentals}Rental</button>
     <button class="${newCls('customers')}" data-new="customer">${CARD_ICON.customers}Customer</button>
-    <button class="${newCls('inspections')}" data-new="inspection">${CARD_ICON.inspections}Inspection</button>
-    <button class="${newCls('workOrders')}" data-new="workOrder">${CARD_ICON.workOrders}Work Order</button>
     <button class="${newCls('invoices')}" data-new="invoice">${CARD_ICON.invoices}Invoice</button>
     <button class="iconbtn js-newitem" data-new="receipt">${CARD_ICON.expenses}Receipt</button>
-    <button class="iconbtn${state.pick?.slot === 'washunit' ? ' on' : ''} js-wash-mode" data-tip="Request a wash for a unit">${I.droplet}Wash</button>
     <span class="bb-sep"></span>
     <button class="iconbtn js-theme" data-tip="${state.theme === 'dark' ? 'Light' : 'Dark'} mode">${state.theme === 'dark' ? I.sun : I.moon}</button>
     <button class="iconbtn js-qr" data-tip="Share session (QR)">${I.qr}</button>
@@ -4071,7 +4069,7 @@ function onClick(e) {
   if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); state.fleetFilter = null; const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
   if (closest('.js-dashboard')) { e.stopPropagation(); toast('Dashboard graphs are coming soon.'); return; }   // Phase-2 per-role KPI graphs (G1/G2)
   if (closest('.js-dash-ev')) { e.stopPropagation(); state.pick = null; return anchorRecord('rentals', closest('.js-dash-ev').dataset.rec); }
-  if (closest('.js-wash-mode')) { e.stopPropagation(); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (state.pick?.slot === 'washunit') { cancelPick(true); toast('Exited Wash Mode.'); return; } return startWashRequest(null); }
+  if (closest('.js-new-wo-unit')) { e.stopPropagation(); return startNewWorkOrder(closest('.js-new-wo-unit').dataset.rec); }
   if (closest('.js-newitem')) {
     const kind = closest('.js-newitem').dataset.new;
     const cust = activeSession().anchor?.card === 'customers' ? activeSession().anchor.recId : null;
@@ -5066,11 +5064,18 @@ function startNewInspection() {
   toast('New inspection — pick the unit, then run Wash → Checklist.');
   beginPick('shop', id, 'inspections', 'unit');
 }
-function startNewWorkOrder() {
+function startNewWorkOrder(unitId) {
   const id = 'WO-NEW' + (state.seq++);
-  const draft = { woId: id, unitId: null, customerId: null, woReport: 'New Work Order', woType: 'Manual', description: '', phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  const u = unitId ? IDX.unit.get(unitId) : null;
+  const draft = { woId: id, unitId: u ? u.unitId : null, customerId: null, woReport: 'New Work Order', woType: 'Manual', description: '', phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(draft); IDX.wo.set(id, draft); reindex('workOrders', draft);
   logAction(draft, 'Work order created');
+  if (u) {
+    // born on the Unit card (+Work Order above Specs/GPS) — the WO section appears in place
+    render();
+    attnFlash(`.card[data-card="units"] .section.wo-${id}`);
+    return;
+  }
   anchorRecord('shop', id, 'workOrders');
   revealPickList('units');   // show the Units list so there's something to click
   toast('New work order — pick the unit, then add parts / labor.');
