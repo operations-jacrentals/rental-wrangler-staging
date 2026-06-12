@@ -353,6 +353,12 @@ function rentalDisplayStatus(r) {
   }
   return r.status;
 }
+/** "Today"/"Tomorrow" beat a date for orientation (Jac 2026-06-12); else the short date. */
+function relDate(iso) {
+  const d = parseISO(iso); if (!d) return '';
+  const n = dayDiff(TODAY, d);
+  return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : fmtShortDate(iso);
+}
 function activeRentalForUnit(unitId) {
   return DATA.rentals.filter((r) => r.unitId === unitId && ACTIVE_RENTAL.has(r.status) && r.status !== 'Quote')
     .sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null;
@@ -1305,40 +1311,35 @@ const ROWS = {
       return `<div class="day ${TODAY >= cellEnd ? 'past' : ''}"></div>`;
     }).join('');
 
-    // TODAY marker — calm accent mid-rental · blue pinned-left pre-start · red off-the-end = overdue.
     // Overdue = the unit is physically OUT (On/End/Off Rent) past its end date — NOT a stale reservation.
     const overdue = e < TODAY && (r.status === 'On Rent' || r.status === 'End Rent' || r.status === 'Off Rent');
-    const pre = TODAY < s;
-    const frac = Math.max(0, Math.min(1, (TODAY - s) / Math.max(1, e - s)));
-    const markerCls = overdue ? 'over' : pre ? 'pre' : '';
-    const markerLeft = overdue ? 100 : pre ? 0 : Math.round(frac * 100);
     const nOver = overdue ? dayDiff(e, TODAY) : 0;
 
-    // R8 BALANCE with due-context (Jac): Paid · "$X · Due Jun18" (not due) · bare red "$X" (overdue —
-    // the MISSING "Due" qualifier IS the signal; no "Past Due"/"Late" word). No invoice → nothing.
+    // R8 BALANCE with due-context (Jac), STACKED: $X on top, "Due Jun 21" beneath.
+    // Paid green · not-due blue · bare red $X when overdue (the missing "Due" IS the signal).
     let bal = '';
     if (inv) {
       const t = invoiceTotals(inv);
       if (t.refunded || t.status === 'Refunded') bal = `<span class="rtl-bal muted">Refunded</span>`;
       else if (t.balance <= 0 && t.paid > 0) bal = `<span class="rtl-bal" style="color:var(--green)">Paid</span>`;
-      else if (parseISO(inv.dueDate) > TODAY) bal = `<span class="rtl-bal" style="color:var(--blue)">${money(t.balance)} <span class="rtl-due">· Due ${esc(fmtShortDate(inv.dueDate))}</span></span>`;
+      else if (parseISO(inv.dueDate) > TODAY) bal = `<span class="rtl-bal" style="color:var(--blue)">${money(t.balance)}<span class="rtl-due">Due ${esc(relDate(inv.dueDate))}</span></span>`;
       else bal = `<span class="rtl-bal" style="color:var(--red)">${money(t.balance)}</span>`;
     }
     // a customer who OWES but has no card on file → call-don't-charge (the one extra billing signal)
     const noCard = cust && inv && cardFlag(cust) === 'none' && invoiceTotals(inv).balance > 0 ? flagEl('No Card', 'red', { alert: true }) : '';
+    const cat = IDX.category.get(r.categoryId) || (unit ? IDX.category.get(unit.categoryId) : null);
 
     return `<div class="rtl">
       <div class="rtl-cells">${cellHtml}</div>
-      <div class="rtl-today ${markerCls}" style="left:${markerLeft}%"></div>
       <div class="rtl-over">
         <div class="rtl-l">
-          <span class="rtl-name">${esc(name)}</span>
-          <span class="rtl-sub">${cust ? refPill('customers', r.customerId, cust.name) : ''}<span class="rtl-start">${esc(fmtShortDate(r.startDate))}</span></span>
+          <span class="rtl-top"><span class="rtl-name">${esc(name)}</span>${cat ? flagEl(cat.name, 'gray', { icon: CARD_ICON.categories, card: 'categories', recId: cat.categoryId }) : ''}</span>
+          <span class="rtl-sub">${cust ? refPill('customers', r.customerId, cust.name) : ''}<span class="rtl-start">${esc(relDate(r.startDate))}</span></span>
         </div>
         <div class="rtl-mid">${gate}${price ? `<span class="rate">${money(price.price)} · ${esc(price.rate)}</span>` : ''}</div>
         <div class="rtl-r">
           ${noCard}${bal}
-          <span class="rtl-when">${r.startTime ? `<span class="tm">${esc(r.startTime)}</span>` : ''}<span class="rtl-end${overdue ? ' over' : ''}">${overdue ? `${nOver}d over` : esc(fmtShortDate(r.endDate))}</span></span>
+          <span class="rtl-when">${r.startTime ? `<span class="tm">${esc(r.startTime)}</span>` : ''}<span class="rtl-end${overdue ? ' over' : ''}">${overdue ? `${nOver}d over` : esc(relDate(r.endDate))}</span></span>
         </div>
       </div>
     </div>`;
@@ -1597,21 +1598,24 @@ function listTotalsEl(card, rows, session) {
   const allowed = sel ? new Set(sel) : null;
   const totCard = (session.cards && session.cards[card]) ? card : 'shop';   // shop sub-types route to the shop card
   const tf = session.cards[totCard] && session.cards[totCard].totalFilter;
-  const chips = [];
+  const chips = [];   // { k: col.key, html } — buckets let rentals split Billing/Status rows
   for (const col of cols) {
     if (allowed && !allowed.has(col.key)) continue;
     const a = aggColumn(col, rows);
     if (a.kind === 'badge') {
-      // each value-count is a button → filters the list to that value
-      Object.entries(a.counts).sort((x, y) => y[1] - x[1]).forEach(([key, n]) => {
+      // each value-count is a button → filters the list to that value.
+      // Registry-set columns order by the SET's canonical order (Jac: faster to use),
+      // ad-hoc badges keep count-desc.
+      const ord = col.set ? Object.keys(STATUS[col.set] || {}) : null;
+      Object.entries(a.counts).sort((x, y) => ord ? ord.indexOf(x[0]) - ord.indexOf(y[0]) : y[1] - x[1]).forEach(([key, n]) => {
         const m = col.meta ? col.meta(key) : { label: key, color: 'gray' };
         const on = tf && tf.col === col.key && String(tf.value) === String(key);
-        chips.push(`<button class="tot-chip c-${m.color} js-tot-chip${on ? ' on' : ''}" data-r="R4" data-tot-card="${totCard}" data-tot-col="${col.key}" data-tot-val="${esc(String(key))}">${n} ${esc(m.label)}</button>`);
+        chips.push({ k: col.key, html: `<button class="tot-chip c-${m.color} js-tot-chip${on ? ' on' : ''}" data-r="R4" data-tot-card="${totCard}" data-tot-col="${col.key}" data-tot-val="${esc(String(key))}">${n} ${esc(m.label)}</button>` });
       });
     } else if (a.kind === 'num' && a.count) {
       const calc = col.agg === 'sum' ? 'sum' : 'avg';
       const val = col.type === 'money' ? money(a[calc]) : num(a[calc]);
-      chips.push(`<span class="tot-chip" data-r="R4">${val} ${esc(col.label)} ${calc}</span>`);
+      chips.push({ k: col.key, html: `<span class="tot-chip" data-r="R4">${val} ${esc(col.label)} ${calc}</span>` });
     }
   }
   // v2: the units footer carries the SHOP — open-WO + parts-ordered counts
@@ -1621,12 +1625,21 @@ function listTotalsEl(card, rows, session) {
     const ordBy = new Set(DATA.workOrders.filter((w) => w.phase !== 'Complete' && (w.phase === 'Part Ordered' || (w.lineItems || []).some((l) => l.phase === 'Part Ordered'))).map((w) => w.unitId));
     const nOpen = rows.filter((u) => openBy.has(u.unitId)).length;
     const nOrd = rows.filter((u) => ordBy.has(u.unitId)).length;
-    if (nOpen) { const on = tf && tf.col === '__wo' && tf.value === 'open'; chips.push(`<button class="tot-chip c-red js-tot-chip${on ? ' on' : ''}" data-r="R4" data-tot-card="units" data-tot-col="__wo" data-tot-val="open">${nOpen} WOs Open</button>`); }
-    if (nOrd) { const on = tf && tf.col === '__wo' && tf.value === 'ordered'; chips.push(`<button class="tot-chip c-yellow js-tot-chip${on ? ' on' : ''}" data-r="R4" data-tot-card="units" data-tot-col="__wo" data-tot-val="ordered">${nOrd} Parts Ordered</button>`); }
+    if (nOpen) { const on = tf && tf.col === '__wo' && tf.value === 'open'; chips.push({ k: '__wo', html: `<button class="tot-chip c-red js-tot-chip${on ? ' on' : ''}" data-r="R4" data-tot-card="units" data-tot-col="__wo" data-tot-val="open">${nOpen} WOs Open</button>` }); }
+    if (nOrd) { const on = tf && tf.col === '__wo' && tf.value === 'ordered'; chips.push({ k: '__wo', html: `<button class="tot-chip c-yellow js-tot-chip${on ? ' on' : ''}" data-r="R4" data-tot-card="units" data-tot-col="__wo" data-tot-val="ordered">${nOrd} Parts Ordered</button>` }); }
   }
   if (!chips.length) return null;
   const node = el('div', 'list-totals');
-  node.innerHTML = chips.join('');   // v2: total count dropped (Jac: "not helpful")
+  // Rentals footer = two rows (Jac 2026-06-12): BILLING (price sum + invoice
+  // statuses) on row 1, RENTAL STATUS (registry order) on row 2.
+  if (card === 'rentals') {
+    const stat = chips.filter((c) => c.k === 'status').map((c) => c.html).join('');
+    const bill = chips.filter((c) => c.k !== 'status').map((c) => c.html).join('');
+    node.classList.add('two-row');
+    node.innerHTML = `${bill ? `<div class="tot-row">${bill}</div>` : ''}${stat ? `<div class="tot-row">${stat}</div>` : ''}`;
+  } else {
+    node.innerHTML = chips.map((c) => c.html).join('');   // v2: total count dropped (Jac: "not helpful")
+  }
   return node;
 }
 /** Filter a card's list rows by an active footer-chip filter (col === value). */
@@ -1966,12 +1979,12 @@ const DETAIL = {
       timeline = `<div class="timeline js-open-winpicker" data-rec="${r.rentalId}">
         ${cellHtml}
         <div class="tl-over">
-          <span class="d1">${esc(fmtShortDate(r.startDate))}</span>
+          <span class="d1">${esc(relDate(r.startDate))}</span>
           <span class="mid">
             <span class="pill gate c-${stColor} js-status-pill" data-r="R1" data-rec="${r.rentalId}">${truck ? `<span class="truck">${I.truck}</span>` : ''}${esc(getStatus('rentalStatus', rentalDisplayStatus(r)).label)} ${I.chev}</span>
             ${price ? `<span class="rate">${money(price.price)} · ${esc(price.rate)}</span>` : ''}
           </span>
-          <span class="d2">${r.startTime ? `<span class="tm">${esc(r.startTime)}</span>` : ''}${esc(fmtShortDate(r.endDate))}</span>
+          <span class="d2">${r.startTime ? `<span class="tm">${esc(r.startTime)}</span>` : ''}${esc(relDate(r.endDate))}</span>
         </div>
       </div>`;
     }
@@ -6406,6 +6419,9 @@ function boot() {
   // hover preview (#1): float a record's Standard view after a short hover on a row/pill
   document.addEventListener('mouseover', (e) => {
     if (!state.previewsOn) return;       // user turned previews off (saved per device)
+    // interactive controls are CLICK targets, not preview triggers — the popup kept
+    // landing under the cursor while aiming at the status dropdown (Jac 2026-06-12)
+    if (e.target.closest('.pill.gate, .js-status-pill, button, .x, .seg, .add-field, .dropdown-menu') || document.querySelector('.dropdown-menu')) { clearTimeout(hoverTimer); return; }
     const t = hoverTarget(e.target);
     if (!t || state.pick || state.overlay || state.winpicker) return;
     clearTimeout(hoverGrace);            // re-entering a row cancels a pending close
