@@ -121,7 +121,7 @@ function cardsSection(c) {
       <span class="cr-nick inline-edit" data-edit="cardNick" data-rec="${c.customerId}" data-card="${k.id}">${k.nickname ? esc(k.nickname) : '<span class="add-field" data-r="R5c">+Nickname</span>'}</span>
       ${k.agreement ? badge('Agreement ✓', 'green') : ''}
       ${k.isDefault ? badge('Default', 'blue') : actionPill('commit', 'Make default', { js: 'js-card-default', data: { rec: c.customerId, card: k.id } })}
-      <button class="x js-card-remove" data-rec="${c.customerId}" data-card="${k.id}" title="Remove card">${I.x}</button>
+      <button class="x js-card-remove" data-rec="${c.customerId}" data-card="${k.id}" data-tip="Remove card">${I.x}</button>
     </div>`;
   }).join('') : '<span class="muted" style="font-size:12px">No cards on file.</span>';
   const flag = cardFlag(c), fm = CARD_FLAG_META[flag];
@@ -871,8 +871,8 @@ function toggleFilterNeg(scope, i) { const arr = termsFor(scope); if (arr[i]) ar
 /** A pinned filter-term pill: leading ○ toggle (→ red − = NOT) + label. The whole
     pill is click-to-remove (js-ft-x); the ○ toggle is checked first so it wins. */
 function filterTermPill(ft, i, scope) {
-  return `<span class="filt-term${ft.neg ? ' neg' : ''} js-ft-x" data-scope="${esc(scope)}" data-i="${i}" title="Click to remove">`
-    + `<button class="ft-neg js-ft-neg" data-scope="${esc(scope)}" data-i="${i}" title="${ft.neg ? 'Excluding — click to include' : 'Including — click to exclude'}"></button>`
+  return `<span class="filt-term${ft.neg ? ' neg' : ''} js-ft-x" data-scope="${esc(scope)}" data-i="${i}" data-tip="Click to remove">`
+    + `<button class="ft-neg js-ft-neg" data-scope="${esc(scope)}" data-i="${i}" data-tip="${ft.neg ? 'Excluding — click to include' : 'Including — click to exclude'}"></button>`
     + `<span class="lbl">${esc(ft.t)}</span>`
     + `</span>`;
 }
@@ -1028,7 +1028,7 @@ function flagEl(label, color, { icon, card, recId, title, alert, sect } = {}) {
   // alert: big-deal flags pulse (No Card, active rental, bad pay status — Jac 2026-06-12)
   // sect: clicking also SCROLLS to that section (class) — same card or after nav
   const nav = card ? ` data-pill-card="${card}" data-pill-rec="${esc(recId)}"` : '';
-  return `<span class="flag c-${color}${alert ? ' alert' : ''}" data-r="R9"${nav}${sect ? ` data-sect="${sect}"` : ''}${title ? ` title="${esc(title)}"` : ''}>${icon || ''}${esc(label)}</span>`;
+  return `<span class="flag c-${color}${alert ? ' alert' : ''}" data-r="R9"${nav}${sect ? ` data-sect="${sect}"` : ''}${title ? ` data-tip="${esc(title)}"` : ''}>${icon || ''}${esc(label)}</span>`;
 }
 const flagsStack = (flags, h) => `<span class="flags" data-r="R9"${h ? ` style="height:${h}px"` : ''}>${flags.filter(Boolean).join('')}</span>`;
 /** R21: FILE DROP — the massive add-file zone in popups (Jac 2026-06-12):
@@ -1167,6 +1167,7 @@ const RULE_META = {
   R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear'],
   R21: ['File drop', 'fileDrop', 'the MASSIVE popup add-file zone — R5b blue dashed at full size'],
   R22: ['Date picker', 'dateField', 'the ONE app-styled calendar for a single date/time (NOT the rental-window timeline)'],
+  R23: ['Tooltip', 'data-tip → the one styled tip', 'every hover hint goes through data-tip — a native title attribute is a violation'],
 };
 /* structural fallbacks so hovering containers also names their rule */
 const CLASS_RULE = [
@@ -1269,8 +1270,8 @@ function rowEl(card, rec) {
   node.dataset.card = card; node.dataset.rec = id;
   node.innerHTML = `${rowViz(card, rec)}
     <div class="r-actions">
-      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" title="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
-      <button class="rbtn js-newtab" title="Open in new tab (+)">${I.plus}</button>
+      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" data-tip="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
+      <button class="rbtn js-newtab" data-tip="Open in new tab (+)">${I.plus}</button>
     </div>
     <div class="row-content">${inner}</div>`;
   return node;
@@ -1382,7 +1383,7 @@ const ROWS = {
     // status badges. Fleet Status is conveyed by the ROW BACKGROUND (when not Active).
     return `<div class="row-1"><span class="r-title">${esc(u.name)}</span><span class="r-fields">
         ${cat ? `<span>${esc(cat.name)}</span>` : ''}<span class="r-key">${num(u.currentHours)} HRS</span></span>
-        <span class="pill c-gray" data-r="R3" title="QR code">${I.qr}</span></div>
+        <span class="pill c-gray" data-r="R3" data-tip="QR code">${I.qr}</span></div>
       <div class="row-2">
         ${availWin ? availLead : (ar ? statusPill('rentalStatus', rentalDisplayStatus(ar), { card: 'rentals', recId: ar.rentalId }) : '')}
         ${svc ? badge(svcText(svc), svc.color) : ''}
@@ -1666,7 +1667,7 @@ function totalFilterChip(card, session) {
   const col = cardColumns(card, session).find((c) => c.key === cs.totalFilter.col);
   const m = (col && col.meta) ? col.meta(cs.totalFilter.value) : { label: cs.totalFilter.value };
   const chip = el('div', 'fleet-chip');
-  chip.innerHTML = `<span class="muted">Filtered to</span> <b>${esc(m.label)}</b> <button class="x js-clear-totfilter" data-card="${card}" title="Clear">${I.x}</button>`;
+  chip.innerHTML = `<span class="muted">Filtered to</span> <b>${esc(m.label)}</b> <button class="x js-clear-totfilter" data-card="${card}" data-tip="Clear">${I.x}</button>`;
   return chip;
 }
 
@@ -2003,7 +2004,7 @@ const DETAIL = {
        the invoice's rental line items, so no invoice = no transport yet). */
     const paidForThis = inv ? itemPaid(inv, r.rentalId) : 0;
     const invPill = inv
-      ? `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(inv.invoiceId)}">${CARD_ICON.invoices}${esc(invoiceShort(inv.invoiceId))}${paidForThis <= 0 ? `<span class="x" data-x="inv-remove" title="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`
+      ? `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(inv.invoiceId)}">${CARD_ICON.invoices}${esc(invoiceShort(inv.invoiceId))}${paidForThis <= 0 ? `<span class="x" data-x="inv-remove" data-tip="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`
       : (r.mock && cust && s && e ? addBtn('Invoice/+Transport', { link: true, js: 'js-create-invoice', h: 26, icon: CARD_ICON.invoices, data: { rec: r.rentalId } }) : badge('No invoice — link one to set transport'));
 
     const balColor = invT ? (invT.balance <= 0 && invT.paid > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red') : null;
@@ -2016,7 +2017,7 @@ const DETAIL = {
       const amt = Number(li.amount) || 0;
       const ibColor = paid >= amt && amt > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red';
       return `<div class="invitem">
-        <span><span class="linkname" data-r="R7" data-pill-card="rentals" data-pill-rec="${esc(r2.rentalId)}">${esc(u2?.name || r2.rentalName || 'Rental')} · ${esc(fmtShortDate(r2.startDate))}–${esc(fmtShortDate(r2.endDate))}${li.ref === r.rentalId ? ' — this rental' : ''}</span><span class="balline" style="margin-left:8px" title="ITEM BALANCE — partial payments are assigned per line item"><b style="color:var(--${ibColor});font-size:12.5px">${money(paid)}</b> <span class="tot" style="font-size:11px">/ ${money(amt)}</span></span></span>
+        <span><span class="linkname" data-r="R7" data-pill-card="rentals" data-pill-rec="${esc(r2.rentalId)}">${esc(u2?.name || r2.rentalName || 'Rental')} · ${esc(fmtShortDate(r2.startDate))}–${esc(fmtShortDate(r2.endDate))}${li.ref === r.rentalId ? ' — this rental' : ''}</span><span class="balline" style="margin-left:8px" data-tip="ITEM BALANCE — partial payments are assigned per line item"><b style="color:var(--${ibColor});font-size:12.5px">${money(paid)}</b> <span class="tot" style="font-size:11px">/ ${money(amt)}</span></span></span>
         ${miniJourneyHtml(r2)}
       </div>`;
     }).join('');
@@ -2217,7 +2218,7 @@ const DETAIL = {
     const un = Math.round(((Number(x.amount) || 0) - lineTotal) * 100) / 100;
     const unColor = Math.abs(un) < 0.005 ? 'green' : un > 0 ? 'yellow' : 'red';
     const thumb = x.photo ? `<img class="insp-thumb js-receipt-edit" data-rec="${esc(x.expenseId)}" src="${esc(x.photo)}" alt="receipt" data-tip="Edit receipt — replace photo">` : '';
-    const partRows = linked.map((p) => `<div class="hitem">${linkName(p.name, { js: 'js-board', data: { board: 'parts' } })}<span class="derived">${Number(p.receiptQty) || 1} × ${p.priceEach != null ? money(p.priceEach) : '—'}</span><span class="spacer"></span><b>${money((Number(p.receiptQty) || 1) * (Number(p.priceEach) || 0))}</b><span class="line-x js-unlink-part" data-rec="${esc(x.expenseId)}" data-part="${esc(p.partId)}" title="Unlink from this receipt">✕</span></div>`).join('');
+    const partRows = linked.map((p) => `<div class="hitem">${linkName(p.name, { js: 'js-board', data: { board: 'parts' } })}<span class="derived">${Number(p.receiptQty) || 1} × ${p.priceEach != null ? money(p.priceEach) : '—'}</span><span class="spacer"></span><b>${money((Number(p.receiptQty) || 1) * (Number(p.priceEach) || 0))}</b><span class="line-x js-unlink-part" data-rec="${esc(x.expenseId)}" data-part="${esc(p.partId)}" data-tip="Unlink from this receipt">✕</span></div>`).join('');
     const partForm = cs?.partForm ? `<div class="kv pillrow" style="gap:7px">
         <input class="lf-in js-rp-name" placeholder="Part — matches the Parts board, or creates it" style="flex:2;min-width:150px">
         <input class="lf-in js-rp-qty" type="number" min="1" placeholder="Qty" style="width:64px">
@@ -2313,7 +2314,7 @@ const DETAIL = {
     // R5: empty fields render the dashed "+Thing" add (no "Add", no space after +)
     const efield = (f, ph, wrap) => { const val = c[f]; const thing = ph.replace(/^Add\s+/i, ''); const lbl = thing.charAt(0).toUpperCase() + thing.slice(1); return `<div class="kv"><span class="v inline-edit" data-edit="custField" data-field="${f}" data-rec="${c.customerId}" data-ph="${esc(ph)}"${wrap ? ' style="white-space:normal"' : ''}>${val ? esc(val) : `<span class="add-field" data-r="R5c">+${esc(lbl)}</span>`}</span></div>`; };
     const selfieThumb = c.selfie ? `<img class="cust-selfie" src="${esc(c.selfie)}" alt="" />` : '';
-    const agPill = c.agreementSignedAt ? `<button class="pill c-green js-view-agreement" data-r="R3" data-rec="${c.customerId}" title="View signed agreement">${esc(AGREEMENTS[c.agreementType]?.title || 'Agreement')} ✓</button>` : '';
+    const agPill = c.agreementSignedAt ? `<button class="pill c-green js-view-agreement" data-r="R3" data-rec="${c.customerId}" data-tip="View signed agreement">${esc(AGREEMENTS[c.agreementType]?.title || 'Agreement')} ✓</button>` : '';
     // every category this customer has EVER rented → R9 flags (ink+icon, no badge) — Jac 2026-06-12
     const rentedCatIds = [...new Set(DATA.rentals.filter((r) => r.customerId === c.customerId)
       .map((r) => r.categoryId || IDX.unit.get(r.unitId)?.categoryId).filter(Boolean))];
@@ -2455,7 +2456,7 @@ const DETAIL = {
         : li.kind === 'WO' ? `data-pill-card="workOrders" data-pill-rec="${esc(li.ref)}"` : '';
       const x = (!locked && li.kind !== 'transport' && itemPaid(i, li.ref) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
       const bal = itemPaid(i, li.ref);   // partial-payment item balance (when assigned)
-      return `<div class="hitem inv-line"><span ${ref} class="inv-line-link" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 ? `<span class="dvd c-green derived" data-r="R4" title="paid on this line">${money(bal)}✓</span>` : ''}<b class="derived">${money(li.amount)}</b>${x}</div>`;
+      return `<div class="hitem inv-line"><span ${ref} class="inv-line-link" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 ? `<span class="dvd c-green derived" data-r="R4" data-tip="paid on this line">${money(bal)}✓</span>` : ''}<b class="derived">${money(li.amount)}</b>${x}</div>`;
     }).join('');
     const ledgerRow = (label, val, cls) => `<div class="hitem inv-tot${cls ? ' ' + cls : ''}"><span class="muted">${esc(label)}</span><span class="spacer"></span><b class="derived">${val}</b></div>`;
     const kinds = ['rental', 'transport', 'parts', 'labor'].filter((k) => subBy(k) > 0);
@@ -2571,7 +2572,7 @@ const DETAIL = {
       const washReq = s.taskId === 'svc-wash' && u.washRequested;
       return `<div class="svc-task">
         <div class="svc-task-top">
-          <button class="pill c-${washReq ? 'blue' : s.color} js-svc-complete" data-unit="${u.unitId}" data-task="${s.taskId}" title="${washReq ? 'Log the wash as done' : 'Log a completion'}" style="min-width:78px;justify-content:center">${esc(washReq ? 'Wash Now' : getStatus('serviceStatus', s.status).label)}</button>
+          <button class="pill c-${washReq ? 'blue' : s.color} js-svc-complete" data-unit="${u.unitId}" data-task="${s.taskId}" data-tip="${washReq ? 'Log the wash as done' : 'Log a completion'}" style="min-width:78px;justify-content:center">${esc(washReq ? 'Wash Now' : getStatus('serviceStatus', s.status).label)}</button>
           <span class="svc-name">${esc(s.name)}</span>
           <span class="spacer"></span>
           ${washReq ? `<span class="pill c-blue" data-r="R3b"><span class="t">Wash Requested</span></span>` : `<b>${esc(svcText(s))}</b>`}
@@ -2855,7 +2856,7 @@ function colActionsHtml(active, session) {
   if (!cs || cs.mode !== 'standard' || cs.recId == null || (ec === 'shop' && !cs.recType)) return '';
   const anchored = session.anchor?.card === ec;
   const dt = ec === 'shop' ? ` data-type="${esc(cs.recType)}"` : '';
-  return `<div class="c-actions"><button class="hbtn js-tolist" title="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}"${dt} title="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}"${dt} title="New tab (+)">${I.plus}</button></div>`;
+  return `<div class="c-actions"><button class="hbtn js-tolist" data-tip="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}"${dt} data-tip="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}"${dt} data-tip="New tab (+)">${I.plus}</button></div>`;
 }
 function memberCardEl(member, session) {
   if (member === 'calendar') return calendarCardEl(session);
@@ -2923,7 +2924,7 @@ function listView(cardDef, session) {
   const bar = el('div', 'listbar');
   const cterms = cs.filterTerms || [];
   bar.innerHTML = `
-    <button class="bv-btn js-boardview" data-card="${card}" title="Open Board View (spreadsheet)">${I.table}</button>
+    <button class="bv-btn js-boardview" data-card="${card}" data-tip="Open Board View (spreadsheet)">${I.table}</button>
     <div class="mini-searchwrap${cterms.length ? ' has-terms' : ''}">
       ${cterms.map((ft, i) => filterTermPill(ft, i, card)).join('')}
       <input class="mini-search" placeholder="${cterms.length ? 'Add filter — Enter to pin…' : `Search ${esc(cardDef.title.toLowerCase())}…`}" value="${esc(cs.search)}" data-card="${card}" />
@@ -2937,7 +2938,7 @@ function listView(cardDef, session) {
   if (card === 'units' && state.fleetFilter) {
     const cat = IDX.category.get(state.fleetFilter.categoryId);
     const chip = el('div', 'fleet-chip');
-    chip.innerHTML = `<span class="muted">Showing</span> <b>${esc(state.fleetFilter.status)}</b> <span class="muted">in</span> ${esc(cat?.name || 'category')} <button class="x js-clear-fleet" title="Clear filter">${I.x}</button>`;
+    chip.innerHTML = `<span class="muted">Showing</span> <b>${esc(state.fleetFilter.status)}</b> <span class="muted">in</span> ${esc(cat?.name || 'category')} <button class="x js-clear-fleet" data-tip="Clear filter">${I.x}</button>`;
     wrap.appendChild(chip);
   }
 
@@ -3105,7 +3106,7 @@ function shopListView(session, byType, forcedSeg) {
   const bar = el('div', 'listbar');
   const sterms = cs.filterTerms || [];
   bar.innerHTML = `
-    <button class="bv-btn js-boardview" data-card="${boardCard}" title="Open Board View (spreadsheet)">${I.table}</button>
+    <button class="bv-btn js-boardview" data-card="${boardCard}" data-tip="Open Board View (spreadsheet)">${I.table}</button>
     <div class="mini-searchwrap${sterms.length ? ' has-terms' : ''}">
       ${sterms.map((ft, i) => filterTermPill(ft, i, 'shop')).join('')}
       <input class="mini-search" placeholder="${sterms.length ? 'Add filter — Enter to pin…' : 'Search shop…'}" value="${esc(cs.search)}" data-card="shop" />
@@ -3133,7 +3134,7 @@ function shopListView(session, byType, forcedSeg) {
       items = items.filter((it) => String(fcol.get(it.rec)) === String(cs.totalFilter.value));
       const m = fcol.meta ? fcol.meta(cs.totalFilter.value) : { label: cs.totalFilter.value };
       const chip = el('div', 'fleet-chip');
-      chip.innerHTML = `<span class="muted">Filtered to</span> <b>${esc(m.label)}</b> <button class="x js-clear-totfilter" data-card="shop" title="Clear">${I.x}</button>`;
+      chip.innerHTML = `<span class="muted">Filtered to</span> <b>${esc(m.label)}</b> <button class="x js-clear-totfilter" data-card="shop" data-tip="Clear">${I.x}</button>`;
       wrap.appendChild(chip);
     }
   }
@@ -3169,10 +3170,10 @@ function shopRowEl(type, rec) {
   const node = el('div', 'row shop-row');
   node.dataset.card = 'shop'; node.dataset.type = type; node.dataset.rec = id;
   node.innerHTML = `<div class="row-viz" style="background:linear-gradient(90deg, var(--${color}-bg), transparent 62%)"></div>
-    <div class="shop-type" style="color:var(--${color})" title="${esc(SHOP_SEGMENTS.find((s) => s.id === type)?.label || type)}">${(type === 'inspections' && !inspComplete(rec)) ? CARD_ICON.inspectionsPending : CARD_ICON[type]}</div>
+    <div class="shop-type" style="color:var(--${color})" data-tip="${esc(SHOP_SEGMENTS.find((s) => s.id === type)?.label || type)}">${(type === 'inspections' && !inspComplete(rec)) ? CARD_ICON.inspectionsPending : CARD_ICON[type]}</div>
     <div class="r-actions">
-      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" title="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
-      <button class="rbtn js-newtab" data-type="${type}" data-rec="${id}" title="Open in new tab (+)">${I.plus}</button>
+      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" data-tip="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
+      <button class="rbtn js-newtab" data-type="${type}" data-rec="${id}" data-tip="Open in new tab (+)">${I.plus}</button>
     </div>
     <div class="row-content">${rowInnerHTML(type, rec)}</div>`;
   return node;
@@ -3308,7 +3309,7 @@ function headerEl() {
           <span class="s-icon">${I.search}</span>
           ${state.filterTerms.map((ft, i) => filterTermPill(ft, i, 'global')).join('')}
           <input id="globalsearch" class="search" placeholder="${state.filterTerms.length ? 'Add filter — type, Enter to pin…' : 'Search everything…'}" value="${esc(state.query)}" />
-          ${(state.query || state.filterTerms.length) ? `<div class="search-tools"><button class="search-tool js-clear" title="Clear">${I.x}</button></div>` : ''}
+          ${(state.query || state.filterTerms.length) ? `<div class="search-tools"><button class="search-tool js-clear" data-tip="Clear">${I.x}</button></div>` : ''}
         </div>
       </div>
     </div>`;
@@ -3642,7 +3643,7 @@ function renderOverlay() {
         <div class="fb-types">${TYPES.map(([t, h]) => `<button class="nc-pill js-fb-type${(o.fbType || 'Bug') === t ? ' on' : ''}" data-val="${t}">${t}<span class="fb-hint">${h}</span></button>`).join('')}</div>
         <textarea class="insp-desc js-fb-text" placeholder="What happened, or what would you like? The more specific, the better.">${esc(o.text || '')}</textarea>
         ${o.shot
-          ? `<div class="fb-shot"><img src="${esc(o.shot)}" alt="screenshot"><button class="fb-shot-x js-fb-shot-x" title="Remove">${I.x}</button></div>`
+          ? `<div class="fb-shot"><img src="${esc(o.shot)}" alt="screenshot"><button class="fb-shot-x js-fb-shot-x" data-tip="Remove">${I.x}</button></div>`
           : `<label class="fb-attach"><span>${I.plus} Add a screenshot (recommended)</span><input type="file" accept="image/*" class="js-fb-shot" hidden></label>`}
         <div class="fb-ctx muted">Auto-attached so Claude can reproduce it: <b>${esc(ctx.view)}</b> · ${esc(ctx.role || 'no role')} · ${esc(ctx.viewport)}</div>
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:8px">${esc(o.error)}</div>` : ''}
@@ -3683,8 +3684,8 @@ function renderOverlay() {
         <h3>${esc(boardViewTitle(o.card, session))} — Board View</h3>
         <span class="c-count">${n}</span>
         <div class="bv-searchwrap"><span class="s-icon">${I.search}</span><input class="bv-query" placeholder="Search…" value="${esc(o.query || '')}" /></div>
-        <button class="bv-mini js-bv-addrow" title="Add a scratch row for formulas">${I.plus}Row</button>
-        <button class="bv-mini${o.customize ? ' on' : ''} js-bv-customize" title="Choose which values show in the card's List View">${I.sliders} List rows</button>
+        <button class="bv-mini js-bv-addrow" data-tip="Add a scratch row for formulas">${I.plus}Row</button>
+        <button class="bv-mini${o.customize ? ' on' : ''} js-bv-customize" data-tip="Choose which values show in the card's List View">${I.sliders} List rows</button>
         <span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body board-body bv-body">${o.customize ? bvCustomizePanel(o.card) : ''}${boardViewTable(o, session)}</div>`;
     overlay.appendChild(pop);
@@ -3716,7 +3717,7 @@ function renderOverlay() {
     const agSigned = d.agreementSignedAt && d.agreementType === agType;
     const pop = el('div', 'popup nc-popup');
     pop.innerHTML = `
-      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>${isEdit ? 'Edit / Complete Account' : 'New Customer'}</h3><span class="spacer"></span>${isEdit ? `<button class="iconbtn js-nc-qr" title="Open on phone">${I.qr}</button>` : ''}<button class="x js-close">${I.x}</button></div>
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>${isEdit ? 'Edit / Complete Account' : 'New Customer'}</h3><span class="spacer"></span>${isEdit ? `<button class="iconbtn js-nc-qr" data-tip="Open on phone">${I.qr}</button>` : ''}<button class="x js-close">${I.x}</button></div>
       <div class="popup-body">
         <div class="nc-grid">
           <label class="nc-field"><span>First name *</span><input class="nc-in" data-f="firstName" value="${esc(d.firstName)}" autocomplete="off" /></label>
@@ -4068,14 +4069,14 @@ function boardViewTable(o, session) {
   const order = o.colOrder, extraRows = (o.extraRows || []);
   const isNum = (c) => c.type === 'money' || c.type === 'num' || c.type === 'pct';
   const arrow = (key) => (o.sort && o.sort.key === key) ? (o.sort.dir === 'desc' ? ' ▼' : ' ▲') : '';
-  const insBtn = (ci) => `<button class="bv-ins js-bv-inscol" data-after="${ci}" title="Insert column to the right">${I.plus}</button>`;
+  const insBtn = (ci) => `<button class="bv-ins js-bv-inscol" data-after="${ci}" data-tip="Insert column to the right">${I.plus}</button>`;
   const calcSel = (key, calc) => `<select class="bv-calc" data-col="${key}">${AGG_CALCS.map((k) => `<option value="${k}"${k === calc ? ' selected' : ''}>${AGG_LABEL[k]}</option>`).join('')}</select>`;
   // header
   const headCells = order.map((co, ci) => {
     if (co.kind === 'data') { const c = byKey[co.key]; if (!c) return ''; return `<th class="js-bv-sort${isNum(c) ? ' num' : ''}" data-col="${c.key}">${esc(c.label)}<span class="bv-arrow">${arrow(c.key)}</span>${insBtn(ci)}</th>`; }
-    return `<th class="bv-xcol"><input class="bv-colname" data-col="${co.id}" value="${esc(co.label || '')}" placeholder="=price*2 or note" /><button class="bv-xrm js-bv-rmcol" data-col="${co.id}" title="Remove column">×</button>${insBtn(ci)}</th>`;
+    return `<th class="bv-xcol"><input class="bv-colname" data-col="${co.id}" value="${esc(co.label || '')}" placeholder="=price*2 or note" /><button class="bv-xrm js-bv-rmcol" data-col="${co.id}" data-tip="Remove column">×</button>${insBtn(ci)}</th>`;
   }).join('');
-  const head = `<tr><th class="bv-gutter"></th>${headCells}<th class="bv-addcol"><button class="bv-mini js-bv-addcol" data-r="R5" title="Add a column">+Col</button></th></tr>`;
+  const head = `<tr><th class="bv-gutter"></th>${headCells}<th class="bv-addcol"><button class="bv-mini js-bv-addcol" data-r="R5" data-tip="Add a column">+Col</button></th></tr>`;
   // body cells
   const dataCell = (co, rec, recId) => {
     if (co.kind === 'data') { const c = byKey[co.key]; return `<td${isNum(c) ? ' class="num"' : ''}>${c.cell(rec)}</td>`; }
@@ -4085,7 +4086,7 @@ function boardViewTable(o, session) {
     if (v.trim().startsWith('=')) { const r = bvCompute(v.trim().slice(1), cols, rows, rec); return `<td class="bv-scratch bv-comp" contenteditable="true" data-row="${esc(recId)}" data-col="${co.id}" data-raw="${esc(v)}">${r.err ? 'ERR' : esc(bvFmtNum(r.val))}</td>`; }
     return `<td class="bv-scratch" contenteditable="true" data-row="${esc(recId)}" data-col="${co.id}">${esc(v)}</td>`;
   };
-  const dataRowHTML = (rec, idx) => `<tr><td class="bv-gutter"><button class="bv-rowins js-bv-insrow" data-pos="${idx + 1}" title="Insert row below">${I.plus}</button></td>${order.map((co) => dataCell(co, rec, idOf(entity, rec))).join('')}<td></td></tr>`;
+  const dataRowHTML = (rec, idx) => `<tr><td class="bv-gutter"><button class="bv-rowins js-bv-insrow" data-pos="${idx + 1}" data-tip="Insert row below">${I.plus}</button></td>${order.map((co) => dataCell(co, rec, idOf(entity, rec))).join('')}<td></td></tr>`;
   // scratch (free) rows — every cell editable; a leading "=" evaluates (aggregate)
   const scratchCell = (co, er) => {
     const key = co.kind === 'data' ? co.key : co.id;
@@ -4093,7 +4094,7 @@ function boardViewTable(o, session) {
     if (raw.trim().startsWith('=')) { const r = bvCompute(raw.trim().slice(1), cols, rows, null); return `<td class="bv-scratch bv-comp" contenteditable="true" data-srow="${er.id}" data-col="${key}" data-raw="${esc(raw)}">${r.err ? 'ERR' : esc(bvFmtNum(r.val))}</td>`; }
     return `<td class="bv-scratch" contenteditable="true" data-srow="${er.id}" data-col="${key}">${esc(raw)}</td>`;
   };
-  const scratchRowHTML = (er) => `<tr class="bv-scratch-row"><td class="bv-gutter"><button class="bv-rowrm js-bv-rmrow" data-row="${er.id}" title="Remove row">×</button></td>${order.map((co) => scratchCell(co, er)).join('')}<td></td></tr>`;
+  const scratchRowHTML = (er) => `<tr class="bv-scratch-row"><td class="bv-gutter"><button class="bv-rowrm js-bv-rmrow" data-row="${er.id}" data-tip="Remove row">×</button></td>${order.map((co) => scratchCell(co, er)).join('')}<td></td></tr>`;
   let body = '';
   const extrasAt = (p) => extraRows.filter((er) => (er.pos || 0) === p).map(scratchRowHTML).join('');
   for (let i = 0; i <= rows.length; i++) { body += extrasAt(i); if (i < rows.length) body += dataRowHTML(rows[i], i); }
@@ -5978,7 +5979,7 @@ function datePickerInline() {
   const dows = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => `<span class="wp-dow">${d}</span>`).join('');
   return `<div class="winpicker datepick">
     <div class="wp-head"><span class="wp-month">${MONTH_NAMES[m]} ${y}</span>
-      <span class="wp-nav"><button class="js-dp-prev" title="Previous month">‹</button><button class="js-dp-next" title="Next month">›</button></span></div>
+      <span class="wp-nav"><button class="js-dp-prev" data-tip="Previous month">‹</button><button class="js-dp-next" data-tip="Next month">›</button></span></div>
     <div class="wp-grid">${dows}${cells}</div>
     ${dp.withTime ? `<div class="wp-time"><label>Time</label><input type="time" class="js-dp-time" value="${esc(o[dp.field + 'Time'] || '09:00')}"></div>` : ''}
     <div class="wp-foot"><button class="pill ghost js-dp-clear" data-r="R18">Clear</button><button class="pill ghost js-dp-today" data-r="R18">Today</button><button class="pill c-commit js-dp-done" data-r="R17">Done</button></div>
@@ -6009,7 +6010,7 @@ function winPickerEl(r) {
   return `<div class="winpicker">
     <div class="wp-time"><label>Pickup time</label><input type="time" class="js-wp-time" value="${esc(to24(r.startTime) || '09:00')}"></div>
     <div class="wp-head"><span class="wp-month">${MONTH_NAMES[m]} ${y}</span>
-      <span class="wp-nav"><button class="js-wp-prev" title="Previous month">‹</button><button class="js-wp-next" title="Next month">›</button></span></div>
+      <span class="wp-nav"><button class="js-wp-prev" data-tip="Previous month">‹</button><button class="js-wp-next" data-tip="Next month">›</button></span></div>
     <div class="wp-grid">${dows}${cells}</div>
     <div class="wp-foot"><button class="pill ghost js-wp-clear" data-r="R18">Clear</button><button class="pill ghost js-wp-today" data-r="R18">Today</button><button class="pill c-commit js-wp-done" data-r="R17">Done</button></div>
   </div>`;

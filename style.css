@@ -975,6 +975,7 @@ body.rw-lint .inv-line-link:not([data-r]),
 body.rw-lint .req:not([data-r]),
 body.rw-lint .file-drop:not([data-r]),
 body.rw-lint .datefield:not([data-r]),
+body.rw-lint [title]:not(iframe),
 body.rw-lint .seg:not([data-r]) {
   outline: 2px dashed var(--red); outline-offset: 2px;
   animation: rwLint 2.2s ease-in-out infinite;
