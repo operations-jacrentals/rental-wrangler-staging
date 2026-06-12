@@ -329,6 +329,22 @@ function rentalPrice(r) {
   return { price: best.total, rate: parts.join(' + ') || '—', days };
 }
 
+/* §20 per-unit pricing — each unit is billed by ITS OWN category across the
+   rental's shared window (rentalPrice reads categoryId/start/end/customer). */
+function unitRentalPrice(r, unitId) {
+  const u = IDX.unit.get(unitId);
+  if (!u) return null;
+  return rentalPrice({ categoryId: u.categoryId, startDate: r.startDate, endDate: r.endDate, customerId: r.customerId });
+}
+/* one invoice 'rental' line PER UNIT (ref stays the rentalId so ref→rental nav +
+   the §7.4 unlink lock still group them; li.unitId identifies which unit). */
+function rentalLineItems(r) {
+  return rentalUnits(r).map((eu) => {
+    const u = IDX.unit.get(eu.unitId);
+    const p = unitRentalPrice(r, eu.unitId);
+    return { kind: 'rental', ref: r.rentalId, unitId: eu.unitId, label: `${u?.name || 'Rental'} · ${p ? p.rate : '—'}`, amount: p ? p.price : 0 };
+  });
+}
 /** Transport cost + drive time for a rental (SPEC §10). */
 function rentalTransport(r) {
   const cust = IDX.customer.get(r.customerId);
@@ -2046,16 +2062,18 @@ const DETAIL = {
     const balColor = invT ? (invT.balance <= 0 && invT.paid > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red') : null;
 
     /* invoice rental line items, each with its own transport journey + ITEM BALANCE */
+    const seenJourney = new Set();   // transport is still rental-level (4b → per-unit): one journey per rental
     const itemsHtml = (inv ? (inv.lineItems || []) : []).map((li, idx) => {
       if (li.kind !== 'rental') return '';
       const r2 = IDX.rental.get(li.ref); if (!r2) return '';
-      const u2 = IDX.unit.get(r2.unitId);
+      const u2 = IDX.unit.get(li.unitId || r2.unitId);
       const paid = itemPaid(inv, li, idx);
       const amt = Number(li.amount) || 0;
       const ibColor = paid >= amt && amt > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red';
+      const firstOfRental = !seenJourney.has(r2.rentalId); if (firstOfRental) seenJourney.add(r2.rentalId);
       return `<div class="invitem">
         <span><span class="linkname" data-r="R7" data-pill-card="rentals" data-pill-rec="${esc(r2.rentalId)}">${esc(u2?.name || r2.rentalName || 'Rental')} · ${esc(fmtShortDate(r2.startDate))}–${esc(fmtShortDate(r2.endDate))}${li.ref === r.rentalId ? ' — this rental' : ''}</span><span class="balline" style="margin-left:8px" data-tip="ITEM BALANCE — partial payments are assigned per line item"><b style="color:var(--${ibColor});font-size:12.5px">${money(paid)}</b> <span class="tot" style="font-size:11px">/ ${money(amt)}</span></span></span>
-        ${miniJourneyHtml(r2)}
+        ${firstOfRental ? miniJourneyHtml(r2) : ''}
       </div>`;
     }).join('');
 
@@ -6150,13 +6168,12 @@ function createInvoiceForRental(rentalId) {
   if (!r.startDate || !r.endDate) { flashOr('.timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   const id = nextInvoiceId();
   const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
-  const price = rentalPrice(r);
-  if (price) inv.lineItems.push({ kind: 'rental', ref: rentalId, label: `${IDX.unit.get(r.unitId)?.name || 'Rental'} · ${price.rate}`, amount: price.price });
+  rentalLineItems(r).forEach((li) => inv.lineItems.push(li));   // one line per unit (§20)
   const tr = rentalTransport(r);
   if (tr && tr.price) inv.lineItems.push({ kind: 'transport', ref: rentalId, label: `Transport · ${r.transportType}`, amount: tr.price });
   DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
   r.invoiceId = id;
-  logAction(inv, `Created for ${IDX.unit.get(r.unitId)?.name || 'rental'}`);
+  logAction(inv, `Created for ${rentalUnitsLabel(r) || 'rental'}`);
   logAction(r, `Invoice ${invoiceShort(id)} created`);
   toast(`Invoice ${invoiceShort(id)} created and linked.`);
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -6538,13 +6555,14 @@ function addRentalLineToInvoice(invoiceId, rentalId) {
   // a rental bills to ONE invoice — block double-billing onto a second (§7.5)
   if (r.invoiceId && r.invoiceId !== invoiceId) { toast(`Already on invoice ${invoiceShort(r.invoiceId)} — remove it there first.`); return; }
   if ((inv.lineItems || []).some((li) => li.kind === 'rental' && li.ref === rentalId)) { flashOr(`.inv-line-link[data-pill-rec="${rentalId}"]`, 'That rental is already on this invoice.'); return; }
-  const price = rentalPrice(r);
-  inv.lineItems.push({ kind: 'rental', ref: rentalId, label: `${IDX.unit.get(r.unitId)?.name || 'Rental'} · ${price ? price.rate : '—'}`, amount: price ? price.price : 0 });
+  const lines = rentalLineItems(r);
+  lines.forEach((li) => inv.lineItems.push(li));   // one line per unit (§20)
+  const total = lines.reduce((a, li) => a + (Number(li.amount) || 0), 0);
   const tr = rentalTransport(r);
   if (tr && tr.price) inv.lineItems.push({ kind: 'transport', ref: rentalId, label: `Transport · ${r.transportType}`, amount: tr.price });
   if (!r.invoiceId) r.invoiceId = invoiceId;
   if (!inv.rentalIds.includes(rentalId)) inv.rentalIds.push(rentalId);
-  logAction(inv, `Added rental: ${IDX.unit.get(r.unitId)?.name || 'Rental'} (${money(price ? price.price : 0)})`);
+  logAction(inv, `Added rental: ${rentalUnitsLabel(r) || 'Rental'} (${money(total)})`);
   logAction(r, `Added to invoice ${invoiceShort(invoiceId)}`);
   toast('Rental added to invoice.');
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
