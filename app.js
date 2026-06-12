@@ -142,6 +142,9 @@ function rentalStatusDisplay(r) {
    rental record but their invoice line is removed). */
 const TERMINAL_UNIT = new Set(['Returned', 'Cancelled', 'No Show']);
 const unitTerminal = (r, eu) => TERMINAL_UNIT.has(unitStatus(r, eu));
+/* VOIDED = No Show / Cancelled — stays on the rental record but is NOT billed
+   (no rental or transport line). Returned is terminal but still billed. */
+const unitVoided = (r, eu) => unitStatus(r, eu) === 'No Show' || unitStatus(r, eu) === 'Cancelled';
 const allUnitsTerminal = (r) => rentalUnits(r).length > 0 && rentalUnits(r).every((eu) => unitTerminal(r, eu));
 /* ── §14 multi-card helpers ── */
 const customerCards = (c) => (c && Array.isArray(c.cards)) ? c.cards.filter((k) => k.status !== 'removed') : [];
@@ -199,9 +202,29 @@ function cardsSection(c) {
               : '<span class="muted" style="font-size:11px">Capture a selfie + signature (Edit account) before adding a card.</span>'}</div>`;
 }
 
+/* §19 stable-key migration: give every existing invoice line a `lid` and remap
+   any legacy index-keyed allocations (`"idx:kind:ref"`) onto the line's new lid. */
+function migrateInvoiceLines() {
+  DATA.invoices.forEach((inv) => {
+    const lines = inv.lineItems || [];
+    let dirty = false;
+    lines.forEach((li) => { if (li && !li.lid) { li.lid = lineLid(); dirty = true; } });
+    if (inv.allocations) {
+      const remapped = {};
+      Object.entries(inv.allocations).forEach(([k, v]) => {
+        const m = /^(\d+):/.exec(k);              // legacy positional key → map by index to the line's lid
+        if (m && lines[Number(m[1])]) { remapped[lines[Number(m[1])].lid] = (Number(remapped[lines[Number(m[1])].lid]) || 0) + (Number(v) || 0); dirty = true; }
+        else remapped[k] = v;                     // already a lid key
+      });
+      inv.allocations = remapped;
+    }
+    if (dirty) migrationDirty = true;
+  });
+}
 function buildIndexes() {
   migrateCustomers();
   migrateRentals();
+  migrateInvoiceLines();
   IDX.unit     = new Map(DATA.units.map((u) => [u.unitId, u]));
   IDX.category = new Map(DATA.categories.map((c) => [c.categoryId, c]));
   IDX.customer = new Map(DATA.customers.map((c) => [c.customerId, c]));
@@ -367,10 +390,10 @@ function unitRentalPrice(r, unitId) {
 /* one invoice 'rental' line PER UNIT (ref stays the rentalId so ref→rental nav +
    the §7.4 unlink lock still group them; li.unitId identifies which unit). */
 function rentalLineItems(r) {
-  return rentalUnits(r).map((eu) => {
+  return rentalUnits(r).filter((eu) => !unitVoided(r, eu)).map((eu) => {   // §20 No-Show/Cancel units aren't billed
     const u = IDX.unit.get(eu.unitId);
     const p = unitRentalPrice(r, eu.unitId);
-    return { kind: 'rental', ref: r.rentalId, unitId: eu.unitId, label: `${u?.name || 'Rental'} · ${p ? p.rate : '—'}`, amount: p ? p.price : 0 };
+    return { kind: 'rental', ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `${u?.name || 'Rental'} · ${p ? p.rate : '—'}`, amount: p ? p.price : 0 };
   });
 }
 /** Transport cost + drive time for a rental (SPEC §10) — primary unit / legacy. */
@@ -391,9 +414,9 @@ function transportLineItems(r) {
   const multi = rentalUnits(r).length > 1;
   const out = [];
   rentalUnits(r).forEach((eu) => {
-    if (!eu.transportType || eu.transportType === 'Self') return;
+    if (!eu.transportType || eu.transportType === 'Self' || unitVoided(r, eu)) return;   // §20 voided units aren't billed transport
     const tr = unitTransport(r, eu);
-    if (tr && tr.price) out.push({ kind: 'transport', ref: r.rentalId, unitId: eu.unitId, label: `Transport · ${multi ? (IDX.unit.get(eu.unitId)?.name || '') + ' · ' : ''}${eu.transportType}`, amount: tr.price });
+    if (tr && tr.price) out.push({ kind: 'transport', ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `Transport · ${multi ? (IDX.unit.get(eu.unitId)?.name || '') + ' · ' : ''}${eu.transportType}`, amount: tr.price });
   });
   return out;
 }
@@ -1967,11 +1990,18 @@ function woSectionHtml(w) {
    PRE-TAX dollars keyed per LINE (a rental + its transport share a `ref`, so the
    line index disambiguates — see lineKey). A fully-paid invoice counts every
    line as fully covered without needing an explicit allocation. */
-function lineKey(li, idx) { return `${idx}:${li.kind || ''}:${li.ref != null ? li.ref : ''}`; }
-function itemPaid(inv, li, idx) {
+let _lidSeq = 1;
+const lineLid = () => 'L' + (_lidSeq++);
+/* allocations are keyed by a STABLE per-line id (li.lid), NOT the array index:
+   indices shift when a line is spliced (removal / No-Show) or when transport
+   lines are re-synced to the end, which would orphan or mis-map a payment (and
+   defeat the §7.4 unlink lock). Every line gets a lid at creation + migration;
+   lineKey lazily assigns one as a defensive fallback. */
+function lineKey(li) { if (li && !li.lid) li.lid = lineLid(); return li ? li.lid : ''; }
+function itemPaid(inv, li) {
   const t = invoiceTotals(inv);
   if (t.paid <= 0) return 0;
-  const a = inv.allocations && inv.allocations[lineKey(li, idx)];
+  const a = inv.allocations && inv.allocations[lineKey(li)];
   if (a != null) return Math.min(Number(a) || 0, Number(li.amount) || 0);
   if (t.balance <= 0) return Number(li.amount) || 0;   // paid in full → line fully covered
   return 0;
@@ -1991,8 +2021,8 @@ function allocLines(inv) {
   const exempt = !!(inv.taxExempt || cust?.salesTaxExempt);
   return (inv.lineItems || []).map((li, idx) => {
     const amount = Number(li.amount) || 0;
-    const remaining = Math.max(0, amount - itemPaid(inv, li, idx));
-    return { li, idx, key: lineKey(li, idx), label: li.label || li.kind || 'Line', amount, remaining, taxable: !exempt && !li.taxExempt };
+    const remaining = Math.max(0, amount - itemPaid(inv, li));
+    return { li, idx, key: lineKey(li), label: li.label || li.kind || 'Line', amount, remaining, taxable: !exempt && !li.taxExempt };
   }).filter((x) => x.remaining > 0.005);
 }
 /* Jac ─ Site ─ Jac transport journey under an invoice rental line. +Log Delivery /
@@ -6540,7 +6570,7 @@ function addCustomLine(invoiceId, label, amount) {
   if (label == null) label = (typeof prompt === 'function') ? prompt('Custom line description:', 'Misc charge') : 'Misc charge';
   if (label == null) return;                       // cancelled
   if (amount == null) { const raw = (typeof prompt === 'function') ? prompt('Amount ($):', '100') : '100'; if (raw == null) return; amount = Number(raw) || 0; }
-  inv.lineItems.push({ kind: 'custom', ref: null, label: label || 'Custom', amount });
+  inv.lineItems.push({ kind: 'custom', ref: null, lid: lineLid(), label: label || 'Custom', amount });
   logAction(inv, `Added line: ${label || 'Custom'} (${money(amount)})`);
   toast(`Custom line added (${money(amount)}).`);
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -6723,7 +6753,7 @@ function addWOToInvoice(invoiceId, woId) {
   const partsCost = (w.lineItems || []).reduce((a, li) => a + (Number(li.cost) || 0), 0);
   const labor = (w.lineItems || []).reduce((a, li) => a + (Number(li.hours) || 0), 0) || w.laborHours || 0;
   const amount = woBillable(w);
-  inv.lineItems.push({ kind: 'WO', ref: woId, label: `${w.woReport} · ${IDX.unit.get(w.unitId)?.name || ''}`, amount });
+  inv.lineItems.push({ kind: 'WO', ref: woId, lid: lineLid(), label: `${w.woReport} · ${IDX.unit.get(w.unitId)?.name || ''}`, amount });
   w.billCustomer = 'Yes'; if (!w.customerId) w.customerId = inv.customerId;
   logAction(w, `Billed to invoice ${invoiceShort(inv.invoiceId)} (${money(amount)})`);
   logAction(inv, `Added work order: ${w.woReport} (${money(amount)})`);
