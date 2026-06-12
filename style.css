@@ -686,6 +686,10 @@ input { font-family: inherit; }
 .lineform-row { display: flex; gap: 7px; }
 .lineform .lf-in { width: 100%; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--txt); font: inherit; font-size: 12px; padding: 0 9px; }
 .lineform .lf-in:focus { outline: none; border-color: var(--accent-line); }
+/* §7.11 — the partform/receiptform popups + the in-detail part-link row use bare .lf-in
+   inputs/selects (no .lineform wrapper): give them the same chrome. */
+.popup .lf-in { height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--txt); font: inherit; font-size: 12px; padding: 0 9px; }
+.popup .lf-in:focus { outline: none; border-color: var(--accent-line); }
 .lineform .pill { cursor: pointer; }
 
 /* §0.6 History section — dotted separator + background shift, pinned bottom */

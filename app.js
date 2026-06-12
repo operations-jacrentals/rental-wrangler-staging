@@ -141,6 +141,7 @@ function buildIndexes() {
   IDX.wo       = new Map(DATA.workOrders.map((w) => [w.woId, w]));
   IDX.insp     = new Map(DATA.inspections.map((n) => [n.inspectionId, n]));
   IDX.vendor   = new Map(DATA.vendors.map((v) => [v.vendorId, v]));
+  IDX.expense  = new Map(DATA.expenses.map((x) => [x.expenseId, x]));
   // lowercased comprehensive search blobs per record (§5) — built via the single
   // searchBlob() source of truth so every field is searchable.
   IDX.search = new Map();
@@ -152,9 +153,10 @@ function buildIndexes() {
   DATA.workOrders.forEach((w) => reindex('workOrders', w));
   DATA.inspections.forEach((n) => reindex('inspections', n));
   DATA.vendors.forEach((v) => reindex('vendors', v));   // §7.10 v2 — vendors are globally searchable
+  DATA.expenses.forEach((x) => reindex('expenses', x)); // §7.11 v2 — receipts are globally searchable
 }
-const idOf   = (card, rec) => rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId' }[card]];
-const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit, vendors: IDX.vendor }[card])?.get(id);
+const idOf   = (card, rec) => rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId', expenses: 'expenseId' }[card]];
+const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit, vendors: IDX.vendor, expenses: IDX.expense }[card])?.get(id);
 
 /* ── §5 comprehensive search blob — ONE source of truth for what's searchable.
    Emits every raw field, foreign-key DISPLAY names, AND the getStatus(...) labels
@@ -219,6 +221,11 @@ function searchBlob(card, rec) {
         rec.wash, rec.billCustomer, L('billCustomer', rec.billCustomer),
         rec.description, rec.notes, un(rec.unitId)?.name];
       break;
+    case 'expenses':
+      p = [String(rec.amount ?? ''), money(rec.amount), rec.date, fmtShortDate(rec.date), rec.notes, rec.woId, 'receipt expense',
+        rec.reconcile, L('expenseReconcile', rec.reconcile), rec.method, L('paymentMethod', rec.method),
+        rec.category, L('expenseCategory', rec.category), ve(rec.vendorId)?.name];
+      break;
     case 'vendors':
       p = [rec.name, rec.phone, rec.email, rec.address, rec.website, rec.primaryContact, rec.notes,
         rec.vendorType, L('vendorType', rec.vendorType), rec.salesTaxExempt ? 'tax exempt tax-exempt' : ''];
@@ -229,7 +236,7 @@ function searchBlob(card, rec) {
 /** (Re)build a record's search blob in IDX.search. Call after any create/edit.
     Vendors are auto-created mid-session (savePartForm) with no IDX set at the
     call site, so reindex also keeps the IDX.vendor identity map in sync. */
-const reindex = (card, rec) => { const id = idOf(card, rec); if (id != null) { IDX.search.set(card + ':' + id, searchBlob(card, rec)); if (card === 'vendors') IDX.vendor.set(id, rec); } saveSoon(); };
+const reindex = (card, rec) => { const id = idOf(card, rec); if (id != null) { IDX.search.set(card + ':' + id, searchBlob(card, rec)); if (card === 'vendors') IDX.vendor.set(id, rec); if (card === 'expenses') IDX.expense.set(id, rec); } saveSoon(); };
 
 /* ════════════════════════════════════════════════════════════════════════
    §3 DERIVATIONS (SPEC §10) — money, availability, statuses, countdowns
@@ -948,8 +955,9 @@ function gatePill(set, value, js, data, { truck } = {}) {
   return `<span class="pill gate c-${st.color} ${js}" data-r="R1"${dataAttrs(data)}>${tk}${esc(st.label)} ${I.chev}</span>`;
 }
 /** R1: a gate with a custom label (e.g. ETA-as-status on WO lines). */
-function gatePillRaw(label, color, js, data) {
-  return `<span class="pill gate c-${color} ${js}" data-r="R1"${dataAttrs(data)}>${esc(label)} ${I.chev}</span>`;
+function gatePillRaw(label, color, js, data, noChev) {
+  // R1: chevron ONLY on real dropdowns — popup-opening gates pass noChev
+  return `<span class="pill gate c-${color} ${js}" data-r="R1"${dataAttrs(data)}>${esc(label)}${noChev ? '' : ' ' + I.chev}</span>`;
 }
 /** R1: funnel-stage gate (§7.1). */
 function funnelPill(custId, which, stage) {
@@ -1821,6 +1829,15 @@ function headFlagsHtml(card, rec) {
     const payst = inv ? getStatus('invoiceStatus', invoiceTotals(inv).status) : null;
     return flagsStack([flagEl(st.label, st.color, { icon: CARD_ICON.rentals }), payst ? flagEl(payst.label, payst.color, { icon: CARD_ICON.invoices }) : '']);
   }
+  if (card === 'customers') {
+    // Jac 2026-06-12: flags, not badges — and "Incomplete" IS the account gate
+    // (R1, no chevron, opens the account popup; stays as a green Account gate after)
+    const acct = getStatus('customerAccountType', rec.accountType || 'Non-Business');
+    const pay = rec.payStatus ? getStatus('customerPayStatus', rec.payStatus) : null;
+    const acctDone = !!(rec.selfie && rec.signature);
+    return flagsStack([flagEl(acct.label, acct.color, { icon: CARD_ICON.customers }), pay ? flagEl(pay.label, pay.color, { icon: CARD_ICON.invoices }) : ''])
+      + `<span style="margin-left:auto">${gatePillRaw(acctDone ? 'Account' : 'Incomplete', acctDone ? 'green' : 'yellow', 'js-edit-customer', { rec: rec.customerId }, true)}</span>`;
+  }
   return '';
 }
 
@@ -2079,6 +2096,47 @@ const DETAIL = {
     </div>`;
   },
 
+  /* ── EXPENSES — v2 (§7.11): receipts live in the BOARD POPUP like vendors. Parts
+     reconcile via part.receiptId (+receiptQty, old-app "ONE SOURCE, ONE HOME");
+     Unaccounted = amount − Σ qty×priceEach — green at $0 (the bank-match). Photo +
+     vendor/amount/method/category edit through the receiptform popup. ── */
+  expenses: (x, cs) => {
+    const ven = x.vendorId ? (IDX.vendor.get(x.vendorId) || DATA.vendors.find((v) => v.vendorId === x.vendorId)) : null;
+    const wo = x.woId ? IDX.wo.get(x.woId) : null;
+    const linked = receiptParts(x.expenseId);
+    const lineTotal = receiptLineTotal(x.expenseId);
+    const un = Math.round(((Number(x.amount) || 0) - lineTotal) * 100) / 100;
+    const unColor = Math.abs(un) < 0.005 ? 'green' : un > 0 ? 'yellow' : 'red';
+    const thumb = x.photo ? `<img class="insp-thumb js-receipt-edit" data-rec="${esc(x.expenseId)}" src="${esc(x.photo)}" alt="receipt" data-tip="Edit receipt — replace photo">` : '';
+    const partRows = linked.map((p) => `<div class="hitem">${linkName(p.name, { js: 'js-board', data: { board: 'parts' } })}<span class="derived">${Number(p.receiptQty) || 1} × ${p.priceEach != null ? money(p.priceEach) : '—'}</span><span class="spacer"></span><b>${money((Number(p.receiptQty) || 1) * (Number(p.priceEach) || 0))}</b><span class="line-x js-unlink-part" data-rec="${esc(x.expenseId)}" data-part="${esc(p.partId)}" title="Unlink from this receipt">✕</span></div>`).join('');
+    const partForm = cs?.partForm ? `<div class="kv pillrow" style="gap:7px">
+        <input class="lf-in js-rp-name" placeholder="Part — matches the Parts board, or creates it" style="flex:2;min-width:150px">
+        <input class="lf-in js-rp-qty" type="number" min="1" placeholder="Qty" style="width:64px">
+        <input class="lf-in js-rp-cost" type="number" min="0" step="0.01" placeholder="$ each" style="width:84px">
+        ${ghostPill('Cancel', { js: 'js-rp-cancel' })}${actionPill('commit', 'Link', { js: 'js-rp-save', data: { rec: x.expenseId } })}
+      </div>` : kvPills(addBtn('Part', { line: true, js: 'js-rcpt-addpart', h: 26, data: { rec: x.expenseId } }));
+    const reconcile = `<div class="section"><h4>Reconcile — Parts</h4><div class="fieldstack">
+      ${partRows ? `<div class="hlog">${partRows}</div>` : '<span class="muted" style="font-size:12px">No parts linked yet.</span>'}
+      ${partForm}
+      ${kv(money(lineTotal), { pfx: 'Line Total', derived: true })}
+      ${kv(`<span style="color:var(--${unColor})">${(un < 0 ? '-' : '') + money(Math.abs(un))}</span>`, { pfx: 'Unaccounted', derived: true, html: true })}
+    </div></div>`;
+    const details = `<div class="section"><h4>Details</h4><div class="fieldstack">
+      ${efld('expenses', x, 'expenseId', 'date', 'Add date', { type: 'date', fmt: fmtShortDate })}
+      ${kvPills(badge(x.method, getStatus('paymentMethod', x.method).color) + badge(x.category, getStatus('expenseCategory', x.category).color))}
+      ${wo ? kvPills(refPill('workOrders', wo.woId, wo.woReport.slice(0, 16))) : efld('expenses', x, 'expenseId', 'woId', 'Add WO #')}
+    </div></div>`;
+    const notes = notesSection('expenses', x, 'expenseId');
+    return `<div class="detail">
+      <div class="detail-head">${thumb}<span class="d-title inline-edit" data-edit="field" data-card="expenses" data-field="amount" data-type="number" data-rec="${esc(x.expenseId)}" data-ph="Amount">${x.aiPending ? '✨ ' : ''}${money(x.amount)}</span>${gatePill('expenseReconcile', x.reconcile, 'js-reconcile', { rec: x.expenseId })}${ven ? linkName(ven.name, { js: 'js-vendor-open', data: { rec: ven.vendorId } }) : addBtn('Vendor', { link: true, js: 'js-receipt-edit', h: 26, data: { rec: x.expenseId } })}<span class="spacer"></span>${ghostPill('Edit receipt', { js: 'js-receipt-edit', data: { rec: x.expenseId } })}</div>
+      ${notes.top}
+      ${reconcile}
+      ${details}
+      ${notes.bottom}
+      ${historySection('expenses', x, cs)}
+    </div>`;
+  },
+
   /* ── CUSTOMERS — fully built (§12.1 standard mode: contact · account · funnels) ── */
   customers: (c, cs) => {
     const d = c._digest || {};
@@ -2094,17 +2152,16 @@ const DETAIL = {
       ${efield('phone', 'Add phone')}${efield('email', 'Add email')}
       ${efield('company', 'Add company')}${efield('address', 'Add address', true)}
     </div></div>`;
+    const selfieThumb = c.selfie ? `<img class="cust-selfie" src="${esc(c.selfie)}" alt="" />` : '';
+    const agPill = c.agreementSignedAt ? `<button class="pill c-green js-view-agreement" data-r="R3" data-rec="${c.customerId}" title="View signed agreement">${esc(AGREEMENTS[c.agreementType]?.title || 'Agreement')} ✓</button>` : '';
     const account = `<div class="section"><h4>Account</h4><div class="fieldstack">
-      ${kvPills(`${badge(acct.label, acct.color)}${c.requiresPO ? badge('PO Required', 'yellow') : ''}`)}
+      ${kvPills(`${selfieThumb}${badge(acct.label, acct.color)}${c.requiresPO ? badge('PO Required', 'yellow') : ''}${agPill}`)}
       ${efield('industry', 'Add industry')}
       ${kv(`${money(d.totalPaid)} total · ${d.visits || 0} visits · ${d.years || 0} yrs · every ${d.avgFrequencyDays || 0} days`, { wrap: true, derived: true })}
     </div></div>`;
-    // name → badges → full-width activity bar → sections (Jac 2026-06-07); even .detail gaps
+    // Jac 2026-06-12: NO badge row — account type + pay status are R9 title flags,
+    // the account gate (R1) rides the title row. Selfie + agreement live in ACCOUNT.
     const title = `<span class="d-title">${esc(fullName(c)) || 'New Customer'}</span>`;
-    const acctDone = !!(c.selfie && c.signature);
-    const selfieThumb = c.selfie ? `<img class="cust-selfie" src="${esc(c.selfie)}" alt="" />` : '';
-    const agPill = c.agreementSignedAt ? `<button class="pill c-green js-view-agreement" data-rec="${c.customerId}" title="View signed agreement">${esc(AGREEMENTS[c.agreementType]?.title || 'Agreement')} ✓</button>` : '';
-    const badges = `<div class="detail-badges pillrow">${selfieThumb}${badge(acct.label, acct.color)}${statusPill('customerPayStatus', c.payStatus)}${agPill}<span class="spacer"></span>${acctDone ? '' : badge('Incomplete', 'yellow')}${actionPill('commit', acctDone ? 'Edit account' : 'Complete account', { js: 'js-edit-customer', data: { rec: c.customerId } })}</div>`;
     const activeBar = `<div class="active-bar wide"><div class="active-spectrum" style="clip-path:inset(0 ${100 - (d.activePct || 0)}% 0 0)"></div><span class="active-lbl">${d.activePct || 0}% Active</span></div>`;
 
     const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id }) : ''; }).join('');
@@ -2131,7 +2188,6 @@ const DETAIL = {
     const notes = notesSection('customers', c, 'customerId', 'accountNotes');
     return `<div class="detail">
       <div class="detail-head">${title}</div>
-      ${badges}
       ${activeBar}
       ${notes.top}
       <div class="detail-cols">${contact}${account}</div>
@@ -3242,6 +3298,35 @@ function renderOverlay() {
         </div>
       </div>`;
     overlay.appendChild(pop);
+  } else if (o.kind === 'receiptform') {
+    // Receipt popup (Jac: "Receipts use popups and reconcile against parts") — the
+    // partform anatomy: photo + every field optional, ✨ Mr. Wrangler fills the blanks.
+    const x = o.expenseId != null ? (IDX.expense.get(o.expenseId) || DATA.expenses.find((r) => r.expenseId === o.expenseId)) : null;
+    const ven = x?.vendorId ? (IDX.vendor.get(x.vendorId) || DATA.vendors.find((v) => v.vendorId === x.vendorId)) : null;
+    const AI = 'Filled by AI if left empty';
+    const opt = (set, cur) => Object.keys(STATUS[set]).map((v) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(getStatus(set, v).label)}</option>`).join('');
+    const pop = el('div', 'popup'); pop.style.width = '400px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.expenses}</span><h3>${x ? 'Edit' : 'New'} Receipt</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        <label class="cap-drop" style="margin-bottom:9px">${I.video}<span>${state.receiptPhoto || x?.photo ? '✓ receipt photo attached' : 'Tap to add the receipt photo'}</span><input type="file" accept="image/*" capture="environment" class="js-rf-file" style="display:none"></label>
+        <input class="lf-in js-rf-vendor" placeholder="Vendor — ${AI} (added to the Vendors board if new)" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:7px">
+        <div style="display:flex;gap:7px;margin-bottom:7px">
+          <input class="lf-in js-rf-amount" type="number" min="0" step="0.01" placeholder="Amount $ — ${AI}" value="${x && x.amount ? x.amount : ''}" style="flex:1">
+          <input class="lf-in js-rf-date" type="date" value="${esc(x?.date || TODAY_ISO)}" style="flex:1">
+        </div>
+        <div style="display:flex;gap:7px;margin-bottom:7px">
+          <select class="lf-in js-rf-method" style="flex:1">${opt('paymentMethod', x?.method || 'Cash')}</select>
+          <select class="lf-in js-rf-cat" style="flex:1">${opt('expenseCategory', x?.category || 'Parts')}</select>
+        </div>
+        <input class="lf-in js-rf-notes" placeholder="Notes" value="${esc(x?.notes || '')}" style="width:100%;margin-bottom:4px">
+        <p class="muted" style="font-size:11px;margin:4px 0 12px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is read for the vendor, amount, date and category.</p>
+        <div class="pillrow" style="justify-content:flex-end">
+          ${ghostPill('Cancel', { js: 'js-close' })}
+          ${actionPill('commit', x ? 'Save' : 'Add receipt', { js: 'js-rf-save' })}
+        </div>
+      </div>`;
+    overlay.appendChild(pop);
   } else if (o.kind === 'capture') {
     // v2 yard journey: every log opens this popup; with transport, the address
     // + map pin ride the top so the driver sees the destination while logging.
@@ -3361,11 +3446,17 @@ function renderOverlay() {
     const pop = el('div', 'popup board-popup');
     // v2 (§7.10): a clicked vendor row stashes o.recId on the overlay state — the detail
     // renders INSIDE this popup; back (js-board-back) nulls recId + renderOverlay().
-    const vrec = (o.board === 'vendors' && o.recId != null) ? (IDX.vendor.get(o.recId) || DATA.vendors.find((x) => x.vendorId === o.recId)) : null;
+    const BOARD_DETAIL = {
+      vendors:  { back: '← Vendors',  rec: (id) => IDX.vendor.get(id) || DATA.vendors.find((x) => x.vendorId === id),    title: (r) => r.name || 'Vendor' },
+      expenses: { back: '← Expenses', rec: (id) => IDX.expense.get(id) || DATA.expenses.find((x) => x.expenseId === id), title: (r) => `${money(r.amount)} — ${IDX.vendor.get(r.vendorId)?.name || 'Receipt'}` },
+    };
+    const bdef = o.recId != null ? BOARD_DETAIL[o.board] : null;
+    const vrec = bdef ? bdef.rec(o.recId) : null;
+
     if (vrec) {
       pop.innerHTML = `
-      <div class="popup-head">${ghostPill('← Vendors', { js: 'js-board-back' })}<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON.vendors}</span><h3>${esc(vrec.name || 'Vendor')}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
-      <div class="popup-body"><div class="board-detail">${DETAIL.vendors(vrec, { historySearch: o.historySearch || '', histKind: o.histKind || null, backStack: [], mode: 'standard' })}</div></div>`;
+      <div class="popup-head">${ghostPill(bdef.back, { js: 'js-board-back' })}<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[o.board]}</span><h3>${esc(bdef.title(vrec))}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body"><div class="board-detail">${DETAIL[o.board](vrec, { historySearch: o.historySearch || '', histKind: o.histKind || null, partForm: o.partForm || false, backStack: [], mode: 'standard' })}</div></div>`;
     } else {
     pop.innerHTML = `
       <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
@@ -3622,6 +3713,10 @@ function vendorTotals(vendorId) {
   const partsCount = DATA.parts.filter((p) => p.vendorId === vendorId).length;
   return { totalSpent, partsCount, avgCost: partsCount ? Math.round(totalSpent / partsCount) : 0 };
 }
+/* Receipt reconcile math (§7.11 v2, old-app "ONE SOURCE, ONE HOME"): parts link via
+   part.receiptId (+receiptQty); Unaccounted = amount − Σ qty×priceEach — green at $0. */
+const receiptParts = (expenseId) => DATA.parts.filter((p) => p.receiptId === expenseId);
+const receiptLineTotal = (expenseId) => receiptParts(expenseId).reduce((a, p) => a + (Number(p.receiptQty) || 1) * (Number(p.priceEach) || 0), 0);
 const reviewSoon = (iso) => { const d = parseISO(iso); return d && (d - TODAY) / 86400000 <= 30 && d >= TODAY; };
 const boardRows = (boardId) => ({ parts: DATA.parts, vendors: DATA.vendors, expenses: DATA.expenses, files: DATA.companyFiles }[boardId] || []);
 const BOARD_DEF = {
@@ -3635,7 +3730,7 @@ const BOARD_DEF = {
   },
   expenses: {
     cols: ['Vendor', 'Date', 'Amount', 'Reconcile', 'Method', 'Category', 'WO'],
-    row: (e) => [esc(IDX.vendor.get(e.vendorId)?.name || '—'), esc(fmtShortDate(e.date)), money(e.amount), gatePill('expenseReconcile', e.reconcile, 'js-reconcile', { rec: e.expenseId }), badge(e.method, getStatus('paymentMethod', e.method).color), badge(e.category, getStatus('expenseCategory', e.category).color), e.woId ? `<span class="pill ref">${esc(e.woId)}</span>` : '—'],
+    row: (e) => [esc(IDX.vendor.get(e.vendorId)?.name || '—'), esc(fmtShortDate(e.date)), (e.aiPending ? '✨ ' : '') + money(e.amount), gatePill('expenseReconcile', e.reconcile, 'js-reconcile', { rec: e.expenseId }), badge(e.method, getStatus('paymentMethod', e.method).color), badge(e.category, getStatus('expenseCategory', e.category).color), e.woId ? refPill('workOrders', e.woId, e.woId) : '—'],
   },
   files: {
     cols: ['Title', 'Type', 'Group', 'Review-By'],
@@ -3646,8 +3741,9 @@ function boardTable(boardId) {
   const def = BOARD_DEF[boardId]; const rows = boardRows(boardId);
   if (!def) return '<p class="muted">—</p>';
   const head = `<tr>${def.cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>`;
-  // §7.10 v2 — vendors rows open the record's detail inside the popup (other boards stay inert until they grow details)
-  const rowAttr = boardId === 'vendors' ? (r) => ` class="js-board-row" data-rec="${esc(String(r.vendorId))}"` : () => '';
+  // §7.10/§7.11 v2 — vendors + expenses rows open the record's detail inside the popup (parts/files stay inert until they grow details)
+  const ROW_ID = { vendors: 'vendorId', expenses: 'expenseId' };
+  const rowAttr = ROW_ID[boardId] ? (r) => ` class="js-board-row" data-rec="${esc(String(r[ROW_ID[boardId]]))}"` : () => '';
   const body = rows.map((r) => `<tr${rowAttr(r)}>${def.row(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
   return `<table class="board-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
@@ -3877,8 +3973,9 @@ function openReconcileDropdown(expenseId, anchorEl) {
   openDropdown(anchorEl, html);
 }
 function setExpenseReconcile(expenseId, val) {
-  const x = DATA.expenses.find((r) => r.expenseId === expenseId); if (!x) return;   // expenses have no IDX map — resolve straight from DATA
+  const x = IDX.expense.get(expenseId) || DATA.expenses.find((r) => r.expenseId === expenseId); if (!x) return;
   x.reconcile = val;
+  reindex('expenses', x);
   logAction(x, `Reconcile → ${getStatus('expenseReconcile', val).label}`);
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render(); renderOverlay();
@@ -4119,8 +4216,8 @@ function onClick(e) {
   if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener'); return; }
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
   if (closest('.js-vendor-open')) { e.stopPropagation(); return openOverlay({ kind: 'board', board: 'vendors', recId: closest('.js-vendor-open').dataset.rec }); }   // WO-line vendor names → vendor detail in the board popup
-  if (closest('.js-board-row')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = closest('.js-board-row').dataset.rec; o.historySearch = ''; o.histKind = null; renderOverlay(); } return; }
-  if (closest('.js-board-back')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = null; renderOverlay(); } return; }
+  if (closest('.js-board-row') && !closest('.js-reconcile') && !closest('[data-pill-card]')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = closest('.js-board-row').dataset.rec; o.historySearch = ''; o.histKind = null; o.partForm = false; renderOverlay(); } return; }   // in-row gates/ref-pills fall through to their own handlers below
+  if (closest('.js-board-back')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.recId = null; o.partForm = false; renderOverlay(); } return; }
   if (closest('.js-vendor-tax')) { e.stopPropagation(); const b = closest('.js-vendor-tax'); const v = recOf('vendors', b.dataset.rec); if (v) { const ex = b.dataset.val === '1'; if (!!v.salesTaxExempt !== ex) { v.salesTaxExempt = ex; reindex('vendors', v); logAction(v, `Sales tax → ${ex ? 'Exempt' : 'Taxed'}`); } if (state.overlay?.kind === 'board') renderOverlay(); render(); } return; }
   if (closest('.js-boardview')) { e.stopPropagation(); return openBoardView(closest('.js-boardview').dataset.card); }
   if (closest('.js-bv-sort') && !closest('.js-bv-inscol')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { const key = closest('.js-bv-sort').dataset.col; if (o.sort?.key === key) o.sort.dir = o.sort.dir === 'asc' ? 'desc' : 'asc'; else o.sort = { key, dir: 'asc' }; renderOverlay(); } return; }
@@ -4259,6 +4356,13 @@ function onClick(e) {
   if (closest('.js-setwolinephase')) { const b = closest('.js-setwolinephase'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return setWoLinePhase(b.dataset.rec, Number(b.dataset.idx), b.dataset.val); }
   if (closest('.js-reconcile')) { const b = closest('.js-reconcile'); e.stopPropagation(); return openReconcileDropdown(b.dataset.rec, b); }
   if (closest('.js-setreconcile')) { const b = closest('.js-setreconcile'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return setExpenseReconcile(b.dataset.rec, b.dataset.val); }
+  // ── receipts v2 (§7.11): edit popup · reconcile-against-parts links ──
+  if (closest('.js-receipt-edit')) { const b = closest('.js-receipt-edit'); e.stopPropagation(); state.receiptPhoto = null; return openOverlay({ kind: 'receiptform', expenseId: b.dataset.rec }); }
+  if (closest('.js-rf-save')) { e.stopPropagation(); return saveReceiptForm(); }
+  if (closest('.js-rcpt-addpart')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.partForm = true; renderOverlay(); } return; }
+  if (closest('.js-rp-save')) { const b = closest('.js-rp-save'); e.stopPropagation(); return saveReceiptPartLink(b.dataset.rec); }
+  if (closest('.js-rp-cancel')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.partForm = false; renderOverlay(); } return; }
+  if (closest('.js-unlink-part')) { const b = closest('.js-unlink-part'); e.stopPropagation(); return unlinkReceiptPart(b.dataset.rec, b.dataset.part); }
 
   // §12.2 rental-window range picker (calendar popup) — clicking the bar opens it
   if (closest('.js-wp-day')) { e.stopPropagation(); return winPickDay(closest('.js-wp-day').dataset.iso); }
@@ -4652,6 +4756,64 @@ function savePartForm() {
   toast(li.aiPending ? '✨ Saved — Mr. Wrangler will fill the blanks when he comes online.' : 'Line saved.');
   reanchorRender(); renderOverlay();
 }
+/* Receipt popup save (§7.11): creates/updates the expense; vendor name-match or
+   auto-create (the savePartForm idiom); empty AI-fillable fields flag aiPending ✨;
+   lands ON the new detail in the expenses board popup. */
+function saveReceiptForm() {
+  const o = state.overlay; if (!o || o.kind !== 'receiptform') return;
+  const g = (c) => (document.querySelector(c)?.value || '').trim();
+  const venName = g('.js-rf-vendor'), amt = g('.js-rf-amount'), date = g('.js-rf-date'), method = g('.js-rf-method'), cat = g('.js-rf-cat'), notes = g('.js-rf-notes');
+  const existing = o.expenseId != null ? (IDX.expense.get(o.expenseId) || DATA.expenses.find((r) => r.expenseId === o.expenseId)) : null;
+  if (amt === '' && !state.receiptPhoto && !existing?.photo) return attnFlash('.js-rf-amount, .cap-drop');   // R19: need an amount OR a photo for the AI
+  const rec = existing || { expenseId: 'E-NEW' + (state.seq++), vendorId: null, date: TODAY_ISO, amount: 0, reconcile: 'Unreconciled', method: 'Cash', category: 'Parts', woId: null, notes: '', mock: true };
+  if (venName) {
+    let v = DATA.vendors.find((r) => (r.name || '').toLowerCase() === venName.toLowerCase());
+    if (!v) { v = { vendorId: 'VEN-C' + (state.seq++), name: venName, mock: true }; DATA.vendors.push(v); reindex('vendors', v); }
+    rec.vendorId = v.vendorId;
+  }
+  if (amt !== '') rec.amount = Number(amt) || 0;
+  if (date) rec.date = date;
+  if (method) rec.method = method;
+  if (cat) rec.category = cat;
+  rec.notes = notes;
+  if (state.receiptPhoto) rec.photo = state.receiptPhoto;
+  rec.aiPending = !venName || amt === '';
+  if (!existing) DATA.expenses.push(rec);
+  reindex('expenses', rec); logAction(rec, existing ? 'Receipt edited' : 'Receipt created');
+  state.receiptPhoto = null;
+  openOverlay({ kind: 'board', board: 'expenses', recId: rec.expenseId });   // save lands ON the detail
+  toast(rec.aiPending ? '✨ Saved — Mr. Wrangler will fill the blanks when he comes online.' : 'Receipt saved.');
+  render();
+  attnFlash('.board-detail .detail-head');   // R19: glow the fresh receipt
+}
+/* Reconcile link (§7.11): name-match an existing part or create one, then stamp
+   part.receiptId/receiptQty (the part points at the receipt — ONE SOURCE, ONE HOME).
+   At $0 Unaccounted the gate is SUGGESTED via R19 flash — never auto-flipped. */
+function saveReceiptPartLink(expenseId) {
+  const x = IDX.expense.get(expenseId) || DATA.expenses.find((r) => r.expenseId === expenseId); if (!x) return;
+  const g = (c) => (document.querySelector(c)?.value || '').trim();
+  const name = g('.js-rp-name'), qty = Math.max(1, Number(g('.js-rp-qty')) || 1), cost = g('.js-rp-cost');
+  if (!name) return attnFlash('.js-rp-name');   // R19
+  let p = DATA.parts.find((r) => (r.name || '').toLowerCase() === name.toLowerCase());
+  if (!p) { p = { partId: 'PRT-C' + (state.seq++), name, status: 'Catalog', priceEach: cost !== '' ? Number(cost) || 0 : null, qtyOnHand: null, website: '', orderEmail: '', productNumber: '', vendorId: x.vendorId || null, imageUrl: '', notes: '', mock: true }; DATA.parts.push(p); }
+  else if (cost !== '') p.priceEach = Number(cost) || 0;
+  p.receiptId = x.expenseId; p.receiptQty = qty;
+  reindex('parts', p);
+  logAction(x, `Linked part: ${name} ×${qty}`);
+  if (state.overlay?.kind === 'board') state.overlay.partForm = false;
+  render(); renderOverlay();
+  const un = (Number(x.amount) || 0) - receiptLineTotal(x.expenseId);
+  if (Math.abs(un) < 0.005 && x.reconcile !== 'Reconciled') attnFlash(`.js-reconcile[data-rec="${x.expenseId}"]`);   // R19: $0 left — suggest the gate
+}
+function unlinkReceiptPart(expenseId, partId) {
+  const x = IDX.expense.get(expenseId) || DATA.expenses.find((r) => r.expenseId === expenseId);
+  const p = DATA.parts.find((r) => r.partId === partId);
+  if (!x || !p) return;
+  p.receiptId = null; p.receiptQty = null;
+  reindex('parts', p);
+  logAction(x, `Unlinked part: ${p.name}`);
+  render(); renderOverlay();
+}
 function completeWOAttempt(woId) {
   const w = IDX.wo.get(woId); if (!w) return;
   const open = (w.lineItems || []).filter((l) => l.phase !== 'Complete');
@@ -4729,6 +4891,15 @@ function onChange(e) {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const rd = new FileReader();
     rd.onload = () => { downscaleImage(rd.result, 600, 0.5, (out) => { if (!out) { toast('Could not read that image.'); return; } state.partPhoto = out; renderOverlay(); }); };
+    rd.onerror = () => toast('Could not read that image.');
+    rd.readAsDataURL(f);
+    return;
+  }
+  // Receipt popup photo (mirrors js-pf2-file — downscale per the 50k Sheets-cell rule)
+  if (e.target.classList.contains('js-rf-file')) {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { downscaleImage(rd.result, 600, 0.5, (out) => { if (!out) { toast('Could not read that image.'); return; } state.receiptPhoto = out; renderOverlay(); }); };
     rd.onerror = () => toast('Could not read that image.');
     rd.readAsDataURL(f);
     return;
@@ -5121,11 +5292,8 @@ async function lockInvoiceFlow(invoiceId, lock) {
 }
 
 function startNewReceipt() {
-  const id = 'E-NEW' + (state.seq++);
-  const draft = { expenseId: id, vendorId: null, date: TODAY_ISO, amount: 0, reconcile: 'Unreconciled', method: 'Cash', category: 'Parts', woId: null, notes: 'New receipt', mock: true };
-  DATA.expenses.push(draft);
-  openOverlay({ kind: 'board', board: 'expenses' });   // receipts live in the back-office board
-  toast('New receipt added to Expenses & Receipts.');
+  state.receiptPhoto = null;
+  openOverlay({ kind: 'receiptform', expenseId: null });   // the record is only created on Save — Cancel leaves no stub
 }
 
 function startNewInspection() {
