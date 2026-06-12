@@ -373,11 +373,29 @@ function rentalLineItems(r) {
     return { kind: 'rental', ref: r.rentalId, unitId: eu.unitId, label: `${u?.name || 'Rental'} · ${p ? p.rate : '—'}`, amount: p ? p.price : 0 };
   });
 }
-/** Transport cost + drive time for a rental (SPEC §10). */
+/** Transport cost + drive time for a rental (SPEC §10) — primary unit / legacy. */
 function rentalTransport(r) {
   const cust = IDX.customer.get(r.customerId);
   const unlimited = !!cust?.unlimitedTransport;
   return transportPrice(r.transportType, r.deliveryAddress, { unlimitedTransport: unlimited });
+}
+/** §20 transport cost for ONE unit (its own type + address). */
+function unitTransport(r, eu) {
+  const cust = IDX.customer.get(r.customerId);
+  const unlimited = !!cust?.unlimitedTransport;
+  return transportPrice(eu.transportType, eu.deliveryAddress, { unlimitedTransport: unlimited });
+}
+/** §20 one invoice 'transport' line per unit that has transport (ref=rentalId,
+   li.unitId identifies it; the unit name is shown only on multi-unit rentals). */
+function transportLineItems(r) {
+  const multi = rentalUnits(r).length > 1;
+  const out = [];
+  rentalUnits(r).forEach((eu) => {
+    if (!eu.transportType || eu.transportType === 'Self') return;
+    const tr = unitTransport(r, eu);
+    if (tr && tr.price) out.push({ kind: 'transport', ref: r.rentalId, unitId: eu.unitId, label: `Transport · ${multi ? (IDX.unit.get(eu.unitId)?.name || '') + ' · ' : ''}${eu.transportType}`, amount: tr.price });
+  });
+  return out;
 }
 /* ── Transport journey-picker (Our yard · Truck · Customer site) — like the rental-
    window picker, but for transport. Click an endpoint then a second: store→truck =
@@ -392,10 +410,7 @@ function syncTransportLine(r) {
   if (!r || !r.invoiceId) return;
   const inv = IDX.invoice.get(r.invoiceId); if (!inv) return;
   inv.lineItems = (inv.lineItems || []).filter((li) => !(li.kind === 'transport' && li.ref === r.rentalId));
-  const tr = rentalTransport(r);
-  if (r.transportType && r.transportType !== 'Self' && tr && tr.price) {
-    inv.lineItems.push({ kind: 'transport', ref: r.rentalId, label: `Transport · ${r.transportType}`, amount: tr.price });
-  }
+  transportLineItems(r).forEach((li) => inv.lineItems.push(li));   // §20 one transport line per unit
   reindex('invoices', inv);
 }
 
@@ -1983,18 +1998,20 @@ function allocLines(inv) {
 /* Jac ─ Site ─ Jac transport journey under an invoice rental line. +Log Delivery /
    +Log Recovery ARE the same captures as the yard tool's +Start/+End (one event,
    shared fields, so both views stay in sync). Self-pickup collapses to one line. */
-function miniJourneyHtml(r2) {
-  if (!r2.transportType || r2.transportType === 'Self') {
-    return `<div class="kv" style="justify-content:center;gap:9px"><span class="muted" style="font-size:10.5px">Self pickup · no transport</span><span class="add-field anchor js-site-go" data-r="R5b" data-rec="${esc(r2.rentalId)}" style="height:24px;font-size:11px;cursor:pointer">+Transport</span></div>`;
+function miniJourneyHtml(r2, eu) {
+  const T = eu || r2;   // §20 per-unit transport + captures (fallback to the rental for legacy)
+  const du = eu ? ` data-unit="${esc(eu.unitId)}"` : '';
+  if (!T.transportType || T.transportType === 'Self') {
+    return `<div class="kv" style="justify-content:center;gap:9px"><span class="muted" style="font-size:10.5px">Self pickup · no transport</span><span class="add-field anchor js-site-go" data-r="R5b" data-rec="${esc(r2.rentalId)}"${du} style="height:24px;font-size:11px;cursor:pointer">+Transport</span></div>`;
   }
-  const addr = r2.deliveryAddress ? esc(r2.deliveryAddress) : '+Address';
-  const recAddr = r2.recoveryAddress ? esc(r2.recoveryAddress) : addr;   // recovery may differ from delivery
-  const sd = !!r2.startCapture, ed = !!r2.endCapture;
+  const addr = T.deliveryAddress ? esc(T.deliveryAddress) : '+Address';
+  const recAddr = T.recoveryAddress ? esc(T.recoveryAddress) : addr;   // recovery may differ from delivery
+  const sd = !!T.startCapture, ed = !!T.endCapture;
   return `<div class="journey mini">
     <div class="jnode" style="cursor:default"><span class="jbox">${ICO_STORE}</span><span class="jlbl">Jac</span></div>
-    <div class="jseg"><span class="jover ${sd ? 'done' : 'loglink'} js-yard" data-cap="start" data-rec="${esc(r2.rentalId)}">${sd ? '✓ Delivered · video' : '+Log Delivery'}</span><span class="jline2 ${sd ? 'on' : ''}"></span><span class="jaddr js-site-go" data-rec="${esc(r2.rentalId)}">${addr}</span></div>
-    <div class="jnode js-site-go" data-rec="${esc(r2.rentalId)}"><span class="jbox site ${r2.deliveryAddress ? 'set' : ''}">${ICO_STORE}</span><span class="jlbl">Site</span></div>
-    <div class="jseg"><span class="jover ${ed ? 'done' : 'loglink'} js-yard" data-cap="end" data-rec="${esc(r2.rentalId)}">${ed ? '✓ Recovered · video' : '+Log Recovery'}</span><span class="jline2 ${ed ? 'on' : ''}"></span><span class="jaddr js-site-go" data-rec="${esc(r2.rentalId)}">${recAddr}</span></div>
+    <div class="jseg"><span class="jover ${sd ? 'done' : 'loglink'} js-yard" data-cap="start" data-rec="${esc(r2.rentalId)}"${du}>${sd ? '✓ Delivered · video' : '+Log Delivery'}</span><span class="jline2 ${sd ? 'on' : ''}"></span><span class="jaddr js-site-go" data-rec="${esc(r2.rentalId)}"${du}>${addr}</span></div>
+    <div class="jnode js-site-go" data-rec="${esc(r2.rentalId)}"${du}><span class="jbox site ${T.deliveryAddress ? 'set' : ''}">${ICO_STORE}</span><span class="jlbl">Site</span></div>
+    <div class="jseg"><span class="jover ${ed ? 'done' : 'loglink'} js-yard" data-cap="end" data-rec="${esc(r2.rentalId)}"${du}>${ed ? '✓ Recovered · video' : '+Log Recovery'}</span><span class="jline2 ${ed ? 'on' : ''}"></span><span class="jaddr js-site-go" data-rec="${esc(r2.rentalId)}"${du}>${recAddr}</span></div>
     <div class="jnode" style="cursor:default"><span class="jbox">${ICO_STORE}</span><span class="jlbl">Jac</span></div>
   </div>`;
 }
@@ -2111,18 +2128,17 @@ const DETAIL = {
     const balColor = invT ? (invT.balance <= 0 && invT.paid > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red') : null;
 
     /* invoice rental line items, each with its own transport journey + ITEM BALANCE */
-    const seenJourney = new Set();   // transport is still rental-level (4b → per-unit): one journey per rental
     const itemsHtml = (inv ? (inv.lineItems || []) : []).map((li, idx) => {
       if (li.kind !== 'rental') return '';
       const r2 = IDX.rental.get(li.ref); if (!r2) return '';
       const u2 = IDX.unit.get(li.unitId || r2.unitId);
+      const euLine = (r2.units || []).find((e) => e.unitId === (li.unitId || r2.unitId));   // §20 this line's unit → its own journey
       const paid = itemPaid(inv, li, idx);
       const amt = Number(li.amount) || 0;
       const ibColor = paid >= amt && amt > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red';
-      const firstOfRental = !seenJourney.has(r2.rentalId); if (firstOfRental) seenJourney.add(r2.rentalId);
       return `<div class="invitem">
         <span><span class="linkname" data-r="R7" data-pill-card="rentals" data-pill-rec="${esc(r2.rentalId)}">${esc(u2?.name || r2.rentalName || 'Rental')} · ${esc(fmtShortDate(r2.startDate))}–${esc(fmtShortDate(r2.endDate))}${li.ref === r.rentalId ? ' — this rental' : ''}</span><span class="balline" style="margin-left:8px" data-tip="ITEM BALANCE — partial payments are assigned per line item"><b style="color:var(--${ibColor});font-size:12.5px">${money(paid)}</b> <span class="tot" style="font-size:11px">/ ${money(amt)}</span></span></span>
-        ${firstOfRental ? miniJourneyHtml(r2) : ''}
+        ${miniJourneyHtml(r2, euLine)}
       </div>`;
     }).join('');
 
@@ -3469,11 +3485,15 @@ function dispatchEvents() {
   const out = [];
   const SKIP = new Set(['Cancelled', 'No Show', 'Returned', 'Quote']);
   DATA.rentals.forEach((r) => {
-    if (!r.unitId || SKIP.has(r.status) || !r.transportType || r.transportType === 'Self') return;
-    const unit = IDX.unit.get(r.unitId), cust = IDX.customer.get(r.customerId);
-    const base = { rentalId: r.rentalId, unit: unit?.name || '—', cust: cust?.name || cust?.company || '—', addr: r.deliveryAddress || '', ttype: r.transportType };
-    if (['Delivery', 'Round-Trip'].includes(r.transportType) && r.startDate) out.push({ ...base, date: r.startDate, time: r.startTime || '', task: 'Deliver', color: 'blue' });
-    if (['Round-Trip', 'Recovery'].includes(r.transportType) && r.endDate) out.push({ ...base, date: r.endDate, time: '', task: 'Pick up', color: 'brown' });
+    const cust = IDX.customer.get(r.customerId);
+    // §20 one dispatch task set PER UNIT — each carries its own transport + address
+    rentalUnits(r).forEach((eu) => {
+      if (!eu.unitId || SKIP.has(unitStatus(r, eu)) || !eu.transportType || eu.transportType === 'Self') return;
+      const unit = IDX.unit.get(eu.unitId);
+      const base = { rentalId: r.rentalId, unit: unit?.name || '—', cust: cust?.name || cust?.company || '—', addr: eu.deliveryAddress || '', ttype: eu.transportType };
+      if (['Delivery', 'Round-Trip'].includes(eu.transportType) && r.startDate) out.push({ ...base, date: r.startDate, time: r.startTime || '', task: 'Deliver', color: 'blue' });
+      if (['Round-Trip', 'Recovery'].includes(eu.transportType) && r.endDate) out.push({ ...base, date: r.endDate, time: '', task: 'Pick up', color: 'brown' });
+    });
   });
   return out.sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
 }
@@ -3662,7 +3682,8 @@ function renderOverlay() {
     // Jac+Jac = Round-Trip) + smart address finder + map pin. Save sets BOTH
     // addresses; the optional second field lets recovery differ from delivery.
     const r = IDX.rental.get(o.rentalId);
-    const ty = state.siteType || (r?.transportType && r.transportType !== 'Self' ? r.transportType : 'Delivery');
+    const T = (o.unitId && r ? (r.units || []).find((u) => u.unitId === o.unitId) : null) || r || {};   // §20 the unit's own transport
+    const ty = state.siteType || (T.transportType && T.transportType !== 'Self' ? T.transportType : 'Delivery');
     const pop = el('div', 'popup'); pop.style.width = '410px';
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.rentals}</span><h3>Transport · Site</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
@@ -3672,10 +3693,10 @@ function renderOverlay() {
           { label: 'Site → Jac', js: 'js-site-type', data: { val: 'Recovery' }, on: ty === 'Recovery' ? 'green' : null },
           { label: 'Jac → Site → Jac', js: 'js-site-type', data: { val: 'Round-Trip' }, on: ty === 'Round-Trip' ? 'green' : null },
         ], 'seg-sitetype')}</div>
-        <input class="js-site-addr lf-in" placeholder="Site address — start typing…" value="${esc(r?.deliveryAddress || '')}" style="width:100%;margin-bottom:6px">
+        <input class="js-site-addr lf-in" placeholder="Site address — start typing…" value="${esc(T.deliveryAddress || '')}" style="width:100%;margin-bottom:6px">
         <div class="js-site-sug" style="display:flex;flex-direction:column;border-radius:10px;overflow:hidden;margin-bottom:6px"></div>
-        <input class="js-site-addr2 lf-in" placeholder="Recovery address — same as above if left empty" value="${esc(r?.recoveryAddress || '')}" style="width:100%;margin-bottom:8px">
-        <div class="site-map js-site-map" style="height:150px;cursor:crosshair">${r?.sitePin ? `<span class="site-pin" style="left:${r.sitePin.x}%;top:${r.sitePin.y}%">📍</span>` : ''}<span class="map-tag">Google Map here — tap to drop the EXACT pin for the driver</span></div>
+        <input class="js-site-addr2 lf-in" placeholder="Recovery address — same as above if left empty" value="${esc(T.recoveryAddress || '')}" style="width:100%;margin-bottom:8px">
+        <div class="site-map js-site-map" style="height:150px;cursor:crosshair">${T.sitePin ? `<span class="site-pin" style="left:${T.sitePin.x}%;top:${T.sitePin.y}%">📍</span>` : ''}<span class="map-tag">Google Map here — tap to drop the EXACT pin for the driver</span></div>
         <div class="pillrow" style="justify-content:flex-end;margin-top:12px">
           ${ghostPill('Cancel', { js: 'js-close' })}
           ${actionPill('commit', 'Save site', { js: 'js-site-save' })}
@@ -4963,7 +4984,7 @@ function onClick(e) {
   if (closest('.js-washseg')) { const b = closest('.js-washseg'); return setUnitWash(b.dataset.rec, b.dataset.val); }
   if (closest('.js-yard')) { const b = closest('.js-yard'); return yardCapture(b.dataset.rec, b.dataset.cap, b.dataset.unit); }
   if (closest('.js-cap-save')) return saveYardCapture();
-  if (closest('.js-site-go')) { const b = closest('.js-site-go'); state.sitePin = null; state.siteType = null; return openOverlay({ kind: 'site', rentalId: b.dataset.rec }); }
+  if (closest('.js-site-go')) { const b = closest('.js-site-go'); state.sitePin = null; state.siteType = null; return openOverlay({ kind: 'site', rentalId: b.dataset.rec, unitId: b.dataset.unit || null }); }
   if (closest('.js-site-type')) { const b = closest('.js-site-type'); e.stopPropagation(); state.siteType = b.dataset.val; return renderOverlay(); }
   if (closest('.js-site-save')) return saveSiteAddress();
   if (closest('.js-site-pick')) { const b = closest('.js-site-pick'); const inp = document.querySelector('.js-site-addr'); if (inp) inp.value = b.textContent; const box = document.querySelector('.js-site-sug'); if (box) box.innerHTML = ''; return; }
@@ -5428,13 +5449,16 @@ function saveSiteAddress() {
   const v = (document.querySelector('.js-site-addr')?.value || '').trim();
   if (!v) return attnFlash('.js-site-addr');                        // R19: glow the field, no error message
   const v2 = (document.querySelector('.js-site-addr2')?.value || '').trim();
-  r.deliveryAddress = v;
-  r.recoveryAddress = v2 && v2 !== v ? v2 : '';                     // optional different recovery address
-  if (state.sitePin) r.sitePin = state.sitePin;
-  r.transportType = state.siteType || (r.transportType && r.transportType !== 'Self' ? r.transportType : 'Delivery');
+  // §20 write to THIS unit's transport (mirror onto r.* for the primary / legacy readers)
+  const eu = o.unitId ? (r.units || []).find((u) => u.unitId === o.unitId) : (r.units || [])[0];
+  const tgt = eu || r;
+  const tt = state.siteType || (tgt.transportType && tgt.transportType !== 'Self' ? tgt.transportType : 'Delivery');
+  const recov = v2 && v2 !== v ? v2 : '';
+  tgt.deliveryAddress = v; tgt.recoveryAddress = recov; tgt.transportType = tt; if (state.sitePin) tgt.sitePin = state.sitePin;
+  if (!eu || eu === (r.units || [])[0]) { r.deliveryAddress = v; r.recoveryAddress = recov; r.transportType = tt; if (state.sitePin) r.sitePin = state.sitePin; }
   state.siteType = null;
   syncTransportLine(r);
-  reindex('rentals', r); logAction(r, `Site address → ${auditVal(v)}`);
+  reindex('rentals', r); logAction(r, `${IDX.unit.get(o.unitId)?.name ? IDX.unit.get(o.unitId).name + ' — ' : ''}Site address → ${auditVal(v)}`);
   toast('Site saved — address + exact pin go to dispatch.');
   state.overlay = null; state.sitePin = null;
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -6269,9 +6293,8 @@ function createInvoiceForRental(rentalId) {
   if (!r.startDate || !r.endDate) { flashOr('.timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   const id = nextInvoiceId();
   const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
-  rentalLineItems(r).forEach((li) => inv.lineItems.push(li));   // one line per unit (§20)
-  const tr = rentalTransport(r);
-  if (tr && tr.price) inv.lineItems.push({ kind: 'transport', ref: rentalId, label: `Transport · ${r.transportType}`, amount: tr.price });
+  rentalLineItems(r).forEach((li) => inv.lineItems.push(li));      // one rental line per unit (§20)
+  transportLineItems(r).forEach((li) => inv.lineItems.push(li));   // one transport line per unit (§20)
   DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
   r.invoiceId = id;
   logAction(inv, `Created for ${rentalUnitsLabel(r) || 'rental'}`);
@@ -6680,10 +6703,9 @@ function addRentalLineToInvoice(invoiceId, rentalId) {
   if (r.invoiceId && r.invoiceId !== invoiceId) { toast(`Already on invoice ${invoiceShort(r.invoiceId)} — remove it there first.`); return; }
   if ((inv.lineItems || []).some((li) => li.kind === 'rental' && li.ref === rentalId)) { flashOr(`.inv-line-link[data-pill-rec="${rentalId}"]`, 'That rental is already on this invoice.'); return; }
   const lines = rentalLineItems(r);
-  lines.forEach((li) => inv.lineItems.push(li));   // one line per unit (§20)
+  lines.forEach((li) => inv.lineItems.push(li));                   // one rental line per unit (§20)
   const total = lines.reduce((a, li) => a + (Number(li.amount) || 0), 0);
-  const tr = rentalTransport(r);
-  if (tr && tr.price) inv.lineItems.push({ kind: 'transport', ref: rentalId, label: `Transport · ${r.transportType}`, amount: tr.price });
+  transportLineItems(r).forEach((li) => inv.lineItems.push(li));   // one transport line per unit (§20)
   if (!r.invoiceId) r.invoiceId = invoiceId;
   if (!inv.rentalIds.includes(rentalId)) inv.rentalIds.push(rentalId);
   logAction(inv, `Added rental: ${rentalUnitsLabel(r) || 'Rental'} (${money(total)})`);
