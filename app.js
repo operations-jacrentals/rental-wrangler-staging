@@ -1424,14 +1424,6 @@ const ROWS = {
    badges) used for sorting + aggregation; `cell` returns display HTML.
    ════════════════════════════════════════════════════════════════════════ */
 const pillS = (color, label) => `<span class="pill c-${color}">${esc(label)}</span>`;
-// Rental-window bar label: within one month → weekday+day (Th23); across months → month+day.
-const DOW2 = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-function winBarDate(iso, otherISO) {
-  if (!iso) return null;
-  const a = iso.split('-').map(Number), b = (otherISO || '').split('-').map(Number);
-  const sameMonth = otherISO && a[0] === b[0] && a[1] === b[1];
-  return sameMonth ? (DOW2[new Date(a[0], a[1] - 1, a[2]).getDay()] + a[2]) : fmtShortDate(iso);
-}
 function C(key, label, type, get, opts = {}) {
   const o = { key, label, type, get, badge: type === 'badge', set: opts.set, sortField: opts.sortField || key };
   // `pill` = renders as a pill → belongs in List-View row 2. Status badges are
@@ -1921,11 +1913,12 @@ const DETAIL = {
       const total = hasWin ? Math.max(1, Math.round((e - s) / dayMs)) : 1;
       const weekly = total > 14;
       const cells = weekly ? Math.ceil(total / 7) : total;
+      // the cells are just the elapsed-tint track now; the dates live in the
+      // overlay (d1/d2) — the old per-cell .dnum label conflicted with the
+      // centered rate, so it's gone (Jac 2026-06-12).
       const cellHtml = Array.from({ length: cells }, (_, i) => {
         const cellEnd = new Date(s.getTime() + (weekly ? (i + 1) * 7 : i + 1) * dayMs);
-        const past = TODAY >= cellEnd;
-        const lbl = i === 0 ? winBarDate(r.startDate, r.endDate) : i === cells - 1 ? winBarDate(r.endDate, r.startDate) : '';
-        return `<div class="day ${past ? 'past' : ''}">${lbl ? `<span class="dnum">${esc(lbl)}</span>` : ''}</div>`;
+        return `<div class="day ${TODAY >= cellEnd ? 'past' : ''}"></div>`;
       }).join('');
       timeline = `<div class="timeline js-open-winpicker" data-rec="${r.rentalId}">
         ${cellHtml}
@@ -2708,7 +2701,7 @@ function appendWindowed(list, rows, cs, card, renderRow) {
 function detailTitle(card, rec) {
   if (!rec) return '';
   switch (card) {
-    case 'rentals': return rec.rentalName || IDX.unit.get(rec.unitId)?.name || 'Rental';
+    case 'rentals': return (rec.rentalName || '').replace(/\s*\(\s*\)\s*$/, '').trim() || IDX.unit.get(rec.unitId)?.name || 'Rental';
     case 'units': return rec.name || 'Unit';
     case 'customers': return fullName(rec) || rec.name || 'Customer';
     case 'categories': return rec.name || 'Category';

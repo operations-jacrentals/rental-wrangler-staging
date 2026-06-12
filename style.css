@@ -1052,7 +1052,6 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .timeline .day { flex: 1; position: relative; border-right: 1px solid var(--line); }
 .timeline .day:last-child { border-right: none; }
 .timeline .day.past { background: var(--green-bg); }
-.timeline .day .dnum { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 8.5px; font-weight: 700; color: var(--txt-3); }
 .tl-over { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 11px; pointer-events: none; }
 .tl-over .d1, .tl-over .d2 { font-weight: 800; font-size: 12.5px; }
 .tl-over .d2 { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; }
