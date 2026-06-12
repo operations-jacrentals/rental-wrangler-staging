@@ -75,6 +75,34 @@ function migrateCustomers() {
     }
   });
 }
+/* ── §20 multi-unit rentals — "a Rental is an EVENT" ──
+   A rental dispatches one OR MANY units; each unit carries its own hours +
+   delivery/recovery captures in r.units[]. Legacy single-unit rentals fold their
+   top-level fields into units[0]; r.unitId stays a synced mirror of the PRIMARY
+   unit so every pre-#20 read keeps working untouched. (Phase 1: model + helpers.) */
+function migrateRentals() {
+  DATA.rentals.forEach((r) => {
+    if (!Array.isArray(r.units)) {
+      r.units = r.unitId ? [{ unitId: r.unitId, legacyUnitName: r.legacyUnitName || '',
+        startHours: r.startHours != null ? r.startHours : null,
+        returnHours: r.returnHours != null ? r.returnHours : null,
+        startCapture: r.startCapture || null, endCapture: r.endCapture || null }] : [];
+      migrationDirty = true;
+    }
+  });
+}
+/* read accessors — robust whether or not the migration has run yet. units[] is
+   canonical going forward; r.unitId remains the primary mirror during the rollout. */
+function rentalUnits(r) {
+  if (r && Array.isArray(r.units) && r.units.length) return r.units;
+  return (r && r.unitId) ? [{ unitId: r.unitId, legacyUnitName: r.legacyUnitName || '',
+    startHours: r.startHours != null ? r.startHours : null,
+    returnHours: r.returnHours != null ? r.returnHours : null,
+    startCapture: r.startCapture || null, endCapture: r.endCapture || null }] : [];
+}
+const rentalUnitIds = (r) => rentalUnits(r).map((u) => u.unitId).filter(Boolean);
+const primaryUnit = (r) => (r && r.unitId) || (rentalUnits(r)[0] || {}).unitId || null;
+const rentalHasUnit = (r, unitId) => rentalUnitIds(r).includes(unitId);
 /* ── §14 multi-card helpers ── */
 const customerCards = (c) => (c && Array.isArray(c.cards)) ? c.cards.filter((k) => k.status !== 'removed') : [];
 const defaultCard = (c) => { const ks = customerCards(c); return ks.find((k) => k.isDefault) || ks[0] || null; };
@@ -133,6 +161,7 @@ function cardsSection(c) {
 
 function buildIndexes() {
   migrateCustomers();
+  migrateRentals();
   IDX.unit     = new Map(DATA.units.map((u) => [u.unitId, u]));
   IDX.category = new Map(DATA.categories.map((c) => [c.categoryId, c]));
   IDX.customer = new Map(DATA.customers.map((c) => [c.customerId, c]));
