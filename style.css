@@ -1239,3 +1239,12 @@ body { font-variant-numeric: tabular-nums; }
 .datefield.on { box-shadow: 0 0 0 2px var(--accent-soft); }
 .winpicker.datepick { margin-top: 7px; width: 100%; box-shadow: none; border-color: var(--line); }
 .winpicker.datepick .wp-day.range-start.range-end { background: var(--accent); color: #fff; }
+
+/* Invoice: ONE section — actions left, line-item ledger right (Jac 2026-06-12) */
+.inv-split { display: flex; gap: 16px; align-items: flex-start; }
+.inv-actions { flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px; align-items: flex-start; min-width: 0; }
+.inv-data { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.inv-data .hitem { gap: 8px; }
+.inv-div { height: 1px; background: var(--line-soft); margin: 5px 0; }
+.inv-tot.big b { font-size: 14px; }
+.inv-tot.due b { color: var(--accent); }

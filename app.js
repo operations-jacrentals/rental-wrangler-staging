@@ -2362,7 +2362,8 @@ const DETAIL = {
     const unitRows = catUnits.map((u) => {
       const ar = activeRentalForUnit(u.unitId);
       const st2 = ar ? getStatus('rentalStatus', rentalDisplayStatus(ar)) : getStatus('unitInspectionStatus', u.inspectionStatus);
-      return `<div class="kv unit-line">${unitPill(u.unitId)}${dPill(st2.label, st2.color, ar ? { card: 'rentals', recId: ar.rentalId } : { card: 'inspections' })}</div>`;
+      // R4 mirror law: parent (unit pill) is RIGHT-aligned → derived sits on its LEFT
+      return `<div class="kv unit-line">${dPill(st2.label, st2.color, ar ? { card: 'rentals', recId: ar.rentalId } : { card: 'inspections' })}${unitPill(u.unitId)}</div>`;
     }).join('');
     const investment = `<div class="section"><h4>Investment</h4>
       <div class="split">
@@ -2392,57 +2393,59 @@ const DETAIL = {
     const cust = IDX.customer.get(i.customerId);
     const locked = !!i.locked;   // pricing sealed (Option B) — line items frozen + tamper-checked
     const subBy = (kind) => (i.lineItems || []).filter((l) => l.kind === kind).reduce((a, l) => a + (Number(l.amount) || 0), 0);
+    // ONE section (Jac 2026-06-12): LEFT = actions · RIGHT = the line-item ledger.
+    // line item: R7 hyperlink + amount + unlink ✕ — the redundant kind badge is GONE.
     const lines = (i.lineItems || []).map((li, idx) => {
       const ref = li.kind === 'rental' ? `data-pill-card="rentals" data-pill-rec="${esc(li.ref)}"`
         : li.kind === 'WO' ? `data-pill-card="workOrders" data-pill-rec="${esc(li.ref)}"` : '';
-      // transport line auto-appears from the rental (no remove); rental/WO/custom carry an X — unless locked or $-allocated (§12.5)
       const x = (!locked && li.kind !== 'transport' && itemPaid(i, li.ref) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
-      return `<div class="hitem">${badge(li.kind)}<span ${ref} class="inv-line-link" data-r="R7">${esc(li.label)}</span><span class="spacer"></span><b class="derived">${money(li.amount)}</b>${x}</div>`;
+      const bal = itemPaid(i, li.ref);   // partial-payment item balance (when assigned)
+      return `<div class="hitem inv-line"><span ${ref} class="inv-line-link" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 ? `<span class="dvd c-green derived" data-r="R4" title="paid on this line">${money(bal)}✓</span>` : ''}<b class="derived">${money(li.amount)}</b>${x}</div>`;
     }).join('');
-    const invoiceSec = `<div class="section"><h4>Invoice</h4><div class="fieldstack">
-      ${kvPills(cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? addBtn('Customer', { link: true, js: 'js-pick', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer')))}
-      ${kv(money(t.balance), { sfx: 'due', big: true, derived: true })}
-      ${kv(`${money(t.paid)} / ${money(t.total)}`, { sfx: 'paid', derived: true })}
-      ${kv(fmtShortDate(i.dueDate), { sfx: 'due date', derived: true })}
-      ${kvPills(cust?.requiresPO && !i.po
-        ? `<span class="req inline-edit" data-r="R6" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
-        : `<span class="${i.po ? 'pill ghost' : 'add-field'} inline-edit" data-r="${i.po ? 'R18' : 'R5c'}" data-edit="invoicePO" data-rec="${i.invoiceId}"${i.po ? '' : ' style="height:26px"'}>${esc(i.po ? 'PO ' + i.po : '+PO')}</span>`)}
-      ${canMoney() && cust
-        ? `<div class="pillrow" style="margin-top:2px">${
-            t.status === 'Refunded'
-              ? `${badge('Refunded')}${actionPill('commit', 'Details', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
-              : t.balance <= 0 && t.paid > 0
-                ? `${badge(`Paid${i.paymentMethod ? ' · ' + i.paymentMethod : ''}`, 'green')}${actionPill('danger', 'Refund', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
-                : `${actionPill('money', hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money(t.balance) : 'Take payment', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : ''}`
-          }</div>`
-        : ''}
-    </div></div>`;
+    const ledgerRow = (label, val, cls) => `<div class="hitem inv-tot${cls ? ' ' + cls : ''}"><span class="muted">${esc(label)}</span><span class="spacer"></span><b class="derived">${val}</b></div>`;
+    const kinds = ['rental', 'transport', 'parts', 'labor'].filter((k) => subBy(k) > 0);
+    const subRows = kinds.length > 1 ? kinds.map((k) => ledgerRow(`${k[0].toUpperCase()}${k.slice(1)} subtotal`, money(subBy(k)))).join('') : '';
+    // LEFT — customer · PO · payment · the line-management row (adds / lock / unlock / form)
+    const custCell = cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? addBtn('Customer', { link: true, js: 'js-pick', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer'));
+    const poCell = cust?.requiresPO && !i.po
+      ? `<span class="req inline-edit" data-r="R6" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
+      : `<span class="${i.po ? 'pill ghost' : 'add-field'} inline-edit" data-r="${i.po ? 'R18' : 'R5c'}" data-edit="invoicePO" data-rec="${i.invoiceId}"${i.po ? '' : ' style="height:26px"'}>${esc(i.po ? 'PO ' + i.po : '+PO')}</span>`;
+    const payCell = canMoney() && cust
+      ? (t.status === 'Refunded'
+          ? `${badge('Refunded')}${actionPill('commit', 'Details', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
+          : t.balance <= 0 && t.paid > 0
+            ? `${badge(`Paid${i.paymentMethod ? ' · ' + i.paymentMethod : ''}`, 'green')}${actionPill('danger', 'Refund', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
+            : `${actionPill('money', hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money(t.balance) : 'Take payment', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : ''}`)
+      : '';
     const lineForm = `<div class="lineform"><input class="lf-in js-lf-label" placeholder="Custom line description" /><div class="lineform-row"><input class="lf-in js-lf-amt" type="number" min="0" placeholder="Amount $" /></div><div class="pillrow" style="justify-content:flex-end">${ghostPill('Cancel', { js: 'js-line-cancel' })}${actionPill('commit', 'Add line', { js: 'js-line-save', data: { rec: i.invoiceId } })}</div></div>`;
-    const addRow = state.invLineForm === i.invoiceId ? lineForm
+    const manageRow = state.invLineForm === i.invoiceId ? lineForm
       : locked
-        ? `<div class="pillrow" style="margin-top:8px"><span class="muted" style="font-size:12px">🔒 Pricing locked — this is what gets charged.</span>${canMoney() ? `<span class="spacer"></span>${actionPill('commit', 'Unlock to edit', { js: 'js-unlock-invoice', data: { rec: i.invoiceId } })}` : ''}</div>`
-        : `<div class="pillrow" style="margin-top:8px">${addBtn('Rental', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Rental' } })}${addBtn('WO', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'WO' } })}${addBtn('Custom', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Custom' } })}${canMoney() && (i.lineItems || []).length ? `<span class="spacer"></span>${actionPill('commit', '🔒 Lock price', { js: 'js-lock-invoice', data: { rec: i.invoiceId } })}` : ''}</div>`;
-    const items = `<div class="section"><h4>Items</h4>
-      <div class="hlog">${lines || '<span class="muted" style="font-size:12px">No line items</span>'}</div>
-      ${addRow}
-    </div>`;
-    const totals = `<div class="section"><h4>Totals</h4><div class="fieldstack">
-      ${kv(money(subBy('rental')), { sfx: 'rental sub', derived: true })}
-      ${subBy('transport') ? kv(money(subBy('transport')), { sfx: 'transport sub', derived: true }) : ''}
-      ${subBy('parts') ? kv(money(subBy('parts')), { sfx: 'parts sub', derived: true }) : ''}
-      ${subBy('labor') ? kv(money(subBy('labor')), { sfx: 'labor sub', derived: true }) : ''}
-      ${kv(money(t.subtotal), { sfx: 'subtotal', derived: true })}
-      ${kv(t.exempt ? 'Exempt' : money(t.tax), { sfx: `tax (${(TAX_RATE * 100).toFixed(2)}%)`, derived: true })}
-      ${kv(money(t.total), { sfx: 'total', big: true, derived: true })}
-      ${kv(`${money(t.paid)} / ${money(t.total)}`, { sfx: 'paid', derived: true })}
-    </div></div>`;
+        ? `<div class="pillrow"><span class="muted" style="font-size:12px">🔒 Pricing locked.</span>${canMoney() ? actionPill('commit', 'Unlock to edit', { js: 'js-unlock-invoice', data: { rec: i.invoiceId } }) : ''}</div>`
+        : `<div class="pillrow">${addBtn('Rental', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Rental' } })}${addBtn('WO', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'WO' } })}${addBtn('Custom', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Custom' } })}</div>${canMoney() && (i.lineItems || []).length ? `<div class="pillrow">${actionPill('commit', '🔒 Lock price', { js: 'js-lock-invoice', data: { rec: i.invoiceId } })}</div>` : ''}`;
+    const invoiceSec = `<div class="section"><h4>Invoice</h4>
+      <div class="inv-split">
+        <div class="inv-actions">
+          ${kvPills(custCell)}
+          ${kvPills(poCell)}
+          ${payCell ? `<div class="pillrow">${payCell}</div>` : ''}
+          ${manageRow}
+        </div>
+        <div class="inv-data">
+          ${lines || '<span class="muted" style="font-size:12px">No line items yet</span>'}
+          ${(i.lineItems || []).length ? '<div class="inv-div"></div>' : ''}
+          ${subRows}
+          ${ledgerRow('Subtotal', money(t.subtotal))}
+          ${ledgerRow(`Tax (${(TAX_RATE * 100).toFixed(2)}%)`, t.exempt ? 'Exempt' : money(t.tax))}
+          ${ledgerRow('Total', money(t.total), 'big')}
+          ${ledgerRow('Paid', `${money(t.paid)} / ${money(t.total)}`)}
+          ${ledgerRow(`Due${i.dueDate ? ' · ' + fmtShortDate(i.dueDate) : ''}`, money(t.balance), 'due')}
+        </div>
+      </div></div>`;
     const notes = notesSection('invoices', i, 'invoiceId');
     return `<div class="detail">
-      <div class="detail-head"><span class="d-title">${esc(i.invoiceId)}</span>${statusPill('invoiceStatus', t.status)}${locked ? '<span class="pill c-gray" style="min-width:0" title="Pricing is locked">🔒 Locked</span>' : ''}</div>
+      <div class="detail-head"><span class="d-title">${esc(i.invoiceId)}</span>${statusPill('invoiceStatus', t.status)}${locked ? badge('🔒 Locked', 'gray') : ''}</div>
       ${notes.top}
       ${invoiceSec}
-      ${items}
-      ${totals}
       ${notes.bottom}
       ${historySection('invoices', i, cs)}
     </div>`;
