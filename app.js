@@ -2187,32 +2187,30 @@ const DETAIL = {
       ${c.paidFees ? kv(money(c.paidFees), { sfx: 'paid fees' }) : ''}
     </div></div>`;
     const log = (c.activityLog || []).map((a) => `<div class="hitem"><span class="htime">${esc(fmtShortDate(a.when))}</span><span>${esc(a.text)}</span></div>`).join('');
-    /* §12.1 RAPID ACTION ENTRY (Jac 2026-06-12): no Activity Log section — the field
-       rides just under the active bar with the R14 Record/Schedule mode toggle on its
-       right. Enter logs + clears + stays focused; clicking away logs + clears. */
-    const mode = state.actMode || 'record';
-    const actEntry = `<div class="act-entry">
-      <input class="act-in js-act-in" data-rec="${c.customerId}" placeholder="+Action" />
-      ${segCtl([
-        { label: 'Record', js: 'js-actmode', data: { rec: c.customerId, val: 'record' }, on: mode === 'record' ? 'blue' : null },
-        { label: 'Schedule', js: 'js-actmode', data: { rec: c.customerId, val: 'schedule' }, on: mode === 'schedule' ? 'purple' : null },
-      ], 'seg-act')}
-    </div>`;
+    /* §12.1 ACTION ENTRY v3 (Jac 2026-06-12): two R5b adds above the active bar —
+       +Log Action / +Schedule Action. Either opens the entry field UNDER the bar,
+       which is the TOP of the Activity Log. Enter commits + stays open (rapid);
+       click-away commits + closes; Esc closes. */
+    const actBtns = `<div class="pillrow" style="justify-content:center">${addBtn('Log Action', { line: true, js: 'js-act-open', h: 26, data: { rec: c.customerId, val: 'record' } })}${addBtn('Schedule Action', { line: true, js: 'js-act-open', h: 26, data: { rec: c.customerId, val: 'schedule' } })}</div>`;
+    const actEntry = state.actOpen === c.customerId
+      ? `<div class="act-entry"><input class="act-in js-act-in" data-rec="${c.customerId}" placeholder="${state.actMode === 'schedule' ? 'Schedule an action…' : 'Log an action…'}" /></div>`
+      : '';
     const activity = `<div class="hlog actlog">${log || '<span class="muted" style="font-size:12px">No activity yet.</span>'}</div>`;
 
     const notes = notesSection('customers', c, 'customerId', 'accountNotes');
-    /* Jac 2026-06-12 order: actions row → active bar → funnels → merged Account →
-       Cards on File → +Notes → Action Log (log rides under Cards when notes sit top) */
+    /* Jac 2026-06-12 order: action buttons → active bar → entry field + Activity Log
+       (the log tops out under the bar) → funnels → merged Account → Cards → Notes → History */
     return `<div class="detail">
       <div class="detail-head">${title}</div>
-      ${actEntry}
+      ${actBtns}
       ${activeBar}
+      ${actEntry}
+      ${activity}
       ${notes.top}
       <div class="detail-cols">${usedSales}${membership}</div>
       ${account}
       ${cardsSection(c)}
       ${notes.bottom}
-      ${activity}
       ${historySection('customers', c, cs)}
     </div>`;
   },
@@ -4302,7 +4300,7 @@ function onClick(e) {
   }
   if (closest('.js-clear-fleet')) { e.stopPropagation(); state.fleetFilter = null; render(); return; }
   if (closest('.js-addcat')) { e.stopPropagation(); return beginPick('customers', closest('.js-addcat').dataset.rec, undefined, 'intcat'); }
-  if (closest('.js-actmode')) { const b = closest('.js-actmode'); e.stopPropagation(); state.actMode = b.dataset.val; const rec = b.dataset.rec; render(); document.querySelector(`.js-act-in[data-rec="${rec}"]`)?.focus(); return; }
+  if (closest('.js-act-open')) { const b = closest('.js-act-open'); e.stopPropagation(); state.actMode = b.dataset.val; state.actOpen = b.dataset.rec; const rec = b.dataset.rec; render(); document.querySelector(`.js-act-in[data-rec="${rec}"]`)?.focus(); return; }
   if (closest('.js-schedule-save')) { const b = closest('.js-schedule-save'); e.stopPropagation(); const root = b.closest('.popup-body'); const c = IDX.customer.get(b.dataset.rec); const when = root.querySelector('.js-sch-when')?.value; const note = (root.querySelector('.js-sch-note')?.value || '').trim(); if (!c || !when) { flashOr('.js-sch-when', 'Pick a date & time first.'); return; } c.activityLog = c.activityLog || []; c.activityLog.push({ when: when.slice(0, 10), text: `Scheduled: ${note || 'follow-up'} @ ${when.replace('T', ' ')}` }); reindex('customers', c); toast('Scheduled — added to the Activity Log.'); closeOverlay(); render(); }
   // draft pickers / creation affordances (§0.3)
   if (closest('.js-pick')) { const b = closest('.js-pick'); e.stopPropagation(); return beginPick(b.dataset.card, b.dataset.rec, b.dataset.type || undefined, b.dataset.slot); }
@@ -6008,21 +6006,26 @@ function boot() {
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
-  // §12.1 rapid action entry — Enter logs + clears + keeps focus; click-away logs + clears.
-  // Clicking the Record/Schedule toggle is NOT "away" (focus stays inside .act-entry).
+  // §12.1 action entry v3 — Enter commits + field stays open (rapid entry);
+  // click-away commits + closes; Esc closes without committing.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.classList?.contains('js-act-in')) {
+    if (!e.target.classList?.contains('js-act-in')) return;
+    const rec = e.target.dataset.rec;
+    if (e.key === 'Enter') {
       e.preventDefault();
-      const rec = e.target.dataset.rec;
       commitAction(rec, e.target.value);
       const f = document.querySelector(`.js-act-in[data-rec="${rec}"]`);
       if (f) { f.value = ''; f.focus(); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      state.actOpen = null; render();
     }
   });
   document.addEventListener('focusout', (e) => {
-    if (!e.target.classList?.contains('js-act-in') || !e.target.value.trim()) return;
-    if (e.relatedTarget?.closest?.('.act-entry')) return;
-    commitAction(e.target.dataset.rec, e.target.value);
+    if (!e.target.classList?.contains('js-act-in')) return;
+    const v = e.target.value.trim();
+    state.actOpen = null;
+    if (v) commitAction(e.target.dataset.rec, v); else render();
   });
   document.addEventListener('mousemove', onInspectMove);   // Design Inspector hover tag (no-op unless state.inspect)
   // Board View formula cells: reveal the raw "=…" on focus, recompute on blur.
