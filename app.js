@@ -771,10 +771,16 @@ function deferOrAnchor(key, singleFn, anchor) {
  * that record's Standard view beside the cursor. Display-only — never anchors/cascades. */
 let hoverTimer = null, hoverEl = null, hoverNode = null, hoverGrace = null;
 const lastMouse = { x: 0, y: 0 };
-const hoverTarget = (n) => (n && n.closest ? n.closest('.row, [data-pill-card]') : null);
+/* previews arm ONLY on real pills/badges/flags ([data-pill-card]) or the row EYE —
+   never the row body / empty space (Jac 2026-06-12) */
+const hoverTarget = (n) => (n && n.closest ? n.closest('[data-pill-card], .js-roweye') : null);
 function recForHover(target) {
   let card, recId, recType;
-  if (target.dataset.pillCard) { card = target.dataset.pillCard; recId = target.dataset.pillRec; }
+  if (target.classList && target.classList.contains('js-roweye')) {
+    const row = target.closest('.row'); if (!row) return null;
+    card = row.dataset.card; recId = row.dataset.rec; recType = row.dataset.type;
+  }
+  else if (target.dataset.pillCard) { card = target.dataset.pillCard; recId = target.dataset.pillRec; }
   else { card = target.dataset.card; recId = target.dataset.rec; recType = target.dataset.type; }
   if (recId == null) return null;
   const ec = SHOP_TYPES.includes(card) ? card : (card === 'shop' ? recType : card);
@@ -1263,7 +1269,7 @@ function rowEl(card, rec) {
   node.dataset.card = card; node.dataset.rec = id;
   node.innerHTML = `${rowViz(card, rec)}
     <div class="r-actions">
-      <button class="rbtn js-anchor" title="Anchor (⊞)">${I.circle}</button>
+      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" title="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
       <button class="rbtn js-newtab" title="Open in new tab (+)">${I.plus}</button>
     </div>
     <div class="row-content">${inner}</div>`;
@@ -3165,7 +3171,7 @@ function shopRowEl(type, rec) {
   node.innerHTML = `<div class="row-viz" style="background:linear-gradient(90deg, var(--${color}-bg), transparent 62%)"></div>
     <div class="shop-type" style="color:var(--${color})" title="${esc(SHOP_SEGMENTS.find((s) => s.id === type)?.label || type)}">${(type === 'inspections' && !inspComplete(rec)) ? CARD_ICON.inspectionsPending : CARD_ICON[type]}</div>
     <div class="r-actions">
-      <button class="rbtn js-anchor" data-type="${type}" data-rec="${id}" title="Anchor (⊞)">${I.circle}</button>
+      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" title="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
       <button class="rbtn js-newtab" data-type="${type}" data-rec="${id}" title="Open in new tab (+)">${I.plus}</button>
     </div>
     <div class="row-content">${rowInnerHTML(type, rec)}</div>`;
@@ -4415,7 +4421,7 @@ function onClick(e) {
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-theme')) { state.theme = state.theme === 'dark' ? 'light' : 'dark'; if (state.overlay && state.overlay.kind !== 'addCard') renderOverlay(); render(); return; }
   if (closest('.js-qr')) return openOverlay({ kind: 'qr' });
-  if (closest('.js-previews')) { state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off.'); return render(); }
+  if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); return render(); }
   if (closest('.js-hotkeys')) return openOverlay({ kind: 'hotkeys' });
   if (closest('.js-lint')) {   // R0 flash-lint toggle — persists per device
     const on = document.body.classList.toggle('rw-lint');
@@ -6420,14 +6426,16 @@ function boot() {
   document.addEventListener('mouseover', (e) => {
     if (!state.previewsOn) return;       // user turned previews off (saved per device)
     // interactive controls are CLICK targets, not preview triggers — the popup kept
-    // landing under the cursor while aiming at the status dropdown (Jac 2026-06-12)
-    if (e.target.closest('.pill.gate, .js-status-pill, button, .x, .seg, .add-field, .dropdown-menu') || document.querySelector('.dropdown-menu')) { clearTimeout(hoverTimer); return; }
+    // landing under the cursor while aiming at the status dropdown (Jac 2026-06-12).
+    // The row EYE is the one button that IS a preview trigger.
+    if (!e.target.closest('.js-roweye') && (e.target.closest('.pill.gate, .js-status-pill, button, .x, .seg, .add-field, .dropdown-menu') || document.querySelector('.dropdown-menu'))) { clearTimeout(hoverTimer); return; }
     const t = hoverTarget(e.target);
     if (!t || state.pick || state.overlay || state.winpicker) return;
     clearTimeout(hoverGrace);            // re-entering a row cancels a pending close
     if (t === hoverEl) return;
     hoverEl = t; hideHoverPreview();
-    hoverTimer = setTimeout(() => { if (hoverEl === t) showHoverPreview(t); }, 1008);   // hover delay, slowed +50% (was 672)
+    // the row EYE is a deliberate "show me" target → fast; pills keep the long fuse
+    hoverTimer = setTimeout(() => { if (hoverEl === t) showHoverPreview(t); }, t.classList?.contains('js-roweye') ? 380 : 1008);
   });
   document.addEventListener('mouseout', (e) => {
     if (!hoverEl) return;

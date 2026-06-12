@@ -1287,3 +1287,6 @@ body { font-variant-numeric: tabular-nums; }
 /* rentals footer: Billing row over Rental-Status row (Jac) */
 .list-totals.two-row { flex-direction: column; align-items: stretch; gap: 4px; }
 .list-totals.two-row .tot-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* No-Preview Mode (Jac 2026-06-12): every eye — row chips + the toolbar — runs RED */
+.rbtn.js-roweye.off, .iconbtn.js-previews.off { color: var(--red); opacity: 1; }
