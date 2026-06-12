@@ -1,6 +1,56 @@
 # HANDOFF — continue here (`design-overhaul` branch)
 
-> For the next Claude Code session (another machine). **Read this first.**
+> For the next Claude Code session (another machine, the web, or Jac's phone).
+> **Read this first.**
+
+## ▶▶ STATE AS OF 2026-06-12 EVENING (supersedes everything below)
+
+**Everything is LIVE on app.jacrentals.com** (main = design-overhaul; the standing
+rule: every VERIFIED batch merges → main → Pages, no per-merge ask).
+
+**Today's giants, all shipped + verified:**
+1. **🐉 THE DRAG & DROP ENGINE** (§15c app.js): press a row 6px (or long-press on
+   phones) → ghost chip lifts; valid targets glow (`.drop-ok`/`.drop-hot`); the
+   dark CANCEL ARC rises bottom-center (`--arc-apex`); Esc cancels; dragging a
+   customer reveals invoices in the right column (and vice versa) w/ restore;
+   drops dispatch into the REAL §16 gates (blacklist/Sold/locked/paid all hold);
+   completion = plain-English toast + R19 flash. Overbooking = settings toggle
+   (default OFF) + pulsing red Overbooked flag when ON.
+2. **WAVE 2 — THE MODES ARE DEAD**: pick mode fully demolished (−440 lines).
+   **LANGUAGE LAW: say QUOTE, never "draft."** +Rental = a Quote appears anchored,
+   side cards stay live, you DRAG a unit + customer on (toast teaches this).
+   Quotes SURVIVE (no sweeping) and sync to the backend. The +Customer slot on a
+   Quote/invoice opens QUICK-ADD (First+Phone) which AUTO-LINKS on save.
+3. **Rentals list = the dispatcher row**: each row is a living day-timeline
+   (elapsed tint, no color wash), R1 status gate w/ truck inline, stacked R8
+   Balance w/ due-context ("$X · Due Jun 18" blue · bare red $X = late, no
+   words · Paid green), Today/Tomorrow labels, category flag, two-row footer
+   (Billing / Rental Status, registry order).
+4. **Cards done**: Vendors · Expenses (+Receipt popup reconciling PARTS w/
+   Unaccounted math) · Parts · Files all have v2 in-popup details; Customers
+   got the action board (Log/Schedule columns), quick-add, flags+R1 account
+   gate, merged Account section, rented-category flags; Categories got header
+   flags + units-in-INVESTMENT (R2+R4 mirror); Invoices = ONE section (ledger
+   right).
+5. **New rules**: R21 file-drop · R22 date picker (native pickers gone) ·
+   R23 tooltips (data-tip only; native title = lint violation). Rulebook R0–R23.
+   Preview eye system (pills-only hovers, row eye, red No-Preview mode).
+
+**NEXT UP (Jac's queue):** the partial-payment allocation popup (#19 — line
+items above the payment section, counter to zero, then charge) · the
+MULTI-UNIT RENTALS refactor (#20 — "a Rental is an EVENT"; upgrades the
+unit-drop from swap to ADD; per-unit invoice lines; the SPLIT feature; rental
+name = "Window: Unit, Unit" w/ customer as flag) · the shop trio cards (WOs/
+Inspections/Service) · "Ask Mr. Wrangler" (in-app Claude) parked for its own
+session. Full contracts in `JacTec-handoff/DRAGDROP-DESIGN.md` + SPEC v7
+(gitignored — on the main machine; ask Jac if working remotely without them).
+
+**Working remotely (phone/web):** this repo is the whole frontend — no build
+step. Verify by serving the root + opening `#local` (demo mode). The gitignored
+`JacTec-handoff/` docs live only on Jac's main machine; HANDOFF.md (this file)
+carries enough to continue. NEVER commit Code.gs (role passwords; repo PUBLIC).
+
+---
 
 ## ▶ TOMORROW (2026-06-12) — Jac's agenda, in his words
 1. **More debugging.**
