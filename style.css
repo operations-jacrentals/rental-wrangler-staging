@@ -1078,7 +1078,7 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .timeline { position: relative; height: 50px; border-radius: 12px; border: 1px solid var(--line); display: flex; align-items: stretch; overflow: hidden; cursor: pointer; background: var(--panel-2); }
 .timeline .day { flex: 1; position: relative; border-right: 1px solid var(--line); }
 .timeline .day:last-child { border-right: none; }
-.timeline .day.past { background: var(--green-bg); }
+.timeline .day.past { background: var(--tint, var(--green-bg)); }   /* elapsed-tint follows the rental status */
 .tl-over { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 11px; pointer-events: none; }
 .tl-over .d1, .tl-over .d2 { font-weight: 800; font-size: 12.5px; }
 .tl-over .d2 { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; }
@@ -1296,7 +1296,7 @@ body { font-variant-numeric: tabular-nums; }
 .rtl-cells { position: absolute; inset: 0; display: flex; }
 .rtl-cells .day { flex: 1; border-right: 1px solid var(--line); }
 .rtl-cells .day:last-child { border-right: none; }
-.rtl-cells .day.past { background: var(--green-bg); }
+.rtl-cells .day.past { background: var(--tint, var(--green-bg)); }   /* elapsed-tint follows the rental status */
 /* overlay — clicks fall THROUGH to the row (opens the rental) except the re-enabled pills */
 .rtl-over { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 0 13px; pointer-events: none; }
 .rtl-over .pill, .rtl-over .flag, .rtl-over [data-pill-card] { pointer-events: auto; }

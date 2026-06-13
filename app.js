@@ -137,7 +137,8 @@ function rentalDisplayName(r) {
 const STATUS_ORDER = ['Quote', 'Reserved', 'Tomorrow', 'Today', 'On Rent', 'End Rent', 'Off Rent', 'Returned', 'Cancelled', 'No Show'];
 function unitStatus(r, eu) {
   const base = (eu && eu.status) || r.status || 'Reserved';
-  if (base === 'Reserved') { const s = parseISO(r.startDate); if (s) { const d = dayDiff(TODAY, s); if (d === 0) return 'Today'; if (d === 1) return 'Tomorrow'; } }
+  // a reservation whose start date passed without going On Rent = No Show (Jac 2026-06-13)
+  if (base === 'Reserved') { const s = parseISO(r.startDate); if (s) { const d = dayDiff(TODAY, s); if (d < 0) return 'No Show'; if (d === 0) return 'Today'; if (d === 1) return 'Tomorrow'; } }
   return base;
 }
 function rentalUnitStatuses(r) {
@@ -486,7 +487,9 @@ const ACTIVE_RENTAL = new Set(['Quote', 'Tomorrow', 'Today', 'Reserved', 'On Ren
 function rentalDisplayStatus(r) {
   if (r.status === 'Reserved') {
     const s = parseISO(r.startDate);
-    if (s) { const d = dayDiff(TODAY, s); if (d === 0) return 'Today'; if (d === 1) return 'Tomorrow'; }
+    // a reservation whose start date has PASSED and never went On Rent = a No Show
+    // (display-derived, like Today/Tomorrow — the stored status stays Reserved). Jac 2026-06-13
+    if (s) { const d = dayDiff(TODAY, s); if (d < 0) return 'No Show'; if (d === 0) return 'Today'; if (d === 1) return 'Tomorrow'; }
   }
   return r.status;
 }
@@ -1491,6 +1494,7 @@ const ROWS = {
     const inv = r.invoiceId ? IDX.invoice.get(r.invoiceId) : null;
     const price = rentalPrice(r);
     const dispStatus = rentalDisplayStatus(r);
+    const stColor = rentalStatusDisplay(r).color;   // the elapsed-tint follows the rental status (Jac 2026-06-13)
     const truck = showsTruck(r.status, r.transportType);
     const name = rentalUnitsLabel(r) || 'Quote';   // the row IS the window timeline; show just the unit(s)
     const gate = masterGate(r, { truck });
@@ -1533,7 +1537,7 @@ const ROWS = {
     const cat = IDX.category.get(r.categoryId) || (unit ? IDX.category.get(unit.categoryId) : null);
 
     return `<div class="rtl">
-      <div class="rtl-cells">${cellHtml}</div>
+      <div class="rtl-cells" style="--tint:var(--${stColor}-bg)">${cellHtml}</div>
       <div class="rtl-over">
         <div class="rtl-l">
           <span class="rtl-top"><span class="rtl-name">${esc(name)}</span>${cat ? flagEl(cat.name, 'gray', { icon: CARD_ICON.categories, card: 'categories', recId: cat.categoryId }) : ''}</span>
@@ -2223,7 +2227,7 @@ const DETAIL = {
         const cellEnd = new Date(s.getTime() + (weekly ? (i + 1) * 7 : i + 1) * dayMs);
         return `<div class="day ${TODAY >= cellEnd ? 'past' : ''}"></div>`;
       }).join('');
-      timeline = `<div class="timeline js-open-winpicker" data-rec="${r.rentalId}">
+      timeline = `<div class="timeline js-open-winpicker" data-rec="${r.rentalId}" style="--tint:var(--${stColor}-bg)">
         ${cellHtml}
         <div class="tl-over">
           <span class="d1">${esc(relDate(r.startDate))}</span>
