@@ -3466,6 +3466,19 @@ function ring3SVG(vals, _color, { size = 48, center } = {}) {
   }).join('');
   return `<svg class="ring3" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${rings}${center != null ? `<text class="ring-pct" x="50%" y="54%" text-anchor="middle">${center}</text>` : ''}</svg>`;
 }
+/** N concentric rings — one per item, each in its own color (Team KPI = one ring per
+ *  role). Auto-fits any count so the ring layout matches the team size (Jac 2026-06-13). */
+function ringsSVG(vals, colors, { size = 104 } = {}) {
+  const n = Math.max(1, vals.length), pad = 8;
+  const step = (size / 2 - pad) / n, sw = Math.max(3, step * 0.62);
+  const rings = vals.map((pct, i) => {
+    pct = Math.max(0, Math.min(100, pct || 0));
+    const r = size / 2 - pad - i * step, c = 2 * Math.PI * r, off = c * (1 - pct / 100);
+    return `<circle class="ring-track" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke-width="${sw}"/>
+      <circle class="ring-fill" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--${colors[i] || 'accent'})" stroke-width="${sw}" stroke-dasharray="${c}" stroke-dashoffset="${off}" stroke-linecap="round" transform="rotate(-90 ${size / 2} ${size / 2})"/>`;
+  }).join('');
+  return `<svg class="ring3" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${rings}</svg>`;
+}
 /** §10/§11 KPI ring values, computed live from DATA (all-time for the demo seed).
  *  Driver Score + Office Reputation need the GPS/email backend → null placeholders. */
 const pctOf = (a, b) => (b > 0 ? Math.round(Math.max(0, Math.min(100, (a / b) * 100))) : 0);
@@ -6090,13 +6103,12 @@ function onChange(e) {
 /** Logo menu — anchored to the logo (like +New): back-office boards + the Team KPI block. */
 function openLogoMenu(anchorEl) {
   const boards = BACKOFFICE_BOARDS.map((b) => `<button class="dd-item js-board" data-board="${b.id}"><span class="mi-ico" style="color:var(--accent);display:inline-flex">${CARD_ICON[b.id] || I.box}</span>${esc(b.title)}<span class="c-count" style="margin-left:auto">${boardRows(b.id).length}</span></button>`).join('');
-  const teamLines = ROLES.map((role) => {
-    const v = kpiFor(role.id).filter((x) => x != null);
-    const avg = v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : 0;
-    const bd = bandColor(avg);
-    return `<div class="kpi-line"><span class="ring-no" style="border-color:var(--${role.color})"></span><span class="k-name">${esc(role.label)}</span><span class="k-val" style="color:var(--${bd.color})">${avg}%</span></div>`;
-  }).join('');
-  const team = `<div class="menu-sep"></div><div class="menu-team"><div class="menu-team-head">Team KPIs</div><div class="menu-team-ring">${ring3SVG(kpiTeam(), 'accent', { size: 104 })}</div><div class="kpi-list">${teamLines}</div></div>`;
+  // §11 — one ring per ROLE (layout matches the team size), and a single "Sulphur
+  // Team" line with the combined score. Per-role breakdown removed (Jac 2026-06-13).
+  const roleScores = ROLES.map((role) => { const v = kpiFor(role.id).filter((x) => x != null); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : 0; });
+  const teamScore = roleScores.length ? Math.round(roleScores.reduce((a, b) => a + b, 0) / roleScores.length) : 0;
+  const tbd = bandColor(teamScore);
+  const team = `<div class="menu-sep"></div><div class="menu-team"><div class="menu-team-head">Team KPIs</div><div class="menu-team-ring">${ringsSVG(roleScores, ROLES.map((r) => r.color), { size: 104 })}</div><div class="kpi-list"><div class="kpi-line"><span class="k-name">Sulphur Team</span><span class="k-val" style="color:var(--${tbd.color})">${teamScore}%</span></div></div></div>`;
   const userLine = `<div class="menu-user"><span class="mu-name">${esc(currentUser || 'Signed in')}</span>${currentRole ? `<span class="mu-role">${esc(currentRole)}</span>` : ''}</div>
     <button class="dd-item js-switch-user"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.back}</span>Switch user</button>
     <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${(currentRole === 'Admin' || currentRole === 'Owner') ? '' : ' <span class="muted" style="font-size:10px;margin-left:2px">Admin</span>'}</button>

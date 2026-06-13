@@ -1191,7 +1191,7 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .section.sec-gray { border-color: var(--line); }
 /* R19 ATTENTION FLASH — the glow that replaces error messages: points AT the
    thing the user must do instead of telling them off */
-.attn { animation: attnGlow .62s ease-in-out 3; border-radius: 10px; }
+.attn { animation: attnGlow .62s ease-in-out 2; border-radius: 10px; }   /* link/drop indicator: 2 flashes (Jac) */
 @keyframes attnGlow { 50% { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 16px 2px var(--accent); } }
 /* number inputs: kill the native spinners (don't match the UI) */
 input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
