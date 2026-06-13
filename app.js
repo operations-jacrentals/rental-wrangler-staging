@@ -3775,6 +3775,7 @@ function renderOverlay() {
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.parts || CARD_ICON.workOrders}</span><h3>${li ? 'Edit' : 'Add'} Part / Task</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body">
         ${fileDrop(state.partPhoto || li?.photo ? '✓ photo attached' : 'Add Photo (not required)', { js: 'js-pf2-file', capture: 'environment', done: !!(state.partPhoto || li?.photo), icon: I.camera })}
+        <p class="muted" style="text-align:center;font-size:11.5px;margin:7px 0 10px">✨ Mr. Wrangler will add the parts for you!</p>
         <input class="lf-in js-pf2-desc" placeholder="Part/Task Name" value="${esc(li?.part || '')}" style="width:100%;margin-bottom:7px">
         <div style="display:flex;gap:7px;margin-bottom:7px">
           <input class="lf-in js-pf2-cost" type="number" min="0" placeholder="$Cost" value="${li?.cost ?? ''}" style="flex:1">
@@ -7281,7 +7282,10 @@ function boot() {
     // right-clicking dead space keeps the old card-to-List / clear-anchor.
     // menu ONLY on real tools (pills/buttons/text/fields/rows) — section + card
     // dead space stays reserved for card-to-List / clear-anchor (Jac 2026-06-12)
-    const leaf = e.target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .hvals, .x, a, .d-title, .derived, .row');
+    // §R20 — menu ONLY on tight, real tools. `.row` was a WIDE container: its dead
+    // space (e.g. the empty left of a right-aligned value row) wrongly counted as a
+    // hit. Dropped, so row dead-space falls through to card-to-List (Jac 2026-06-13).
+    const leaf = e.target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .derived');
     const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
     if (hit) return openCtxMenu(e, hit);
     if (!card) return;   // popup dead space — no card-to-List / clear-anchor
