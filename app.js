@@ -4505,9 +4505,37 @@ function addInterestedCategory(custId, catId) {
    just drops its search into the card's search bar (visible + clearable like any
    search), replacing bespoke filter "modes". The View menu = Add-view (when the
    current search isn't already a view) + Views + Sort. */
-const VIEWS_LS = (card) => `jactec.views.${card}`;
-function loadViews(card) { try { return JSON.parse(localStorage.getItem(VIEWS_LS(card)) || '[]'); } catch (e) { return []; } }
-function saveViews(card, views) { try { localStorage.setItem(VIEWS_LS(card), JSON.stringify(views)); } catch (e) {} }
+// Views are GLOBAL / company-wide (Jac 2026-06-13): ONE shared set, synced to the
+// backend so they follow every device + login. The localStorage mirror keeps the
+// demo and offline working; a one-time migration folds the old per-card keys in.
+// Curating the set (add/remove) is an Admin action; everyone can apply a view.
+const VIEWS_LS_ALL = 'jactec.views.all';
+const VIEW_CARDS = ['units', 'categories', 'rentals', 'customers', 'invoices', 'shop', 'expenses'];
+let GLOBAL_VIEWS = null;
+function _viewsMap() {
+  if (GLOBAL_VIEWS) return GLOBAL_VIEWS;
+  let m = null;
+  try { m = JSON.parse(localStorage.getItem(VIEWS_LS_ALL) || 'null'); } catch (e) {}
+  if (!m || typeof m !== 'object') {                              // migrate the old per-card keys once
+    m = {};
+    VIEW_CARDS.forEach((c) => { try { const old = JSON.parse(localStorage.getItem(`jactec.views.${c}`) || '[]'); if (old.length) m[c] = old; } catch (e) {} });
+  }
+  GLOBAL_VIEWS = m; return m;
+}
+function loadViews(card) { return _viewsMap()[card] || []; }
+function saveViews(card, views) {
+  const m = _viewsMap(); m[card] = views; GLOBAL_VIEWS = m;
+  try { localStorage.setItem(VIEWS_LS_ALL, JSON.stringify(m)); } catch (e) {}
+  pushViewsToBackend();                                           // async, online only
+}
+async function loadGlobalViews() {                                // boot: pull the shared set from the server
+  if (typeof backendPassword === 'undefined' || !backendPassword) return;   // demo/offline → localStorage only
+  try { const r = await backendCall('getViews'); if (r && r.ok && r.views && typeof r.views === 'object') { GLOBAL_VIEWS = r.views; try { localStorage.setItem(VIEWS_LS_ALL, JSON.stringify(r.views)); } catch (e) {} render(); } } catch (e) { /* unknown action / offline → keep localStorage */ }
+}
+async function pushViewsToBackend() {                             // mirror local changes up to the server
+  if (typeof backendPassword === 'undefined' || !backendPassword) return;   // demo → localStorage only
+  try { await backendCall('setViews', { views: GLOBAL_VIEWS || {} }); } catch (e) { /* offline → re-syncs on next change */ }
+}
 // A view captures the WHOLE filter state — the live search text AND the pinned
 // filter chips (cs.filterTerms) — so ANY filter you build is saveable (Jac 2026-06-13).
 function viewSig(search, terms) {
@@ -4537,11 +4565,12 @@ function openViewMenu(card, anchorEl) {
   const curSig = viewSig(cs.search, cs.filterTerms);
   const hasFilter = (cs.search || '').trim() || (cs.filterTerms || []).length;   // search text OR pinned chips
   const onView = views.some((v) => viewSig(v.search, v.terms) === curSig);
+  const admin = adminUnlocked();   // curating the shared set is an Admin action; anyone can apply
   let html = '';
-  if (hasFilter && !onView) { const lbl = viewLabel(cs.search, cs.filterTerms); html += `<button class="dd-item js-addview" data-card="${card}">${I.plus} Add view “${esc(lbl.length > 22 ? lbl.slice(0, 22) + '…' : lbl)}”</button>`; }
+  if (hasFilter && !onView && admin) { const lbl = viewLabel(cs.search, cs.filterTerms); html += `<button class="dd-item js-addview" data-card="${card}">${I.plus} Add view “${esc(lbl.length > 22 ? lbl.slice(0, 22) + '…' : lbl)}”</button>`; }
   if (views.length) {
     html += `<div class="dd-sec">Views</div>`;
-    html += views.map((v, i) => `<button class="dd-item js-applyview${viewSig(v.search, v.terms) === curSig ? ' on' : ''}" data-card="${card}" data-idx="${i}">${esc(v.name)}<span class="tick">✓</span><span class="x js-delview" data-card="${card}" data-name="${esc(v.name)}" data-tip="Delete view">${I.x}</span></button>`).join('');
+    html += views.map((v, i) => `<button class="dd-item js-applyview${viewSig(v.search, v.terms) === curSig ? ' on' : ''}" data-card="${card}" data-idx="${i}">${esc(v.name)}<span class="tick">✓</span>${admin ? `<span class="x js-delview" data-card="${card}" data-name="${esc(v.name)}" data-tip="Delete view">${I.x}</span>` : ''}</button>`).join('');
   }
   html += `<div class="dd-sec">Sort</div>`;
   html += SORT_FIELDS[card].map((f) => `<button class="dd-item js-sortfield${f.field === cs.sort.field ? ' on' : ''}" data-card="${card}" data-field="${f.field}">${esc(f.label)}<span class="tick">✓</span></button>`).join('');
@@ -5228,9 +5257,9 @@ function onClick(e) {
 
   // sort menu + direction toggle
   if (closest('.js-sortmenu')) { const b = closest('.js-sortmenu'); return openViewMenu(b.dataset.card, b); }
-  if (closest('.js-delview')) { e.stopPropagation(); const b = closest('.js-delview'); const card = b.dataset.card; saveViews(card, loadViews(card).filter((v) => v.name !== b.dataset.name)); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); const anchor = document.querySelector(`.js-sortmenu[data-card="${card}"]`); if (anchor) openViewMenu(card, anchor); else render(); return; }
+  if (closest('.js-delview')) { e.stopPropagation(); if (!adminUnlocked()) return; const b = closest('.js-delview'); const card = b.dataset.card; saveViews(card, loadViews(card).filter((v) => v.name !== b.dataset.name)); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); const anchor = document.querySelector(`.js-sortmenu[data-card="${card}"]`); if (anchor) openViewMenu(card, anchor); else render(); return; }
   if (closest('.js-applyview')) { const b = closest('.js-applyview'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return applyView(b.dataset.card, loadViews(b.dataset.card)[Number(b.dataset.idx)]); }
-  if (closest('.js-addview')) { const b = closest('.js-addview'); const card = b.dataset.card; const cs = activeSession().cards[card]; const search = (cs.search || '').trim(); const terms = (cs.filterTerms || []).map((t) => ({ ...t })); const suggested = viewLabel(search, terms); const name = (typeof prompt === 'function' ? prompt('Name this view:', suggested) : suggested); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (name && name.trim()) { const views = loadViews(card); if (!views.some((v) => v.name.toLowerCase() === name.trim().toLowerCase())) { views.push({ name: name.trim(), search, terms }); saveViews(card, views); } } render(); return; }
+  if (closest('.js-addview')) { if (!adminUnlocked()) { document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return; } const b = closest('.js-addview'); const card = b.dataset.card; const cs = activeSession().cards[card]; const search = (cs.search || '').trim(); const terms = (cs.filterTerms || []).map((t) => ({ ...t })); const suggested = viewLabel(search, terms); const name = (typeof prompt === 'function' ? prompt('Name this view:', suggested) : suggested); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (name && name.trim()) { const views = loadViews(card); if (!views.some((v) => v.name.toLowerCase() === name.trim().toLowerCase())) { views.push({ name: name.trim(), search, terms }); saveViews(card, views); } } render(); return; }
   if (closest('.js-sortfield')) { const b = closest('.js-sortfield'); const cs = activeSession().cards[b.dataset.card]; const f = SORT_FIELDS[b.dataset.card].find((x) => x.field === b.dataset.field); if (f) { cs.sort = { ...f }; saveSort(b.dataset.card, cs.sort); } document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); render(); return; }
   if (closest('.js-sortdir')) { const card = closest('.js-sortdir').dataset.card; const cs = activeSession().cards[card]; cs.sort.dir = cs.sort.dir === 'asc' ? 'desc' : 'asc'; saveSort(card, cs.sort); render(); return; }
 
@@ -7095,6 +7124,7 @@ function renderLogin(msg) {
 function finishLoad() {
   snapshotSaved();                                              // baseline = what the backend currently holds
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
+  loadGlobalViews();                                            // pull the shared, company-wide view set
   if (migrationDirty) { migrationDirty = false; saveSoon(); }   // push parsed first/last names up to the Sheet
   // #edit=<id> — desktop→phone handoff opens that customer's account form (§7.1).
   const em = (location.hash || '').match(/edit=([\w-]+)/i);
