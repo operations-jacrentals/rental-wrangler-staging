@@ -33,10 +33,10 @@ We walk this **task by task via poll**; decisions get recorded inline.
 - 🆕 **Drag the WO section onto an Invoice** — DECISION (Jac): make the WO section (`.section.wo-<woId>`) a drag SOURCE (entity `workOrders`, grab empty space per Task 2). Add `DROP_MATRIX.workOrders.invoices` (+ reverse `invoices.workOrders`); dropping on an invoice (row or open card) **bills immediately** via `billWOToInvoiceExplicit` (same bill-once + customer-scoping gates as the `+Invoice` / `js-bill-wo` button).
 
 ## Phase 4 — Invoices & Work Orders
-- ✅ **+Invoice/+Transport opens the new invoice on the Invoice card** — shipped (`createInvoiceForRental`). VERIFY.
-- ✅ **Delete empty records on click-away** — shipped (`sweepEmptyDrafts`, invoices + rentals). VERIFY.
-- ✅ **(PAY) bottom-right of the Invoice section** — shipped. VERIFY.
-- 🆕 **+WO from an Invoice opens the linked unit** — opens that invoice's currently-linked unit in standard view.
+- ✅ **+Invoice/+Transport opens the new invoice on the Invoice card** — shipped (`createInvoiceForRental`); CONFIRMED (Jac): working.
+- ✅ **Delete empty records on click-away** — shipped (`sweepEmptyDrafts`, invoices + rentals); CONFIRMED (Jac): working.
+- ✅ **(PAY) bottom-right of the Invoice section** — shipped (`payCell`); CONFIRMED (Jac): working.
+- 🆕 **+WO from an Invoice opens the linked unit(s)** — DECISION (Jac): **repurpose** the invoice's existing `+WO` (today `js-add-line` kind `WO` adds a blank line — replace that). New behavior: open the invoice's **currently-linked unit(s) in LIST view** (Units card filtered to just those units), uniform for one or many — the list IS the picker; operator opens a unit and uses its own +Work Order. (Resolve linked units via the invoice's rental lines / `li.unitId`.)
 
 ## Phase 5 — Search & filters
 - ✅ **Replace persisting footer filters with search entries** — shipped ("dropped the modes"). VERIFY.
