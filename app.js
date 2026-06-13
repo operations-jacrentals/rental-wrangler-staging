@@ -4040,6 +4040,27 @@ function renderOverlay() {
         <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill c-commit js-settings-save">Save</button></div>
       </div>`;
     overlay.appendChild(pop);
+  } else if (o.kind === 'quickCust') {
+    // #3 QUICK ADD (Jac 2026-06-13): name + phone to get the rental moving; the full
+    // account is finished later. "Full intake →" hands off to the complete form.
+    const d = o.draft;
+    const pop = el('div', 'popup'); pop.style.width = '360px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${CARD_ICON.customers || ''}</span><h3>Quick Add Customer</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        ${o.error ? `<div class="login-err" style="margin-bottom:8px">${esc(o.error)}</div>` : ''}
+        <div style="display:flex;gap:7px;margin-bottom:7px">
+          <input class="lf-in js-qc-first" placeholder="First name" value="${esc(d.firstName || '')}" style="flex:1">
+          <input class="lf-in js-qc-last" placeholder="Last name" value="${esc(d.lastName || '')}" style="flex:1">
+        </div>
+        <input class="lf-in js-qc-phone" type="tel" placeholder="Phone" value="${esc(d.phone || '')}" style="width:100%">
+        <p class="muted" style="font-size:11px;margin:8px 0 12px">Just the basics to get the rental moving — finish the full account anytime.</p>
+        <div class="pillrow" style="justify-content:space-between;align-items:center">
+          <button class="linkname js-qc-full" data-r="R7">Full intake →</button>
+          ${actionPill('commit', 'Add &amp; link', { js: 'js-qc-save' })}
+        </div>
+      </div>`;
+    overlay.appendChild(pop);
   } else if (o.kind === 'newCustomer') {
     const d = o.draft; const isEdit = !!o.editId;
     const indOpts = NC_INDUSTRIES.map((i) => `<option value="${esc(i)}"></option>`).join('');
@@ -4229,6 +4250,7 @@ function renderOverlay() {
     overlay.appendChild(pop);
   }
   root.appendChild(overlay);
+  if (o.kind === 'quickCust') document.querySelector('.overlay .js-qc-first')?.focus();
   if (o.kind === 'newCustomer') setupSignaturePad();
   if (o.kind === 'payment') setupPayAlloc();   // live counter for the §19 allocation rows
   if (o.kind === 'addCard') { const cc = IDX.customer.get(o.customerId); if (cc && cc.signature && cc.selfie) mountCardElement(); }   // only mount with consent (nothing to orphan otherwise)
@@ -5231,7 +5253,9 @@ function onClick(e) {
     toast('Drag a unit from the Units card onto this Quote.');
     return;
   }
-  if (closest('.js-quickadd-cust')) { const b = closest('.js-quickadd-cust'); e.stopPropagation(); return openCustomerForm(null, null, { card: b.dataset.card, recId: b.dataset.rec }); }
+  if (closest('.js-quickadd-cust')) { const b = closest('.js-quickadd-cust'); e.stopPropagation(); return openQuickCust({ card: b.dataset.card, recId: b.dataset.rec }); }
+  if (closest('.js-qc-save')) { e.stopPropagation(); return saveQuickCust(); }
+  if (closest('.js-qc-full')) { e.stopPropagation(); return quickCustToFull(); }
   if (closest('.js-create-invoice')) { e.stopPropagation(); return createInvoiceForRental(closest('.js-create-invoice').dataset.rec); }
   if (closest('.js-clear-fc')) { e.stopPropagation(); return clearFieldCall(closest('.js-clear-fc').dataset.rec); }
   if (closest('.js-bill-wo')) { e.stopPropagation(); return billWOToInvoice(closest('.js-bill-wo').dataset.rec); }
@@ -6156,6 +6180,31 @@ const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n
 // §7.1 — guided customer form (validated). Used for BOTH new intake and editing /
 // completing an existing customer (opened from the customer card → "Complete account").
 function startNewCustomer(prefill) { openCustomerForm(null, prefill); }
+/* #3 Quick Add — a compact name+phone create that links straight onto the Quote/
+   invoice; "Full intake" hands the typed values to the complete form. (Jac 2026-06-13) */
+function openQuickCust(linkTo, prefill) {
+  openOverlay({ kind: 'quickCust', error: '', linkTo: linkTo || null, draft: { firstName: (prefill && prefill.firstName) || '', lastName: (prefill && prefill.lastName) || '', phone: (prefill && prefill.phone) || '' } });
+}
+function qcDraft() {
+  const root = document.querySelector('.overlay .popup-body');
+  return { firstName: root?.querySelector('.js-qc-first')?.value.trim() || '', lastName: root?.querySelector('.js-qc-last')?.value.trim() || '', phone: root?.querySelector('.js-qc-phone')?.value.trim() || '' };
+}
+function saveQuickCust() {
+  const o = state.overlay; if (!o || o.kind !== 'quickCust') return;
+  const d = qcDraft(); o.draft = d;
+  if (!d.firstName) { o.error = 'First name is required.'; renderOverlay(); return; }
+  if (!d.phone) { o.error = 'A phone number is required.'; renderOverlay(); return; }
+  const id = nextCustomerId();
+  const c = { customerId: id, firstName: d.firstName, lastName: d.lastName, name: `${d.firstName} ${d.lastName}`.trim(), company: '', phone: d.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], activityLog: [], usedSalesStage: 'Inbound Lead', membershipStage: 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
+  logAction(c, 'Customer quick-added');
+  const lt = o.linkTo;
+  const linked = lt ? (lt.card === 'rentals' ? linkCustomerToRental(lt.recId, id) : lt.card === 'invoices' ? setInvoiceCustomer(lt.recId, id) : null) : null;
+  closeOverlay();
+  if (linked) { anchorRecord(lt.card, lt.recId); toast(`${c.name} quick-added & linked.`); }
+  else { anchorRecord('customers', id); toast(`${c.name} quick-added.`); }
+}
+function quickCustToFull() { const o = state.overlay; if (!o || o.kind !== 'quickCust') return; const prefill = qcDraft(); const lt = o.linkTo; openCustomerForm(null, prefill, lt); }
 /** Turn a customer-search string into prefill: a letterless string → phone, else
  *  split on the first space into first/last (how staff usually type a name). */
 function parseCustomerSearch(q) {
