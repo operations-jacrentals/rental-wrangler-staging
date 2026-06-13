@@ -6720,6 +6720,7 @@ function setDraftDate(rentalId, which, val) {
   if (which === 'start') r.startDate = val; else r.endDate = val;
   // a dated quote becomes Reserved (urgency display derives Today/Tomorrow); keep On Rent gated on invoice
   if (r.startDate && r.endDate && r.status === 'Quote') r.status = 'Reserved';
+  logAction(r, `${which === 'start' ? 'Start' : 'End'} date → ${val ? fmtShortDate(val) : 'cleared'}`);   // #1 — was unlogged
   reanchorRender();
 }
 const reanchorRender = () => { const s = activeSession(); if (s.anchor) setAnchor(s, s.anchor.card, s.anchor.recId, s.anchor.recType); render(); };
@@ -7111,8 +7112,10 @@ function unitTransportProto(r) {
   return u ? { transportType: u.transportType, deliveryAddress: u.deliveryAddress, recoveryAddress: u.recoveryAddress } : {};
 }
 function removeUnitFromRental(r, unitId) {
+  const removed = IDX.unit.get(unitId);
   r.units = rentalUnits(r).filter((u) => u.unitId !== unitId);
   syncRentalPrimary(r);
+  logAction(r, `Unit cleared: ${removed?.name || unitId}`);   // #1 — was unlogged (Jac's Clear Unit)
 }
 /* §20 — dropping a unit on a rental ADDS it (a Rental is an EVENT); the §9 fleet
    gate, the "already on" guard, and the §10 overbooking gate all fire per unit. */
