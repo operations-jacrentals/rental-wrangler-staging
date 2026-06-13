@@ -1052,6 +1052,8 @@ const I = {
   feedback: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9.5 9.5h5M9.5 12.7h3"/></svg>',
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>',
   doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  lockOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>',
   chev: '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>',
 };
 
@@ -3579,9 +3581,10 @@ function bottomBarEl() {
     <button class="iconbtn${state.previewsOn ? '' : ' off'} js-previews" data-tip="${state.previewsOn ? 'Hover previews: on' : 'Hover previews: off'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
     <button class="iconbtn js-feedback" data-tip="Report a bug or request">${I.feedback}</button>
     <button class="iconbtn js-hotkeys" data-tip="Mouse &amp; keyboard shortcuts">${I.mouse}</button>
-    <button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
+    <button class="iconbtn js-adminlock${adminUnlocked() ? ' on' : ''}" data-tip="${adminUnlocked() ? 'Admin tools unlocked — click to lock' : 'Admin tools — click to unlock'}">${adminUnlocked() ? I.lockOpen : I.lock}</button>
+    ${adminUnlocked() ? `<button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
     <button class="iconbtn js-inspect${state.inspect ? ' on' : ''}" data-tip="Design Inspector — hover names the rule, click copies the reference">${I.search}</button>
-    <button class="iconbtn js-rulebook" data-tip="The R-Rulebook — visual design reference (SPEC v7)">${I.doc}</button>`;
+    <button class="iconbtn js-rulebook" data-tip="The R-Rulebook — visual design reference (SPEC v7)">${I.doc}</button>` : ''}`;
   return bar;
 }
 function tabStrip(tabs) {
@@ -5018,6 +5021,8 @@ function onClick(e) {
   if (closest('.js-qr')) return openOverlay({ kind: 'qr' });
   if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); return render(); }
   if (closest('.js-hotkeys')) return openOverlay({ kind: 'hotkeys' });
+  if (closest('.js-adminlock')) { e.stopPropagation(); return toggleAdminLock(); }
+  if (closest('.js-lint, .js-inspect, .js-rulebook') && !adminUnlocked()) { e.stopPropagation(); return toggleAdminLock(); }
   if (closest('.js-lint')) {   // R0 flash-lint toggle — persists per device
     const on = document.body.classList.toggle('rw-lint');
     try { localStorage.setItem('jactec.lint', on ? '1' : '0'); } catch (err) {}
@@ -5432,6 +5437,26 @@ function startInlineEdit(span) {
 }
 
 const BOOKING_STATUSES = ['On Rent', 'Reserved', 'Today', 'Tomorrow'];
+
+/* ADMIN TOOLS GATE (Jac 2026-06-13) — the dev/design tools (R-Rulebook, Design
+   Inspector, Design Lint) live behind the admin passphrase. This is a client-side
+   gate (obfuscated hash, not real crypto — anyone reading the source could bypass
+   it), which is appropriate for hiding internal tooling, not for securing secrets.
+   Real-app Admin/Owner roles are already trusted. Settings is intentionally NOT
+   gated here (Jac: "the settings board you don't need to hide"). */
+const ADMIN_HASH = 'xy16gqtfz0';
+function _cyrb53(s, seed = 0) { let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed; for (let i = 0, ch; i < s.length; i++) { ch = s.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); } h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909); h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909); return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36); }
+let _adminUnlock = (() => { try { return localStorage.getItem('jactec.admin') === ADMIN_HASH; } catch (e) { return false; } })();
+function adminUnlocked() { return _adminUnlock || currentRole === 'Admin' || currentRole === 'Owner'; }
+function toggleAdminLock() {
+  if (_adminUnlock) { _adminUnlock = false; try { localStorage.removeItem('jactec.admin'); } catch (e) {} toast('Admin tools locked.'); return render(); }
+  if (currentRole === 'Admin' || currentRole === 'Owner') { toast('You already have Admin access to these tools.'); return; }
+  const pw = window.prompt('Enter the Admin password to unlock dev tools:') || '';
+  if (!pw) return;
+  if (_cyrb53(pw) === ADMIN_HASH) { _adminUnlock = true; try { localStorage.setItem('jactec.admin', ADMIN_HASH); } catch (e) {} toast('🔓 Admin tools unlocked.'); render(); }
+  else toast('Wrong password.');
+}
+
 /** Verify an Admin password (reuses the Settings gate), then run onOk. Demo/offline → allowed. */
 async function requireAdmin(reason, onOk) {
   const pw = (currentRole === 'Admin' || currentRole === 'Owner') ? backendPassword
