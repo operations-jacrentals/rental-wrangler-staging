@@ -3168,14 +3168,6 @@ function listView(cardDef, session) {
       <button class="dir js-sortdir" data-card="${card}"><span class="${cs.sort.dir === 'asc' ? 'on' : ''}">▲</span><span class="${cs.sort.dir === 'desc' ? 'on' : ''}">▼</span></button>
     </div>`;
   wrap.appendChild(bar);
-  // §0.2 — Rentals always lead with a +New Rental row (no matter the search), which
-  // obsoletes the old toolbar Rental button (Jac 2026-06-13). New customers come from
-  // the empty-search "+New Customer", new invoices ride a rental — so no toolbar adds.
-  if (card === 'rentals') {
-    const nr = el('div', 'newrow'); nr.style.marginBottom = '8px';
-    nr.innerHTML = `<button class="bigbtn js-newitem" data-new="rental">${I.plus} New Rental</button>`;
-    wrap.appendChild(nr);
-  }
   // active Category fleet-bar filter → a removable chip so the list isn't mysteriously narrowed
   if (card === 'units' && state.fleetFilter) {
     const cat = IDX.category.get(state.fleetFilter.categoryId);
@@ -3201,6 +3193,14 @@ function listView(cardDef, session) {
   const tfChip = totalFilterChip(card, session); if (tfChip) wrap.appendChild(tfChip);
 
   const list = el('div', 'list');
+  // §0.2 — Rentals always lead with a +New Rental row, no matter the search (obsoletes
+  // the old toolbar Rental button). INSIDE the list so it shares the row inset — was
+  // flush to the card edge / too wide vs the Customers button (Jac 2026-06-13).
+  if (card === 'rentals') {
+    const nr = el('div', 'newrow');
+    nr.innerHTML = `<button class="bigbtn js-newitem" data-new="rental">${I.plus} New Rental</button>`;
+    list.appendChild(nr);
+  }
   if (!rows.length) {
     // a fruitless customer search offers a prefilled +New Customer (typed name/phone carries in)
     if (card === 'customers' && cs.search.trim() && !session.anchor) {
