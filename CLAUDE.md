@@ -13,8 +13,11 @@ language. Scope: apply to **new or reshaped UI going forward**. Do **NOT**
 retroactively restyle the whole existing site yet — only touch what an edit
 already touches, unless Jac asks for a site-wide pass.
 
-**The system — "the JacRentals yard":** ground every surface in the
-heavy-equipment-rental world so screens read as one shop.
+**The system — "the JacRentals yard, with a light wrangler/ranch twist":**
+ground every surface in the heavy-equipment-rental world so screens read as one
+shop. The industrial steel-yard core below is the **foundation and stays
+dominant**; the ranch twist is a light seasoning on top (see "Ranch twist"),
+never a full western theme.
 
 - **Signature motif:** hi-vis **hazard stripe** — `repeating-linear-gradient(135deg,
   var(--yellow,#f5c542) 0 13px, #14181d 13px 26px)`. Red variant
@@ -28,6 +31,16 @@ heavy-equipment-rental world so screens read as one shop.
 - **Devices:** corner **rivets**, stamped condensed labels, ignition-style
   primary buttons (orange gradient, dark `#1a1205` ink), yard/operator copy
   ("Clock In", "Operator", "Release to cancel").
+- **Ranch twist (SUBTLE — a seasoning, never the meal):** "Rental Wrangler"
+  earns a light cowboy/ranch flavor on top of the steel yard. Lean on it mostly
+  through **voice/copy** — wrangler/ranch vernacular used naturally, never campy
+  ("Wrangle", "Round up", "Corral", "Brand" (great double meaning for a stamp/
+  logo), "Saddle up", "Tack", "Rein in"); operator copy may lean "hand/wrangler".
+  Restrained **visual** cues only: a worn-**leather tan** tertiary accent
+  (`~#c2925a`, deep `#8a5a2b`) for tiny touches; **saddle-stitch** dashed lines
+  (tan) as the occasional divider/border, pairing naturally with the rivets;
+  optionally a small **brand/star** marker, used rarely. Rule of thumb: if a
+  glance reads "western" before it reads "industrial rental yard," dial it back.
 - **Process (from the skill):** plan a token system first, avoid the 3 AI
   defaults (cream+serif+terracotta / near-black+acid-green / broadsheet
   hairlines), spend boldness in ONE place, build, **screenshot + self-critique
