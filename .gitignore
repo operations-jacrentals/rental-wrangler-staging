@@ -8,8 +8,9 @@ Thumbs.db
 
 # Internal handoff: the spec + RAW customer/parts/work-order CSVs — NOT for the
 # public site (the served app uses the curated demo data in data.js instead).
-JacTec-handoff/
-
+JacTec-handoff/*
+!JacTec-handoff/JacTec-SPEC-v8.md
+!JacTec-handoff/DRAGDROP-DESIGN.md
 # REAL customer data (PII) — generated locally, pushed ONLY to the password-gated
 # backend, NEVER committed or served as a public static file.
 data.generated.js
