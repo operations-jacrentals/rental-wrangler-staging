@@ -7095,7 +7095,19 @@ function boot() {
 
 // #local — render straight from data.js with NO backend (offline/demo + dev smoke test).
 // saveSoon() already no-ops without a password, so edits stay in-memory only.
-function offlineBoot() { buildIndexes(); state.cascade = createCascade(DATA); booting = false; render(); }
+function offlineBoot() { buildIndexes(); state.cascade = createCascade(DATA); booting = false; render(); exposeTestApi(); }
+/* test seam — #local (demo) ONLY: a read-mostly logic surface so ci/logic-test.mjs
+   can exercise the REAL money + multi-unit functions (not copies). Never reached in
+   the backend-backed production path. */
+function exposeTestApi() {
+  try {
+    window.__rw = { DATA, IDX, TODAY_ISO, itemPaid, lineKey, rentalUnits, unitEntry, isPrimaryUnit,
+      unitStatus, rentalUnitStatuses, unitsUniform, rentalStatusDisplay, rentalMirrorStatus, rentalDisplayStatus,
+      allUnitsTerminal, unitTerminal, unitVoided, rentalLineItems, transportLineItems, syncRentalPrimary,
+      addUnitToRental, removeUnitFromRental, removeUnitInvoiceLine, unitLinePaid, invoiceTotals, allocLines,
+      rentalAllocated, unitRentalPrice, rentalDisplayName };
+  } catch (e) { /* no window (non-browser) */ }
+}
 
 // #reseed — one-time admin: REPLACE the entire live database with the imported file (data.js).
 // Guarded by the password + an explicit confirm, and self-clears the hash so it can't re-fire.

@@ -33,3 +33,6 @@ jobs:
 
       - name: Boot smoke test
         run: node ci/smoke.mjs
+
+      - name: Logic regression suite (money + multi-unit)
+        run: node ci/logic-test.mjs
