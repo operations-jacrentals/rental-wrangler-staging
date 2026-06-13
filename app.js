@@ -1180,6 +1180,18 @@ function addBtn(label, { js, data, link, line, anchor, h, icon } = {}) {
   const rule = blue ? 'R5b' : 'R5c';
   return `<button class="${cls}" data-r="${rule}"${dataAttrs(data)}${h ? ` style="height:${h}px"` : ''}>${icon || ''}+${esc(label.replace(/^\+?\s*(Add\s+)?/i, ''))}</button>`;
 }
+/* Rulebook live index (Jac 2026-06-13): every on-screen element currently wearing a
+   rule, so its real usage can be audited. Excludes the rulebook overlay itself. */
+function ruleIndex(rule) {
+  return Array.from(document.querySelectorAll(`[data-r="${rule}"]`)).filter((e) => !e.closest('.overlay')).map((e) => {
+    const cardEl = e.closest('[data-card]');
+    const loc = cardEl ? (GRID_CARD_BY_ID[cardEl.getAttribute('data-card')]?.title || cardEl.getAttribute('data-card'))
+      : (e.closest('.bottombar') ? 'Toolbar' : (e.closest('.appbar, header') ? 'Header' : '·'));
+    let txt = (e.textContent || '').trim().replace(/\s+/g, ' ');
+    txt = txt.length > 40 ? txt.slice(0, 40) + '…' : (txt || '<' + e.tagName.toLowerCase() + '>');
+    return { loc, txt };
+  });
+}
 /** R6: required-until-entered — white bg + dark ink, stays loud until satisfied. */
 function reqBtn(label, { js, data, icon } = {}) {
   return `<button class="req${js ? ' ' + js : ''}" data-r="R6"${dataAttrs(data)}>${icon || ''}${esc(label)}</button>`;
@@ -3729,12 +3741,20 @@ function renderOverlay() {
       R17: actionPill('commit', 'Done') + actionPill('money', 'Pay $210') + actionPill('danger', 'Refund'),
       R18: ghostPill('Cancel'),
     };
-    const rows = Object.keys(RULE_META).map((r) => `
+    const rows = Object.keys(RULE_META).map((r) => {
+      const idx = ruleIndex(r);
+      const idxBody = idx.length
+        ? idx.map((i) => `<div class="rb-idx-row"><span class="rb-idx-loc">${esc(i.loc)}</span><span>${esc(i.txt)}</span></div>`).join('')
+        : `<div class="rb-idx-row muted">Not rendered in the current view.</div>`;
+      // collapsed by default so the rules stay scannable; expand to audit every usage
+      const idxHtml = `<details class="rb-idx"><summary>${idx.length ? idx.length + ' on screen' : 'none on screen'}</summary>${idxBody}</details>`;
+      return `
       <div class="rb-row">
         <span class="rb-id">${r}</span>
         <div class="rb-ex">${EX[r] || '<span class="muted">—</span>'}</div>
-        <div class="rb-info"><b>${esc(RULE_META[r][0])}</b> · <code>${esc(RULE_META[r][1])}</code><div class="muted" style="font-size:11px">${esc(RULE_META[r][2])}</div></div>
-      </div>`).join('');
+        <div class="rb-info"><b>${esc(RULE_META[r][0])}</b> · <code>${esc(RULE_META[r][1])}</code><div class="muted" style="font-size:11px">${esc(RULE_META[r][2])}</div>${idxHtml}</div>
+      </div>`;
+    }).join('');
     const pop = el('div', 'popup'); pop.style.width = '620px';
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${I.doc}</span><h3>The R-Rulebook — SPEC v7</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>

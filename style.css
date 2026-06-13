@@ -263,12 +263,12 @@ input { font-family: inherit; }
 .coltab.alert:not(.on) .ct-ico { color: var(--red); }
 .coltab.alert .ct-n { color: var(--txt); background: transparent; }
 /* prominent orange action button — mirrors the Select-rental-window button */
-/* R5b at CTA size: empty-search "+New X" + the persistent +New Rental row wear the
-   same BLUE create/link language as every other +Thing add (Jac 2026-06-13). */
+/* R5b (the real one) at CTA size: empty-search "+New X" + the +New Rental row use the
+   exact transparent neon-blue dashed add-field.anchor language — NO fill (Jac 2026-06-13). */
 .bigbtn { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 13px 16px;
-  border-radius: 12px; background: var(--blue-bg); border: 1px dashed var(--blue); color: var(--blue);
-  font-weight: 700; font-size: 14px; transition: background .12s, color .12s; }
-.bigbtn:hover { background: var(--blue); color: #fff; }
+  border-radius: 12px; background: transparent; border: 1px dashed rgba(24, 182, 255, .55); color: #18b6ff;
+  font-weight: 700; font-size: 14px; transition: border-color .12s; }
+.bigbtn:hover { border-color: #18b6ff; }
 .bigbtn svg { width: 16px; height: 16px; }
 .empty-new { display: flex; flex-direction: column; gap: 12px; padding: 18px 6px; align-items: stretch; text-align: center; }
 /* (Wave 2) guide popup + blank-col CSS removed with pick mode */
@@ -1015,6 +1015,14 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .rb-ex { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
 .rb-info { font-size: 12px; min-width: 0; }
 .rb-info code { font-size: 10px; color: var(--txt-3); font-family: ui-monospace, monospace; }
+/* collapsible live index of every element wearing this rule (Jac 2026-06-13) */
+.rb-idx { margin-top: 6px; font-size: 11px; }
+.rb-idx > summary { cursor: pointer; color: var(--txt-3); font-weight: 700; list-style: none; user-select: none; display: inline-flex; align-items: center; gap: 5px; }
+.rb-idx > summary::-webkit-details-marker { display: none; }
+.rb-idx > summary::before { content: '▸'; font-size: 9px; transition: transform .12s; }
+.rb-idx[open] > summary::before { transform: rotate(90deg); }
+.rb-idx-row { display: flex; gap: 8px; padding: 2px 0 2px 14px; color: var(--txt-2); }
+.rb-idx-loc { color: var(--accent); font-weight: 700; min-width: 76px; flex-shrink: 0; }
 
 /* ── §13 v2 BUILD: gate pills · derived pills · flags · section colors ·
       timeline · yard/transport journeys · history chips · WO grid · toggles
