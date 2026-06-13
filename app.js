@@ -6510,8 +6510,8 @@ function winPickDay(iso) {
   const wp = state.winpicker; if (!wp) return;
   const r = IDX.rental.get(wp.rentalId); if (!r) return;
   const subject = winPickSubject();
-  if (dayBlocked(subject, iso, r.rentalId)) {            // §10 can't pick a day the anchored unit/category can't honor
-    toast(`That day is unavailable for the selected ${subject.kind}.`); return;
+  if (dayBlocked(subject, iso, r.rentalId) && !state.overbookOn) {   // §10 hard-block only while overbooking is OFF
+    toast(`That day is unavailable for the selected ${subject.kind}. Allow overbooking in Settings to force it.`); return;
   }
   if (!wp.anchor || (r.startDate && r.endDate)) {        // begin a fresh range
     wp.anchor = iso; r.startDate = iso; r.endDate = '';
@@ -6589,13 +6589,14 @@ function winPickerEl(r) {
   for (let day = 1; day <= daysIn; day++) {
     const iso = isoOf(new Date(y, m, day));
     const blocked = dayBlocked(subject, iso, r.rentalId);
-    let cls = 'wp-day js-wp-day' + (blocked ? ' wp-blocked' : '');
+    const soft = blocked && state.overbookOn;   // overbooking allowed → a selectable warning, not a hard block
+    let cls = 'wp-day js-wp-day' + (blocked ? ' wp-blocked' : '') + (soft ? ' wp-soft' : '');
     if (iso === lo) cls += ' range-start';
     if (hi && iso === hi) cls += ' range-end';
     if (hi && iso > lo && iso < hi) cls += ' in-range';
     if (a && iso === a && !hi) cls += ' range-start range-end';
     if (iso === TODAY_ISO) cls += ' today';
-    cells += `<button class="${cls}" data-iso="${iso}"${blocked ? ' aria-disabled="true"' : ''}>${day}</button>`;
+    cells += `<button class="${cls}" data-iso="${iso}"${blocked && !soft ? ' aria-disabled="true"' : ''}>${day}</button>`;
   }
   const subjName = subject && (subject.kind === 'unit' ? IDX.unit.get(subject.id)?.name : IDX.category.get(subject.id)?.name);
   const dows = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => `<span class="wp-dow">${d}</span>`).join('');
@@ -6604,7 +6605,7 @@ function winPickerEl(r) {
     <div class="wp-head"><span class="wp-month">${MONTH_NAMES[m]} ${y}</span>
       <span class="wp-nav"><button class="js-wp-prev" data-tip="Previous month">‹</button><button class="js-wp-next" data-tip="Next month">›</button></span></div>
     <div class="wp-grid">${dows}${cells}</div>
-    ${subjName ? `<div class="wp-blocknote">Greyed days are unavailable for <b>${esc(subjName)}</b></div>` : ''}
+    ${subjName ? `<div class="wp-blocknote">Greyed days are ${state.overbookOn ? 'booked' : 'unavailable'} for <b>${esc(subjName)}</b>${state.overbookOn ? ' — overbooking is on, pick to force' : ''}</div>` : ''}
     <div class="wp-foot"><button class="pill ghost js-wp-clear" data-r="R18">Clear</button><button class="pill ghost js-wp-today" data-r="R18">Today</button><button class="pill c-commit js-wp-done" data-r="R17">Done</button></div>
   </div>`;
 }
