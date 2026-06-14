@@ -717,6 +717,51 @@ input { font-family: inherit; }
 .active-bar.bipolar .active-lbl { z-index: 3; font-family: 'Saira Condensed', system-ui, sans-serif; letter-spacing: .5px; font-size: 11px; }
 @media (prefers-reduced-motion: reduce) { .active-bar.bipolar .ab-fill { transition: none; } }
 
+/* §12.1 CUSTOMER ACTIVITY panel (Jac 2026-06-14) — spend-by-month chart + the
+   five-stage cadence track, on a steel data-plate. */
+.ca-panel { position: relative; border-radius: 12px; padding: 12px; margin-top: 4px; overflow: hidden;
+  background: linear-gradient(180deg,#1b2129,#0c0e11); border: 1px solid #2a313b;
+  box-shadow: 0 14px 34px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.04); }
+.ca-panel::before { content:''; position:absolute; top:0; left:0; right:0; height:4px; border-bottom:1px solid #000;
+  background: repeating-linear-gradient(135deg, var(--yellow) 0 8px, #14181d 8px 16px); }
+.ca-stage { position:absolute; top:13px; left:13px; z-index:8; font-family:'Saira Condensed',system-ui,sans-serif;
+  text-transform:uppercase; letter-spacing:.8px; font-weight:800; font-size:12px; padding:4px 11px; border-radius:7px;
+  color:var(--on-orange); background:linear-gradient(180deg,#ff9038,var(--accent));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.32), 0 3px 9px -3px rgba(255,122,26,.5); }
+.ca-stage.c-green { background:linear-gradient(180deg,#4ce0a8,var(--green)); color:#06231a; }
+.ca-stage.c-yellow { background:linear-gradient(180deg,#ffd95e,var(--yellow)); color:#2a1f00; }
+.ca-stage.c-red { background:linear-gradient(180deg,#ff6a6a,var(--red)); color:#2a0606; }
+.ca-stage.c-gray { background:linear-gradient(180deg,#9aa3b0,var(--gray)); color:#10141a; }
+.ca-stage.deep { background: repeating-linear-gradient(135deg, var(--red) 0 8px, #14181d 8px 16px); color:#fff; }
+.ca-chart { position:relative; height:172px; margin-top:6px; }
+.ca-svg { display:block; width:100%; height:150px; }
+.ca-months { display:flex; justify-content:space-between; margin-top:2px;
+  font-family:'Saira Condensed',system-ui,sans-serif; text-transform:uppercase; letter-spacing:.4px; font-size:8px; color:var(--txt-3); }
+.ca-dot { position:absolute; width:5px; height:5px; border-radius:50%; background:var(--accent); border:1.5px solid #0c0e11; transform:translate(-50%,-50%); z-index:3; }
+.ca-dot.big { width:8px; height:8px; box-shadow:0 0 0 2px rgba(255,122,26,.3); }
+.ca-conn { position:absolute; border-left:2px dotted rgba(255,122,26,.5); height:14px; transform:translateX(-1px); z-index:4; }
+.ca-co { position:absolute; transform:translateX(-50%); z-index:6; white-space:nowrap; display:flex; align-items:center; gap:6px; }
+.ca-bag { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; font-size:13px; background:#0c0f14; border:1px solid #2a313b; flex:0 0 auto; }
+.ca-cc { background:#12161c; border:1px solid #2a313b; border-radius:8px; padding:4px 8px; box-shadow:0 8px 18px -8px rgba(0,0,0,.7); }
+.ca-cv { font-family:'Saira Condensed',system-ui,sans-serif; font-weight:800; font-size:13px; line-height:1; color:var(--txt); }
+.ca-cl { display:block; font-family:'Saira Condensed',system-ui,sans-serif; text-transform:uppercase; letter-spacing:.6px; font-size:7.5px; color:var(--txt-3); margin-top:1px; }
+.ca-track-wrap { margin-top:8px; }
+.ca-track { position:relative; height:22px; border-radius:6px; overflow:hidden; display:flex; border:1px solid #2a313b; box-shadow: inset 0 2px 5px rgba(0,0,0,.55); }
+.ca-seg { height:100%; }
+.ca-seg.s-green { background:linear-gradient(180deg,rgba(52,211,153,.5),rgba(52,211,153,.28)); }
+.ca-seg.s-yellow { background:linear-gradient(180deg,rgba(245,197,66,.55),rgba(245,197,66,.3)); }
+.ca-seg.s-orange { background:linear-gradient(180deg,rgba(255,122,26,.6),rgba(255,122,26,.32)); }
+.ca-seg.s-red { background:linear-gradient(180deg,rgba(255,66,66,.55),rgba(255,66,66,.3)); }
+.ca-seg.s-lost { background: repeating-linear-gradient(135deg, var(--red) 0 7px, #14181d 7px 14px); opacity:.92; }
+.ca-seg + .ca-seg { border-left:1px solid rgba(0,0,0,.4); }
+.ca-mk { position:absolute; top:-2px; bottom:-2px; width:2px; z-index:3; }
+.ca-mk.exp { background:rgba(255,255,255,.7); } .ca-mk.last { background:rgba(255,255,255,.3); }
+.ca-today { position:absolute; top:-5px; bottom:-5px; width:3px; background:var(--accent); z-index:5; border-radius:2px; box-shadow:0 0 0 2px rgba(255,122,26,.25), 0 0 9px rgba(255,122,26,.5); }
+.ca-tdot { position:absolute; top:-5px; left:50%; transform:translateX(-50%); width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px #0c0e11; }
+.ca-axis { display:flex; justify-content:space-between; margin-top:6px; }
+.ca-k { display:block; font-family:'Saira Condensed',system-ui,sans-serif; text-transform:uppercase; letter-spacing:.8px; font-weight:700; font-size:8.5px; color:var(--txt-3); }
+.ca-d { font-weight:600; color:var(--txt-2); font-size:11.5px; }
+
 /* §12 Comment markers (Jac, Phase 6) — a colored dot on a record that FLASHES until
    the viewing user opens it, then rests static. Color = most-urgent unread note. */
 .cmt-marker { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; box-shadow: 0 0 0 2px rgba(0,0,0,.3); }

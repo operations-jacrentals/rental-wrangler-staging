@@ -2306,29 +2306,84 @@ function yardToolHtml(u) {
 }
 /* one open-WO section on the Units card: WO name = the title, type+date flags right,
    +Part/Task shares the totals row, gate line statuses, +Invoice + if-billed formula */
-/* §12.1 — the customer Activity gauge (Jac, Phase 6): a bipolar −100…+100 read of
-   where a customer sits in their OWN rental cadence. Just rented = +100%; it eases to
-   0 across their avgFrequencyDays, then swings negative once overdue, hitting −100% at
-   ~2× the interval (rents every 10 days → −100% by day 20). Five stages. */
-function activityStage(pct) {
-  if (pct >= 50) return { label: 'Active', color: 'green' };
-  if (pct >= 0) return { label: 'Renting Soon', color: 'yellow' };
-  if (pct > -50) return { label: 'Action Required', color: 'orange' };
-  if (pct > -80) return { label: 'Inactive', color: 'red' };
-  return { label: 'Lost Customer', color: 'red', deep: true };
-}
+/* §12.1 — CUSTOMER ACTIVITY (Jac 2026-06-14, redesigned): a spend-by-month chart
+   over a five-stage cadence track keyed on NEXT EXPECTED (last rental + the
+   customer's avg interval). Stages by % PAST expected:
+   Active (before) · Check-in (≤25%) · Action Required (>25%) · Inactive (>50%) · Lost (>100%).
+   The track axis runs signed −100%…+150% past → 0…100% of the bar, so Expected
+   lands at 40% and the overdue zones fill the rest. */
+const ACT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function customerActivity(c) {
   const d = c._digest || {};
   const f = Number(d.avgFrequencyDays) || 0;
-  let pct;
-  if (f > 0 && d.lastInvoice) {
-    const since = Math.max(0, Math.round((parseISO(TODAY_ISO) - parseISO(d.lastInvoice)) / 86400000));
-    pct = since <= f ? 100 * (f - since) / f : -100 * (since - f) / f;   // +100 just-rented → 0 at the interval → −100 at 2× overdue
-  } else {
-    pct = d.activePct || 0;                                              // no cadence yet (new / one-off) → legacy positive measure
-  }
-  pct = Math.max(-100, Math.min(100, Math.round(pct)));
-  return { pct, ...activityStage(pct) };
+  const last = d.lastInvoice || '';
+  if (!(f > 0) || !last) return { stage: 'New', color: 'gray', pos: 6, pastPct: null, lastDate: last, expDate: '' };
+  const lastT = parseISO(last), today = parseISO(TODAY_ISO);
+  const expT = new Date(lastT.getTime() + f * 86400000);
+  const since = Math.max(0, Math.round((today - lastT) / 86400000));
+  const past = since - f;                                  // days past expected (negative = before)
+  const pastPct = Math.round(100 * past / f);              // signed % past expected
+  let stage, color, deep = false;
+  if (past < 0) { stage = 'Active'; color = 'green'; }
+  else if (pastPct <= 25) { stage = 'Check-in'; color = 'yellow'; }
+  else if (pastPct <= 50) { stage = 'Action Required'; color = 'orange'; }
+  else if (pastPct <= 100) { stage = 'Inactive'; color = 'red'; }
+  else { stage = 'Lost'; color = 'red'; deep = true; }
+  const pos = Math.max(2, Math.min(100, (pastPct + 100) / 250 * 100));   // signed −100…+150 → 0…100
+  return { stage, color, deep, pastPct, pos, since, f, lastDate: last, expDate: isoOf(expT) };
+}
+/* best-effort dollar value for one rental (sum per-unit price, else the carried price) */
+function rentalAmt(r) {
+  let sum = 0;
+  (rentalUnits(r) || []).forEach((eu) => {
+    const u = IDX.unit.get(eu.unitId);
+    if (u) { const p = rentalPrice({ categoryId: u.categoryId, startDate: r.startDate, endDate: r.endDate, customerId: r.customerId }); if (p) sum += p.price; }
+  });
+  if (!sum) { const t = rentalPrice(r); if (t && t.price) sum = t.price; }
+  return sum;
+}
+/* spend bucketed by month for the last n months (ending this month) */
+function customerMonthly(c, n = 9) {
+  const today = parseISO(TODAY_ISO), out = [];
+  for (let i = n - 1; i >= 0; i--) { const dt = new Date(today.getFullYear(), today.getMonth() - i, 1); out.push({ y: dt.getFullYear(), m: dt.getMonth(), label: ACT_MONTHS[dt.getMonth()], total: 0 }); }
+  DATA.rentals.filter((r) => r.customerId === c.customerId && r.startDate).forEach((r) => {
+    const s = parseISO(r.startDate); if (!s) return;
+    const b = out.find((x) => x.y === s.getFullYear() && x.m === s.getMonth());
+    if (b) b.total += rentalAmt(r) || 0;
+  });
+  return out;
+}
+/* the activity panel — spend-by-month area chart + the five-stage cadence track */
+function customerActivityChart(c) {
+  const a = customerActivity(c);
+  const months = customerMonthly(c, 9);
+  const max = Math.max(1, ...months.map((b) => b.total));
+  const W = 100, H = 150, padT = 30, baseY = 128;
+  const px = (i) => 4 + i * (W - 8) / (months.length - 1);
+  const py = (v) => baseY - (v / max) * (baseY - padT);
+  const pts = months.map((b, i) => ({ x: px(i), y: py(b.total) }));
+  const sm = (p) => { let d = `M${p[0].x},${p[0].y}`; for (let i = 0; i < p.length - 1; i++) { const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2; const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6, c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6; d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`; } return d; };
+  const line = sm(pts), area = `${line} L${pts[pts.length - 1].x},${baseY} L${pts[0].x},${baseY} Z`;
+  const peakI = months.reduce((bi, b, i, arr) => (b.total > arr[bi].total ? i : bi), 0);
+  const peak = months[peakI];
+  const dots = pts.map((p, i) => `<span class="ca-dot${i === peakI || i === pts.length - 1 ? ' big' : ''}" style="left:${p.x.toFixed(1)}%;top:${p.y.toFixed(1)}px"></span>`).join('');
+  const coX = Math.max(20, Math.min(80, pts[peakI].x));   // keep the callout off the edges + the stage badge
+  const peakCo = peak.total > 0 ? `<span class="ca-conn" style="left:${pts[peakI].x.toFixed(1)}%;top:${(pts[peakI].y - 14).toFixed(1)}px"></span>
+    <span class="ca-co" style="left:${coX}%;top:${Math.max(0, pts[peakI].y - 44).toFixed(1)}px"><span class="ca-bag">💰</span><span class="ca-cc"><span class="ca-cv">${money(peak.total)}</span><span class="ca-cl">Best Month · ${peak.label}</span></span></span>` : '';
+  const months_lbl = months.map((b) => `<span>${b.label}</span>`).join('');
+  const needle = a.pastPct === null ? '' : `<span class="ca-today" style="left:${a.pos.toFixed(1)}%"><span class="ca-tdot"></span></span>`;
+  return `<div class="ca-panel" data-tip="Customer activity — spend by month + where they sit in their rental cadence">
+    <div class="ca-stage c-${a.color}${a.deep ? ' deep' : ''}">${esc(a.stage)}</div>
+    <div class="ca-chart">
+      <svg class="ca-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="caFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".02"/></linearGradient></defs><path d="${area}" fill="url(#caFill)"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+      ${dots}${peakCo}
+      <div class="ca-months">${months_lbl}</div>
+    </div>
+    <div class="ca-track-wrap">
+      <div class="ca-track"><div class="ca-seg s-green" style="flex:0 0 40%"></div><div class="ca-seg s-yellow" style="flex:0 0 10%"></div><div class="ca-seg s-orange" style="flex:0 0 10%"></div><div class="ca-seg s-red" style="flex:0 0 20%"></div><div class="ca-seg s-lost" style="flex:0 0 20%"></div><span class="ca-mk last" style="left:0"></span><span class="ca-mk exp" style="left:40%"></span>${needle}</div>
+      <div class="ca-axis"><div><span class="ca-k">Last Rental</span><span class="ca-d">${a.lastDate ? fmtShortDate(a.lastDate) : '—'}</span></div><div style="text-align:center"><span class="ca-k">Next Expected</span><span class="ca-d">${a.expDate ? fmtShortDate(a.expDate) : '—'}</span></div><div style="text-align:right"><span class="ca-k">Today</span><span class="ca-d">${fmtShortDate(TODAY_ISO)}</span></div></div>
+    </div>
+  </div>`;
 }
 
 /* ── COMMENTS (Jac, Phase 6) — a structured note with a color (red/yellow/green) that
@@ -2926,15 +2981,7 @@ const DETAIL = {
     // Jac 2026-06-12: NO badge row — account type + pay status are R9 title flags,
     // the account gate (R1) rides the title row. Selfie + agreement live in ACCOUNT.
     const title = `<span class="d-title">${esc(fullName(c)) || 'New Customer'}</span>`;
-    const act = customerActivity(c);
-    const aFill = `left:${act.pct >= 0 ? 50 : 50 + act.pct / 2}%;width:${Math.abs(act.pct) / 2}%`;   // grow out from the center zero
-    const aTicks = [-80, -50, 50, 80].map((v) => `<span class="ab-tick" style="left:${50 + v / 2}%"></span>`).join('');
-    const activeBar = `<div class="active-bar bipolar wide" data-tip="Where this customer sits in their rental pattern (in-pattern → out-of-pattern)">
-      ${aTicks}<span class="ab-zero"></span>
-      <div class="ab-fill${act.deep ? ' deep' : ''}" style="${aFill};background:var(--${act.color})"></div>
-      <span class="ab-stage">${act.label}</span>
-      <span class="active-lbl">${act.pct > 0 ? '+' : ''}${act.pct}%</span>
-    </div>`;
+    const activeBar = customerActivityChart(c);
 
     const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id }) : ''; }).join('');
     const usedSales = `<div class="section"><h4>Used Sales</h4><div class="fieldstack centered">
