@@ -8264,6 +8264,7 @@ function boot() {
   // hover preview (#1): float a record's Standard view after a short hover on a row/pill
   document.addEventListener('mouseover', (e) => {
     if (!state.previewsOn || DRAG.active) return;       // previews off (per device) — and NEVER mid-drag (§15c)
+    if (e.target.closest('.hover-preview')) return;     // hovering INSIDE the open preview must NOT re-trigger/close it — let it persist so you can scroll/interact (the preview's own mouseenter/leave manage it)
     // interactive controls are CLICK targets, not preview triggers — the popup kept
     // landing under the cursor while aiming at the status dropdown (Jac 2026-06-12).
     // The row EYE is the one button that IS a preview trigger.
