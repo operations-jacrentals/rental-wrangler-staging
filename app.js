@@ -745,6 +745,7 @@ const state = {
   fleetFilter: null,          // { categoryId, status } — fleet-summary badge → units by status
   unitPick: null,             // { ids, from } — Invoice +WO narrows the Units list to the invoice's linked units (Phase 4)
   chat: { open: false, activeId: null, draft: '', chats: [] },   // §17 internal team dock (Phase 7): PERSISTENT chats (never deleted). Each = { id, tags, participants, messages, seen{userKey:lastViewedAt} }. Empty participants = dormant; reopen via a tagged element.
+  mobileCol: 0,               // §M1 — which column the phone shows (0 Yard · 1 Rentals · 2 Customers); drives swipe position + the per-column bottom strip
   woPartForm: null,           // woId whose "+ Add Part/Labor" inline form is open
   invLineForm: null,          // invoiceId whose "+ Add Custom" inline form is open
   dashboard: false,           // §5.3/§11 Office Dispatch Time Grid (grid-swap mode)
@@ -3842,11 +3843,10 @@ function headerEl() {
   return h;
 }
 /** The action toolbar — moved to a fixed bottom bar (Dashboard / +New / tools). */
-function bottomBarEl() {
-  const bar = el('div', 'bottombar');
+function bottomBarInner() {
   // rules 5/6: LEFT = labeled actions (icon LEADS label, no "+"), Wash joins them;
   // RIGHT (after divider) = icon-only utilities. The +New collapse button is dropped (Jac).
-  bar.innerHTML = `
+  return `
     <button class="iconbtn js-dashboard">${I.grid} Dashboard</button>
     <button class="iconbtn js-newitem" data-new="receipt">${CARD_ICON.expenses}Receipt</button>
     <span class="bb-sep"></span>
@@ -3860,7 +3860,19 @@ function bottomBarEl() {
     ${adminUnlocked() ? `<button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
     <button class="iconbtn js-inspect${state.inspect ? ' on' : ''}" data-tip="Design Inspector — hover names the rule, click copies the reference">${I.search}</button>
     <button class="iconbtn js-rulebook" data-tip="The R-Rulebook — visual design reference (SPEC v7)">${I.doc}</button>` : ''}`;
-  return bar;
+}
+function bottomBarEl() { const bar = el('div', 'bottombar'); bar.innerHTML = bottomBarInner(); return bar; }
+// §M1 — phone-only per-column bottom strip: Yard→internal chat · Rentals→tool bar · Customers→external chats (shell).
+function mobileDockEl() {
+  const col = state.mobileCol;
+  const dots = `<div class="mdock-dots">${[0, 1, 2].map((i) => `<button class="mdot${i === col ? ' on' : ''}" data-mcol="${i}" aria-label="Column ${i + 1}"></button>`).join('')}</div>`;
+  let strip;
+  if (col === 1) strip = `<div class="mdock-tools">${bottomBarInner()}</div>`;                       // Rentals → tool bar
+  else if (col === 2) strip = `<button class="mdock-bar js-ext-chat">${I.chat}<span class="mdock-lbl">External chats</span><span class="mdock-soon">soon</span></button>`;   // Customers → external (shell)
+  else { const n = chatUnreadCount(); strip = `<button class="mdock-bar js-chat-toggle">${I.chat}<span class="mdock-lbl">Team chat</span>${n ? `<span class="bb-badge" style="position:static;margin-left:auto">${n > 9 ? '9+' : n}</span>` : ''}</button>`; }   // Yard → internal chat
+  const d = el('div', 'mobile-dock');
+  d.innerHTML = dots + strip;
+  return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
    §17 INTERNAL TEAM DOCK (Jac, Phase 7) — a bottom-bar chat built on the Phase-6
@@ -5072,6 +5084,12 @@ function render() {
   for (const col of COLUMNS) grid.appendChild(columnEl(col, session));
   const bottomBar = bottomBarEl();
   $('#app').replaceChildren(header, grid, bottomBar);
+  // §M1 — on phones, the global bar is hidden (CSS) and a per-column strip is docked;
+  // restore the swipe position so an action's re-render doesn't snap back to column 1.
+  if (document.body.classList.contains('is-phone')) {
+    $('#app').appendChild(mobileDockEl());
+    grid.scrollLeft = state.mobileCol * (grid.clientWidth || window.innerWidth);
+  }
   // restore the per-card scroll captured above
   Object.keys(scrollMemo).forEach((card) => { const b = document.querySelector(`.card[data-card="${card}"] .card-body`); if (b) b.scrollTop = scrollMemo[card]; });
   document.documentElement.setAttribute('data-theme', state.theme);
@@ -5639,6 +5657,8 @@ function onClick(e) {
   if (closest('.js-rulebook')) return openOverlay({ kind: 'rulebook' });
   if (closest('.js-feedback')) { e.stopPropagation(); return openOverlay({ kind: 'feedback', fbType: 'Bug', text: '', shot: '', error: '', busy: false }); }
   // §17 internal team dock
+  if (closest('[data-mcol]')) { e.stopPropagation(); state.mobileCol = +closest('[data-mcol]').dataset.mcol; return render(); }   // §M1 dot nav
+  if (closest('.js-ext-chat')) { e.stopPropagation(); return toast('External customer & vendor chats arrive with the messaging backend.'); }
   if (closest('.js-chat-toggle')) { e.stopPropagation(); state.chat.open = !state.chat.open; return render(); }
   if (closest('.js-chat-close')) { e.stopPropagation(); state.chat.open = false; return render(); }
   if (closest('.js-chat-back')) { e.stopPropagation(); state.chat.activeId = null; return render(); }   // back to the all-flags overview (chat persists)
@@ -7849,8 +7869,21 @@ function applyViewportClass() {
 function boot() {
   initTooltip();
   applyViewportClass();
-  window.matchMedia('(max-width: 640px)').addEventListener('change', applyViewportClass);
-  window.matchMedia('(max-width: 1024px)').addEventListener('change', applyViewportClass);
+  const onVP = () => { applyViewportClass(); if (!booting) render(); };
+  window.matchMedia('(max-width: 640px)').addEventListener('change', onVP);
+  window.matchMedia('(max-width: 1024px)').addEventListener('change', onVP);
+  // §M1 — phone swipe: the grid is a scroll-snap track; on settle, sync the active
+  // column (drives the per-column bottom strip + the dot indicator). Capture phase
+  // because scroll doesn't bubble. Change-guarded so the render() scroll-restore is a no-op.
+  let gridScrollT = null;
+  document.addEventListener('scroll', (e) => {
+    if (!e.target.classList || !e.target.classList.contains('grid') || !document.body.classList.contains('is-phone')) return;
+    clearTimeout(gridScrollT);
+    gridScrollT = setTimeout(() => {
+      const g = e.target, idx = Math.max(0, Math.min(2, Math.round(g.scrollLeft / (g.clientWidth || 1))));
+      if (idx !== state.mobileCol) { state.mobileCol = idx; render(); }
+    }, 130);
+  }, true);
   initDrag();   // §15c drag & drop link engine — #drag-layer singleton + document pointer listeners
   // R0 flash-lint: ON by default — violations self-report by pulsing (SPEC v7)
   try { if (localStorage.getItem('jactec.lint') !== '0') document.body.classList.add('rw-lint'); } catch (err) {}

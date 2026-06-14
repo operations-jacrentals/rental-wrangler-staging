@@ -263,6 +263,23 @@ input { font-family: inherit; }
   .col { flex: 0 0 100%; }
   body { overflow-x: hidden; }   /* safety net: nothing scrolls the page sideways on a phone */
 }
+/* ── §M1 Mobile — per-column bottom strip (phone only) + swipe dots. The global
+   bar is hidden; each column docks its own strip (Yard→chat · Rentals→tools ·
+   Customers→external chats). Swipe (native scroll-snap) moves between columns. */
+.is-phone .bottombar { display: none; }
+.mobile-dock { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--line);
+  background: var(--panel); padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+.mdock-dots { display: flex; justify-content: center; gap: 4px; padding: 6px 0 3px; }
+.mdot { width: 22px; height: 18px; border: none; background: none; padding: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.mdot::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--txt-3); opacity: .4; transition: opacity .15s, transform .15s, background .15s; }
+.mdot.on::before { opacity: 1; background: var(--accent); transform: scale(1.25); }
+.mdock-bar { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 8px 16px; border: none; cursor: pointer; background: transparent; color: var(--txt);
+  font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; font-size: 14px; }
+.mdock-bar svg { width: 20px; height: 20px; flex: 0 0 auto; color: var(--accent); }
+.mdock-bar .mdock-soon { margin-left: auto; font-size: 10px; letter-spacing: 1px; color: var(--txt-3); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; }
+.mdock-tools { display: flex; align-items: center; gap: 4px; overflow-x: auto; padding: 3px 8px 5px; scrollbar-width: none; }
+.mdock-tools::-webkit-scrollbar { display: none; }
+.mdock-tools .iconbtn { flex: 0 0 auto; min-height: 42px; }
 /* Card tabs = a SEGMENTED NAV BAR (one container, flat segments) — now sit INSIDE
    the card at its top, centered, so the card's height/glow includes the toggles. */
 .col-tabs { display: inline-flex; gap: 3px; flex: 0 0 auto; align-self: center; max-width: calc(100% - 16px); overflow: hidden;
