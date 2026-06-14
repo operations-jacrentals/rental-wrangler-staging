@@ -3903,27 +3903,28 @@ function chatFeed() {
   const comments = chatComments().filter((cm) => refs.some((r) => r.card === cm.card && String(r.recId) === String(cm.recId)));
   return [...comments, ...c.messages.map((m) => ({ ...m, kind: 'msg' }))].sort((a, b) => (a.at || 0) - (b.at || 0));
 }
+const CHAT_AV = ['blue', 'orange', 'green', 'purple', 'yellow', 'red'];
+function chatInitials(name) { return (String(name || '?').replace(/\(.*?\)/g, '').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?').toUpperCase(); }
+function chatAvatarColor(name) { let h = 0; const s = String(name || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return `var(--${CHAT_AV[h % CHAT_AV.length]})`; }
 function chatDockEl() {
   chatMarkSeen();   // §17 — the open dock is "seen": clears the re-flash for this user
   const c = activeChat();
-  const title = c && c.tags.length ? c.tags[0].label + (c.tags.length > 1 ? ` +${c.tags.length - 1}` : '') : 'Team';
-  const roleBtns = c ? ROLES.map((r) => `<button class="chat-role${chatRoleOn(r.id) ? ' on' : ''}" data-chat-role="${esc(r.id)}" style="--rc:var(--${r.color})" data-tip="${esc(r.label)} — ${chatRoleOn(r.id) ? 'in the chat' : 'left out'}">${esc(r.label)}</button>`).join('') : '';
-  const rail = c
-    ? (c.tags.length
-        ? `<div class="chat-rail">${c.tags.map((t) => `<span class="chat-tag c-${t.color || 'gray'}" data-tip="${esc(t.label)}"><span class="ct-lbl">${esc(t.label)}</span><button class="x" data-chat-untag="${esc(t.id)}" aria-label="Remove">${I.x}</button></span>`).join('')}</div>`
-        : `<div class="chat-rail empty">Drag a record, line, pill or price up here to tag the chat</div>`)
-    : `<div class="chat-rail empty">Right-click a record → Start chat, or drag one here. Flagged comments are below.</div>`;
   const u = commentUserKey();
+  // tagged-element rail at the very top (no header, per Jac) — close/back ride the rail's end
+  const tagsHtml = c ? c.tags.map((t) => `<span class="chat-tag c-${t.color || 'gray'}" data-tip="${esc(t.label)}"><span class="ct-dot"></span><span class="ct-lbl">${esc(t.label)}</span><button class="x" data-chat-untag="${esc(t.id)}" aria-label="Remove ${esc(t.label)}">${I.x}</button></span>`).join('') : '<span class="chat-rail-hint">No chat open — right-click a record or drag an element in</span>';
+  const rail = `<div class="chat-rail">${tagsHtml}<span class="rail-sp"></span>${c ? `<button class="rail-ico js-chat-back" aria-label="All flags" data-tip="All flags">${I.chevL}</button>` : ''}<button class="rail-ico js-chat-close" aria-label="Close chat" data-tip="Close">${I.x}</button></div>`;
   const feed = chatFeed().map((it) => {
-    if (it.kind === 'msg') return `<div class="chat-msg"><span class="cm-by">${esc(it.by || 'Team')}</span> <span class="cm-text">${esc(it.text)}</span></div>`;
-    const unread = !(it.ack || []).includes(u);
-    return `<button class="chat-fitem${unread ? ' unread' : ''}" data-chat-open="${esc(it.card)}|${esc(it.recId)}"><span class="cmt-marker c-${it.color}"></span><span class="cf-body"><span class="cf-text">${esc(it.text)}</span><span class="cf-meta">${esc(it.by || '—')} · on <b>${esc(it.recName)}</b></span></span></button>`;
-  }).join('') || '<div class="chat-empty">No flags yet — comments you leave on records land here.</div>';
-  return `<div class="chat-head"><span class="chat-title">${esc(title)}</span>${c ? `<button class="chat-leave js-chat-back" data-tip="Back to all flags">${I.chevL}</button>` : ''}<span class="spacer"></span><button class="x js-chat-close" aria-label="Close">${I.x}</button></div>
-    ${rail}
+    if (it.kind === 'msg') {
+      if (it.by === u) return `<div class="cbub-row me"><div class="cbub me">${esc(it.text)}</div></div>`;
+      return `<div class="cbub-row"><span class="cav" style="--av:${chatAvatarColor(it.by)}">${esc(chatInitials(it.by))}</span><div class="cbub-wrap"><span class="cbub-name">${esc(it.by || 'Team')}</span><div class="cbub">${esc(it.text)}</div></div></div>`;
+    }
+    return `<button class="cflag" data-chat-open="${esc(it.card)}|${esc(it.recId)}"><span class="cmt-marker c-${it.color}"></span><span class="cflag-b"><span class="cflag-t">${esc(it.text)}</span><span class="cflag-m">flagged · on ${esc(it.recName)}</span></span></button>`;
+  }).join('') || `<div class="chat-empty">${c ? 'No messages yet — say something.' : 'Flagged comments show up here. Start a chat from any record or element.'}</div>`;
+  const roles = c ? `<div class="chat-rolebar">${ROLES.map((r) => `<button class="rtab${chatRoleOn(r.id) ? ' on' : ''}" data-chat-role="${esc(r.id)}" style="--rc:var(--${r.color})" data-tip="${esc(r.label)} — ${chatRoleOn(r.id) ? 'in the chat' : 'left out'}"><span class="rtab-dot"></span><span class="rtab-l">${esc(r.label)}</span></button>`).join('')}</div>` : '';
+  return `${rail}
     <div class="chat-feed">${feed}</div>
-    ${c ? `<div class="chat-roles" data-tip="Toggle which roles are in this chat">${roleBtns}</div>` : ''}
-    <div class="chat-compose"><input class="chat-input" placeholder="${c ? 'Message the team…' : 'Type to start a team chat…'}" value="${esc(state.chat.draft || '')}" /><button class="chat-send js-chat-send" aria-label="Send">${I.chev}</button></div>`;
+    <div class="chat-compose"><input class="chat-input" placeholder="${c ? 'Message the team…' : 'Type to start a team chat…'}" value="${esc(state.chat.draft || '')}" aria-label="Message the team" /><button class="chat-send js-chat-send" aria-label="Send">${I.chev}</button></div>
+    ${roles}`;
 }
 function chatSend() {
   const inp = document.querySelector('.chat-input');
