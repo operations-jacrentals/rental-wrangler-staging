@@ -1233,14 +1233,16 @@ function refPill(card, recId, label, { x, xData } = {}) {
   // customer-name pills get long — clip to ~9 chars (full name stays in the tooltip)
   const tip = (card === 'customers' && label && label.length > 9) ? ` data-tip="${esc(label)}"` : '';
   const shown = (card === 'customers' && label && label.length > 9) ? label.slice(0, 9).trimEnd() + '…' : label;
-  return `<span class="pill ref link" data-r="R2" data-pill-card="${card}" data-pill-rec="${esc(recId)}"${tip}>${CARD_ICON[card] || ''}${esc(shown)}${xb}</span>`;
+  const chat = ` data-chat-el data-chat-label="${esc(label || recId)}" data-chat-color="gray" data-chat-card="${esc(card)}" data-chat-rec="${esc(recId)}"`;   // §17 — link/person pill → draggable into a chat
+  return `<span class="pill ref link" data-r="R2" data-pill-card="${card}" data-pill-rec="${esc(recId)}"${tip}${chat}>${CARD_ICON[card] || ''}${esc(shown)}${xb}</span>`;
 }
 /** R2: a Unit pill — LINKED record, orange outline + units icon. */
 function unitPill(unitId, { x, xData } = {}) {
   const u = IDX.unit.get(unitId);
   if (!u) return badge('No unit');
   const xb = x ? `<span class="x" data-x="${esc(x)}"${xData != null ? ` data-id="${esc(xData)}"` : ''}>✕</span>` : '';
-  return `<span class="pill ref link" data-r="R2" data-pill-card="units" data-pill-rec="${esc(unitId)}">${CARD_ICON.units}${esc(u.name)}${xb}</span>`;
+  const chat = ` data-chat-el data-chat-label="${esc(u.name)}" data-chat-color="gray" data-chat-card="units" data-chat-rec="${esc(unitId)}"`;   // §17
+  return `<span class="pill ref link" data-r="R2" data-pill-card="units" data-pill-rec="${esc(unitId)}"${chat}>${CARD_ICON.units}${esc(u.name)}${xb}</span>`;
 }
 /** R3b: a DATA CHIP — a plain fact (480 HRS, No GPS), independent of R3. */
 const badge = (label, color = 'gray') => `<span class="pill c-${color}" data-r="R3b"><span class="t">${esc(label)}</span></span>`;
@@ -2417,7 +2419,7 @@ const DETAIL = {
           <span class="d1">${esc(relDate(r.startDate))}</span>
           <span class="mid">
             ${masterGate(r, { truck })}
-            ${price ? `<span class="rate">${money(price.price)} · ${esc(price.rate)}</span>` : ''}
+            ${price ? `<span class="rate" data-chat-el data-chat-label="${esc('Rate ' + money(price.price) + ' · ' + price.rate)}" data-chat-color="green" data-chat-card="rentals" data-chat-rec="${esc(r.rentalId)}">${money(price.price)} · ${esc(price.rate)}</span>` : ''}
           </span>
           <span class="d2">${r.startTime ? `<span class="tm">${esc(r.startTime)}</span>` : ''}${esc(relDate(r.endDate))}</span>
         </div>
@@ -2449,7 +2451,7 @@ const DETAIL = {
       const amt = Number(li.amount) || 0;
       const ibColor = paid >= amt && amt > 0 ? 'green' : invT.status === 'Not Due' ? 'blue' : 'red';
       return `<div class="invitem">
-        <span><span class="linkname" data-r="R7" data-pill-card="rentals" data-pill-rec="${esc(r2.rentalId)}">${esc(u2?.name || r2.rentalName || 'Rental')} · ${esc(fmtShortDate(r2.startDate))}–${esc(fmtShortDate(r2.endDate))}${li.ref === r.rentalId ? ' — this rental' : ''}</span><span class="balline" style="margin-left:8px" data-tip="ITEM BALANCE — partial payments are assigned per line item"><b style="color:var(--${ibColor});font-size:12.5px">${money(paid)}</b> <span class="tot" style="font-size:11px">/ ${money(amt)}</span></span></span>
+        <span><span class="linkname" data-r="R7" data-pill-card="rentals" data-pill-rec="${esc(r2.rentalId)}" data-chat-el data-chat-label="${esc('Line · ' + (u2?.name || r2.rentalName || 'Rental') + ' · ' + money(amt))}" data-chat-color="${esc(ibColor)}" data-chat-card="rentals" data-chat-rec="${esc(r2.rentalId)}">${esc(u2?.name || r2.rentalName || 'Rental')} · ${esc(fmtShortDate(r2.startDate))}–${esc(fmtShortDate(r2.endDate))}${li.ref === r.rentalId ? ' — this rental' : ''}</span><span class="balline" style="margin-left:8px" data-tip="ITEM BALANCE — partial payments are assigned per line item"><b style="color:var(--${ibColor});font-size:12.5px">${money(paid)}</b> <span class="tot" style="font-size:11px">/ ${money(amt)}</span></span></span>
         ${miniJourneyHtml(r2, euLine)}
       </div>`;
     }).join('');
@@ -2478,7 +2480,7 @@ const DETAIL = {
           ${fcRow ? kvPills(fcRow) : ''}
         </div>
         <div class="side r">
-          ${invT ? `<div class="kv"><span class="balline"><b style="color:var(--${balColor})">${money(invT.paid)}</b> <span class="tot">/ ${money(invT.total)}</span></span></div>` : (price ? kv(money(price.price), { sfx: `· ${price.rate}`, derived: true }) : '')}
+          ${invT ? `<div class="kv"><span class="balline" data-chat-el data-chat-label="${esc('Balance ' + money(invT.paid) + ' / ' + money(invT.total))}" data-chat-color="${esc(balColor)}" data-chat-card="invoices" data-chat-rec="${esc(inv.invoiceId)}"><b style="color:var(--${balColor})">${money(invT.paid)}</b> <span class="tot">/ ${money(invT.total)}</span></span></div>` : (price ? kv(money(price.price), { sfx: `· ${price.rate}`, derived: true }) : '')}
           ${invT && inv.dueDate ? `<div class="kv"><span class="derived" style="font-size:11px">due ${fmtShortDate(inv.dueDate)}</span></div>` : ''}
           ${(r.deliveryAddress && tr.driveMin != null) ? kv(`${tr.driveMin} min`, { sfx: '/one-way', derived: true }) : ''}
         </div>
