@@ -7840,8 +7840,17 @@ async function attemptLogin() {
   }
 }
 
+// §M0 — reflect the viewport width onto <body> so CSS + the gesture layer can key off
+// it (is-phone = 1 column, is-narrow = 2 columns; neither = desktop 3 columns).
+function applyViewportClass() {
+  document.body.classList.toggle('is-phone', window.matchMedia('(max-width: 640px)').matches);
+  document.body.classList.toggle('is-narrow', window.matchMedia('(max-width: 1024px)').matches);
+}
 function boot() {
   initTooltip();
+  applyViewportClass();
+  window.matchMedia('(max-width: 640px)').addEventListener('change', applyViewportClass);
+  window.matchMedia('(max-width: 1024px)').addEventListener('change', applyViewportClass);
   initDrag();   // §15c drag & drop link engine — #drag-layer singleton + document pointer listeners
   // R0 flash-lint: ON by default — violations self-report by pulsing (SPEC v7)
   try { if (localStorage.getItem('jactec.lint') !== '0') document.body.classList.add('rw-lint'); } catch (err) {}

@@ -247,6 +247,22 @@ input { font-family: inherit; }
 }
 .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: visible; }   /* visible so the anchored glow isn't clipped */
 .col > .card { flex: 1 1 auto; min-height: 0; }                     /* the card fills the column, toggles + body inside it */
+/* ── §M0 Mobile — responsive columns (3 → 2 → 1 by width). The grid becomes a
+   horizontal track of full-width "pages" that scroll-snap; the body never scrolls
+   sideways (the grid clips/scrolls internally). Desktop (> 1024px) is unchanged. */
+@media (max-width: 1024px) {
+  body { min-width: 0; }            /* drop the §4.4 1180px desktop floor so columns size to the real viewport */
+  .grid { display: flex; gap: 0; grid-template-columns: none; grid-template-rows: none;
+    overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding: 12px 0 4px; }
+  .grid::-webkit-scrollbar { display: none; }
+  .col { flex: 0 0 50%; scroll-snap-align: start; overflow: hidden; padding: 0 8px; }
+  .bottombar { overflow-x: auto; scrollbar-width: none; }
+  .bottombar::-webkit-scrollbar { display: none; }
+}
+@media (max-width: 640px) {
+  .col { flex: 0 0 100%; }
+  body { overflow-x: hidden; }   /* safety net: nothing scrolls the page sideways on a phone */
+}
 /* Card tabs = a SEGMENTED NAV BAR (one container, flat segments) — now sit INSIDE
    the card at its top, centered, so the card's height/glow includes the toggles. */
 .col-tabs { display: inline-flex; gap: 3px; flex: 0 0 auto; align-self: center; max-width: calc(100% - 16px); overflow: hidden;
