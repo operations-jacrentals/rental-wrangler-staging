@@ -72,6 +72,13 @@ We walk this **task by task via poll**; decisions get recorded inline.
 - 🆕 **Persist the orange glow behind Search while it's in use** — DECISION (Jac): applies to **BOTH** the global top Search (`.searchwrap`, line 204) AND the per-card mini-search (`.mini-searchwrap`, line 230). "In use" = **any text typed OR any pinned filter term** (even an unsubmitted half-typed query) — glow stays even after focus leaves, clears only when emptied. Today the orange glow is `:focus-within`-only on `.searchwrap`; add a state class (e.g. `.has-query`) toggled on input/terms and give both wraps the same `box-shadow: 0 0 0 3px var(--accent-soft)` glow.
 
 ## Phase 6 — Indicators (flags, flashes, comments, status)
+> ✅ **BUILT + LIVE this session**: (a) **bipolar Active gauge** (−100…+100, cadence-relative
+> per Jac's spec: +100% just-rented → 0 at avgFrequencyDays → −100% at 2× overdue) with five
+> stages Active/Renting Soon/Action Required/Inactive/Lost Customer on a steel data-plate;
+> (b) **colored comments** — composer with red/yellow/green swatches; a marker that FLASHES
+> until the viewing user opens the record (per-user ack on currentUser, already wired to the
+> signed-in user → Phase 7 "Logins" comment-ack item DONE), resting on the most-urgent unread
+> color; still logs to History. Verified per-user flow + UI. Gates green.
 - ✅ **Rulebook R4b + R9b** (which elements flash) — shipped. VERIFY.
 - ✅ **Two flashes on linking** (was 3 → 2) — shipped. VERIFY.
 - 🆕 **Comment feature: flash until acknowledged (per-user)** — DECISION (Jac): a comment drops a **flashing colored marker** on the record AND still logs to History (today's behavior, `app.js:1338`). When entering the comment the user **picks a color — red / yellow / green** (the marker + flash use it). The marker flashes until the **viewing user has acknowledged/viewed** it; acknowledgment is **per-user** (NOT global) — store an `acknowledgedBy` user-id list on the comment so it's ready for the upcoming password/multi-user system (Phase 7 Logins). The comment/marker **stays** after acknowledgment (static colored marker, still readable) — only the flashing stops. Flashes again for any user who hasn't viewed it. NOTE: with a single shared user today, key the seen-state by the active user id so it carries forward when logins land.

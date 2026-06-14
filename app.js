@@ -2798,16 +2798,17 @@ const DETAIL = {
     const activity = acts || scheds ? `<div class="act-cols"><div class="act-col">${acts}</div><div class="act-col">${scheds}</div></div>` : '';
 
     const notes = notesSection('customers', c, 'customerId', 'accountNotes');
-    /* Jac 2026-06-12 order: funnels ABOVE the active bar → action header row →
-       entry → the two action columns → Account → Cards → Notes → History */
+    /* Jac order: filled Notes ABOVE the funnels (under the title) → funnels → active
+       bar → action header → entry → action columns → Account → Cards → (empty Notes) →
+       History. Empty Notes keep the bottom slot per R12 (Jac, Phase 7). */
     return `<div class="detail">
       <div class="detail-head">${title}</div>
+      ${notes.top}
       <div class="detail-cols">${usedSales}${membership}</div>
       ${activeBar}
       ${actHead}
       ${actEntry}
       ${activity}
-      ${notes.top}
       ${account}
       ${cardsSection(c)}
       ${notes.bottom}
