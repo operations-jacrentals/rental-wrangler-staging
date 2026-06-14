@@ -2358,31 +2358,48 @@ function customerActivityChart(c) {
   const a = customerActivity(c);
   const months = customerMonthly(c, 9);
   const max = Math.max(1, ...months.map((b) => b.total));
-  const W = 100, H = 150, padT = 30, baseY = 128;
-  const px = (i) => 4 + i * (W - 8) / (months.length - 1);
+  const H = 150, padT = 30, baseY = 124;
+  const today = parseISO(TODAY_ISO);
+  const startMs = new Date(months[0].y, months[0].m, 1).getTime();
+  const lastD = a.lastDate ? parseISO(a.lastDate) : null;
+  const expD = a.expDate ? parseISO(a.expDate) : null;
+  const endMs = Math.max(today.getTime(), expD ? expD.getTime() : today.getTime()) + 9 * 86400000;
+  const span = Math.max(1, endMs - startMs);
+  const fx = (ms) => 4 + (ms - startMs) / span * 92;                       // date(ms) → x %
+  const clamp = (x) => Math.max(13, Math.min(87, x));
   const py = (v) => baseY - (v / max) * (baseY - padT);
-  const pts = months.map((b, i) => ({ x: px(i), y: py(b.total) }));
-  const sm = (p) => { let d = `M${p[0].x},${p[0].y}`; for (let i = 0; i < p.length - 1; i++) { const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2; const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6, c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6; d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`; } return d; };
-  const line = sm(pts), area = `${line} L${pts[pts.length - 1].x},${baseY} L${pts[0].x},${baseY} Z`;
+  const pts = months.map((b) => ({ x: fx(new Date(b.y, b.m, 15).getTime()), y: py(b.total) }));
+  const sm = (p) => { let d = `M${p[0].x.toFixed(1)},${p[0].y.toFixed(1)}`; for (let i = 0; i < p.length - 1; i++) { const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2; const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6, c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6; d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`; } return d; };
+  const line = sm(pts), area = `${line} L${pts[pts.length - 1].x.toFixed(1)},${baseY} L${pts[0].x.toFixed(1)},${baseY} Z`;
   const peakI = months.reduce((bi, b, i, arr) => (b.total > arr[bi].total ? i : bi), 0);
   const peak = months[peakI];
-  const dots = pts.map((p, i) => `<span class="ca-dot${i === peakI || i === pts.length - 1 ? ' big' : ''}" style="left:${p.x.toFixed(1)}%;top:${p.y.toFixed(1)}px"></span>`).join('');
-  const coX = Math.max(20, Math.min(80, pts[peakI].x));   // keep the callout off the edges + the stage badge
-  const peakCo = peak.total > 0 ? `<span class="ca-conn" style="left:${pts[peakI].x.toFixed(1)}%;top:${(pts[peakI].y - 14).toFixed(1)}px"></span>
-    <span class="ca-co" style="left:${coX}%;top:${Math.max(0, pts[peakI].y - 44).toFixed(1)}px"><span class="ca-bag">💰</span><span class="ca-cc"><span class="ca-cv">${money(peak.total)}</span><span class="ca-cl">Best Month · ${peak.label}</span></span></span>` : '';
-  const months_lbl = months.map((b) => `<span>${b.label}</span>`).join('');
-  const needle = a.pastPct === null ? '' : `<span class="ca-today" style="left:${a.pos.toFixed(1)}%"><span class="ca-tdot"></span></span>`;
-  return `<div class="ca-panel" data-tip="Customer activity — spend by month + where they sit in their rental cadence">
+  const dots = pts.map((p, i) => `<span class="ca-dot${i === peakI ? ' big' : ''}" style="left:${p.x.toFixed(1)}%;top:${p.y.toFixed(1)}px"></span>`).join('');
+  // Best-Month callout only when the peak ISN'T in the crowded recent edge (else the spike speaks for itself)
+  const peakCo = (peak.total > 0 && peakI < months.length - 2) ? `<span class="ca-co" style="left:${clamp(pts[peakI].x).toFixed(1)}%;top:${Math.max(0, pts[peakI].y - 44).toFixed(1)}px"><span class="ca-bag">💰</span><span class="ca-cc"><span class="ca-cv">${money(peak.total)}</span><span class="ca-cl">Best · ${peak.label}</span></span></span>` : '';
+  const labels = months.map((b) => `<span style="left:${fx(new Date(b.y, b.m, 15).getTime()).toFixed(1)}%">${b.label}</span>`).join('');
+  // cadence on the timeline: a Today line (stage-colored) + a dashed Next-Expected line, a
+  // band between them (green runway when active, stage color when overdue); dates in the caption.
+  let markers = '', caption;
+  if (expD && a.pastPct !== null) {
+    const tx = fx(today.getTime()), ex = fx(expD.getTime()), lo = Math.min(tx, ex), hi = Math.max(tx, ex);
+    const bandCol = a.pastPct > 0 ? a.color : 'green';
+    markers = `<span class="ca-band" style="left:${lo.toFixed(1)}%;width:${(hi - lo).toFixed(1)}%;background:linear-gradient(180deg, color-mix(in srgb, var(--${bandCol}) 22%, transparent), transparent)"></span>`
+      + `<span class="ca-vline ca-exp" style="left:${ex.toFixed(1)}%"></span>`
+      + `<span class="ca-vline ca-tdy" style="left:${tx.toFixed(1)}%;background:var(--${a.color});box-shadow:0 0 8px color-mix(in srgb, var(--${a.color}) 55%, transparent)"></span>`;
+    const days = Math.abs(a.since - a.f);
+    const rel = a.pastPct <= 0 ? `${days}d out` : `${days}d past`;
+    caption = `<div class="ca-cap"><span>Last <b>${lastD ? fmtShortDate(a.lastDate) : '—'}</b></span><span>Today <b style="color:var(--${a.color})">${fmtShortDate(TODAY_ISO)}</b></span><span>Next <b>${fmtShortDate(a.expDate)}</b> · <b style="color:var(--${a.color})">${rel}</b></span></div>`;
+  } else {
+    caption = `<div class="ca-cap"><span class="muted">No rental cadence yet — needs a few rentals to read the pattern.</span></div>`;
+  }
+  return `<div class="ca-panel" data-tip="Customer activity — spend by month, with last rental, next expected, and where today sits in their cadence">
     <div class="ca-stage c-${a.color}${a.deep ? ' deep' : ''}">${esc(a.stage)}</div>
     <div class="ca-chart">
-      <svg class="ca-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="caFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".02"/></linearGradient></defs><path d="${area}" fill="url(#caFill)"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
-      ${dots}${peakCo}
-      <div class="ca-months">${months_lbl}</div>
+      <svg class="ca-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"><defs><linearGradient id="caFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".02"/></linearGradient></defs><path d="${area}" fill="url(#caFill)"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+      ${markers}${dots}${peakCo}
+      <div class="ca-lbls">${labels}</div>
     </div>
-    <div class="ca-track-wrap">
-      <div class="ca-track"><div class="ca-seg s-green" style="flex:0 0 40%"></div><div class="ca-seg s-yellow" style="flex:0 0 10%"></div><div class="ca-seg s-orange" style="flex:0 0 10%"></div><div class="ca-seg s-red" style="flex:0 0 20%"></div><div class="ca-seg s-lost" style="flex:0 0 20%"></div><span class="ca-mk last" style="left:0"></span><span class="ca-mk exp" style="left:40%"></span>${needle}</div>
-      <div class="ca-axis"><div><span class="ca-k">Last Rental</span><span class="ca-d">${a.lastDate ? fmtShortDate(a.lastDate) : '—'}</span></div><div style="text-align:center"><span class="ca-k">Next Expected</span><span class="ca-d">${a.expDate ? fmtShortDate(a.expDate) : '—'}</span></div><div style="text-align:right"><span class="ca-k">Today</span><span class="ca-d">${fmtShortDate(TODAY_ISO)}</span></div></div>
-    </div>
+    ${caption}
   </div>`;
 }
 
@@ -3478,6 +3495,9 @@ function columnEl(col, session) {
   const active = (session.cols && session.cols[col.id]) || col.default;
   const wrap = el('div', 'col'); wrap.dataset.col = col.id;
   const card = memberCardEl(active, session);
+  // stamp the VIEW identity (list vs which record) so render() keys scroll memory by it
+  const cs = card.dataset.card && session.cards ? session.cards[card.dataset.card] : null;
+  card.dataset.view = (cs && cs.mode === 'standard' && cs.recId != null) ? `${cs.recType || ''}:${cs.recId}` : 'list';
   card.insertBefore(colTabsEl(col, active, session), card.firstChild);   // toggles live INSIDE the card top
   const tot = card.querySelector('.card-body .list-totals');             // freeze the totals as a card FOOTER (out of the scroll)
   if (tot) card.appendChild(tot);
@@ -5288,13 +5308,18 @@ function setFocusedCard(cardId) {
    §14 RENDER PIPELINE + toast
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
+const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list vs which record)
 function render() {
   const t0 = performance.now();
   hideTip(); hideHoverPreview();
   // Preserve each card's scroll position across the DOM swap, so recording an action
   // or editing a field doesn't dump you back at the top of a scrolled card (§0.6).
-  const scrollMemo = {};
-  document.querySelectorAll('.card[data-card]').forEach((c) => { const b = c.querySelector('.card-body'); if (b && b.scrollTop) scrollMemo[c.dataset.card] = b.scrollTop; });
+  const scrollOld = {};
+  document.querySelectorAll('.card[data-card]').forEach((c) => {
+    const b = c.querySelector('.card-body'); if (!b) return;
+    const v = c.dataset.view || 'list'; scrollOld[c.dataset.card] = v;
+    scrollMemo[c.dataset.card + '|' + v] = b.scrollTop;   // remember where THIS view was scrolled
+  });
   availWin = activeDraftWindow();   // §10 — recompute window availability each render
   // Build off-screen, then swap in ONE operation (replaceChildren) so there's no
   // blank frame between teardown and rebuild — kills the flash on anchor/cascade.
@@ -5311,8 +5336,14 @@ function render() {
     $('#app').appendChild(mobileDockEl());
     grid.scrollLeft = state.mobileCol * (grid.clientWidth || window.innerWidth);
   }
-  // restore the per-card scroll captured above
-  Object.keys(scrollMemo).forEach((card) => { const b = document.querySelector(`.card[data-card="${card}"] .card-body`); if (b) b.scrollTop = scrollMemo[card]; });
+  // restore scroll by VIEW: same view → keep your spot; back to a list → return to the
+  // row you left; opened a record → top of Standard view (a targeted link scrolls itself after).
+  document.querySelectorAll('.card[data-card]').forEach((c) => {
+    const b = c.querySelector('.card-body'); if (!b) return;
+    const cardId = c.dataset.card, v = c.dataset.view || 'list', key = cardId + '|' + v;
+    if (v === scrollOld[cardId] || v === 'list') b.scrollTop = scrollMemo[key] || 0;
+    else b.scrollTop = 0;
+  });
   document.documentElement.setAttribute('data-theme', state.theme);
   // the rental-window picker floats above the grid, anchored to its trigger (§12.2)
   if (state.winpicker) {
