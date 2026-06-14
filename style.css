@@ -688,11 +688,28 @@ input { font-family: inherit; }
 .cmt-marker.flash { animation: cmtFlash 1.05s ease-in-out infinite; }
 @keyframes cmtFlash { 0%,100% { box-shadow: 0 0 0 2px rgba(0,0,0,.3), 0 0 7px 1px currentColor; opacity: 1; } 50% { box-shadow: 0 0 0 2px rgba(0,0,0,.3); opacity: .32; } }
 @media (prefers-reduced-motion: reduce) { .cmt-marker.flash { animation: none; outline: 1.5px solid currentColor; outline-offset: 1px; } }
-/* comment composer — color swatches */
-.cmt-swatches { display: flex; gap: 7px; margin-top: 9px; }
-.cmt-sw { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: var(--chip-radius); background: var(--panel); border: 1px solid var(--line); color: var(--txt-2); font-size: 12px; font-weight: 600; cursor: pointer; }
-.cmt-sw .cmt-marker { box-shadow: none; }
-.cmt-sw.on { border-color: var(--accent-line); color: var(--txt); box-shadow: 0 0 0 2px var(--accent-soft); }
+/* Comment composer — a simple "card" that floods with the picked color (Jac). The
+   traffic-light dots top-left pick the color; the whole card becomes that solid color. */
+.cmt-card { border: none !important; border-radius: 18px; padding: 0; overflow: hidden;
+  background: var(--cmt-bg) !important; box-shadow: 0 22px 60px -14px rgba(0,0,0,.65); transition: background .2s ease; }
+.cmt-card.c-red    { --cmt-bg: #e07a5f; --cmt-ink: #3a130a; }
+.cmt-card.c-yellow { --cmt-bg: #ecc94b; --cmt-ink: #3c2f06; }
+.cmt-card.c-green  { --cmt-bg: #80c06f; --cmt-ink: #122c0d; }
+.cmt-card-top { display: flex; align-items: center; justify-content: space-between; padding: 15px 17px 7px; }
+.cmt-dots { display: flex; gap: 9px; }
+.cmt-dot { width: 17px; height: 17px; border-radius: 50%; border: none; cursor: pointer; padding: 0;
+  box-shadow: inset 0 -2px 3px rgba(0,0,0,.28); opacity: .48; transition: opacity .15s, transform .15s, box-shadow .15s; }
+.cmt-dot.c-red { background: #e0563f; color: #e0563f; } .cmt-dot.c-yellow { background: #e9b81f; color: #e9b81f; } .cmt-dot.c-green { background: #4fae3f; color: #4fae3f; }
+.cmt-dot.on { opacity: 1; transform: scale(1.12); box-shadow: 0 0 0 3px rgba(255,255,255,.6), 0 0 13px 2px currentColor; }   /* glowing ring on the selected dot (IMG_1899) */
+.cmt-card .x { color: var(--cmt-ink); opacity: .5; } .cmt-card .x:hover { opacity: .85; }
+.cmt-input { display: block; width: 100%; min-height: 118px; border: none; background: transparent; resize: none; outline: none;
+  color: var(--cmt-ink); font: inherit; font-size: 15px; line-height: 1.45; padding: 4px 18px 14px; }
+.cmt-input::placeholder { color: var(--cmt-ink); opacity: .5; }
+.cmt-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 14px 15px; }
+.cmt-hint { font-size: 11px; font-weight: 700; color: var(--cmt-ink); opacity: .62; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmt-post { border: none; cursor: pointer; background: rgba(0,0,0,.18); color: var(--cmt-ink); border-radius: 9px; padding: 8px 18px;
+  font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700; font-size: 12.5px; }
+.cmt-post:hover { background: rgba(0,0,0,.28); }
 
 /* §6.2 #11 inline edit */
 .inline-edit { cursor: text; border-radius: 4px; }

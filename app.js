@@ -3954,20 +3954,18 @@ function renderOverlay() {
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'comment') {
-    // Phase 6 — add a colored comment: drops a flashing marker on the record + logs to History.
-    const swatches = [['red', 'Urgent'], ['yellow', 'Heads-up'], ['green', 'FYI']]
-      .map(([c, lbl]) => `<button type="button" class="cmt-sw${(o.color || 'yellow') === c ? ' on' : ''}" data-cmt-color="${c}"><span class="cmt-marker c-${c}"></span>${lbl}</button>`).join('');
+    // Phase 6 (Jac redesign) — a SIMPLE comment card that floods with the picked color.
+    // Traffic-light dots top-left pick the color; the card body becomes that solid color.
+    const color = o.color || 'yellow';
     const rec = recOf(entityCardOf(o.card, o.recType), o.recId);
-    const pop = el('div', 'popup'); pop.style.width = '380px';
+    const dots = ['red', 'yellow', 'green'].map((c) => `<button type="button" class="cmt-dot c-${c}${color === c ? ' on' : ''}" data-cmt-color="${c}" data-tip="${c === 'red' ? 'Urgent' : c === 'yellow' ? 'Heads-up' : 'FYI'}" aria-label="${c}"></button>`).join('');
+    const pop = el('div', `popup cmt-card c-${color}`); pop.style.width = '340px';
     pop.innerHTML = `
-      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex;font-size:16px">💬</span><h3>Add comment${rec ? ` — ${esc(detailTitle(entityCardOf(o.card, o.recType), rec))}` : ''}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
-      <div class="popup-body">
-        <textarea class="lf-in js-cmt-text" rows="3" placeholder="Drop a note on this record…" style="width:100%;resize:vertical;min-height:64px">${esc(o.text || '')}</textarea>
-        <div class="cmt-swatches">${swatches}</div>
-        <p class="muted" style="font-size:11px;margin:9px 0 12px">Flashes a colored marker on the record until each teammate opens it — and logs to History.</p>
-        <div class="pillrow" style="justify-content:flex-end">${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', 'Post comment', { js: 'js-cmt-save' })}</div>
-      </div>`;
+      <div class="cmt-card-top"><span class="cmt-dots">${dots}</span><button class="x js-close" aria-label="Close">${I.x}</button></div>
+      <textarea class="cmt-input js-cmt-text" placeholder="Leave a note…">${esc(o.text || '')}</textarea>
+      <div class="cmt-card-foot">${rec ? `<span class="cmt-hint">${esc(detailTitle(entityCardOf(o.card, o.recType), rec))}</span>` : '<span></span>'}<button class="cmt-post js-cmt-save">Post</button></div>`;
     overlay.appendChild(pop);
+    setTimeout(() => pop.querySelector('.cmt-input')?.focus(), 0);
   } else if (o.kind === 'rulebook') {
     // THE VISUAL RULEBOOK (SPEC v7) — every example is emitted by the REAL
     // builder, so this reference can never drift from the code.
