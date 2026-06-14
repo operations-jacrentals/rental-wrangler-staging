@@ -1724,6 +1724,7 @@ body.dragging .row.drop-ok { opacity: 1; }
   --tex-light: url('assets/tex-leather-light.jpg');
   --tex-pebble: url('assets/tex-leather-pebble.jpg');
   --tex-wood: url('assets/tex-wood.jpg');
+  --tex-rope: url('assets/tex-rope.jpg');
   --cream: #f3e1b8;
   /* surfaces — dark oxblood card/chrome, cream chrome text */
   --bg:#241608; --bg-2:#2e1c0d; --panel:#34210f; --panel-2:#3e2814;
@@ -1750,15 +1751,21 @@ body.dragging .row.drop-ok { opacity: 1; }
   background: linear-gradient(180deg, rgba(217,119,43,.05), transparent 30%), var(--tex-wood);
   background-size: auto, 360px;
 }
-/* DARK oxblood leather column cards + a saddle-stitch edge (no rope yet) */
+/* DARK oxblood leather column cards + a thin REAL-ROPE frame + dotted saddle-stitch */
 [data-theme="ranch"] .col > .card {
   position: relative;
   background: linear-gradient(180deg, rgba(255,228,188,.05), rgba(0,0,0,.3)), var(--tex-card);
   background-size: auto, 360px; background-blend-mode: soft-light, normal;
 }
+/* ::after = thin rope frame (an OVERLAY, so the .anchored border-color stays intact) */
+[data-theme="ranch"] .col > .card::after {
+  content:''; position:absolute; inset:0; z-index:5; pointer-events:none; border-radius:inherit;
+  border:6px solid transparent; border-image:var(--tex-rope) 46 round;
+}
+/* ::before = the dotted saddle-stitch, riding just inside the rope */
 [data-theme="ranch"] .col > .card::before {
-  content:''; position:absolute; inset:6px; border-radius:11px; z-index:4; pointer-events:none;
-  border:2px dashed rgba(226,194,134,.4);
+  content:''; position:absolute; inset:11px; border-radius:9px; z-index:4; pointer-events:none;
+  border:2px dashed rgba(226,194,134,.42);
 }
 /* LIGHT-buff content surfaces — sections, rows, search/inputs — flip the text
    tokens to dark ink (custom-prop cascade) and lay the buff hide underneath. */
@@ -1775,8 +1782,6 @@ body.dragging .row.drop-ok { opacity: 1; }
 }
 [data-theme="ranch"] .row { box-shadow: 0 3px 9px -5px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.4); }
 [data-theme="ranch"] .row:hover { border-color: var(--accent-line); }
-/* WHITE stamped section labels read on the dark card chrome */
-[data-theme="ranch"] .col > .card > .tabrow ~ * .section > h4 { }   /* (placeholder for specificity) */
 /* pop-ups = dark leather, fields buff (handled above via .lf-in) */
 [data-theme="ranch"] .popup {
   background: linear-gradient(180deg, rgba(255,228,188,.05), rgba(0,0,0,.3)), var(--tex-card);
