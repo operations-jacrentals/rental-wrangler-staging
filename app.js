@@ -5260,7 +5260,11 @@ function dragSourceAt(target) {
   const woSect = target.closest('.section[data-wo]');
   if (woSect && woSect.dataset.wo) return { card: 'workOrders', rec: woSect.dataset.wo };
   const row = target.closest('.row');                                   // .rtl rentals rows still carry card/rec on the .row wrapper
-  if (row && DRAG_SOURCES.has(row.dataset.card) && row.dataset.rec != null) return { card: row.dataset.card, rec: row.dataset.rec };
+  if (row && row.dataset.rec != null) {
+    let rc = row.dataset.card;
+    if (rc === 'shop') { const seg = activeSession().cards.shop?.segment; rc = (seg && seg !== 'all') ? seg : null; }   // §17 — a shop row resolves to its pinned segment (serviceOrders/workOrders/inspections)
+    if (rc && DRAG_SOURCES.has(rc)) return { card: rc, rec: row.dataset.rec };
+  }
   const cardNode = target.closest('.card[data-card]');
   if (cardNode) {
     const dc = cardNode.dataset.card, cs = activeSession().cards[dc];
