@@ -1396,6 +1396,7 @@ function openCtxMenu(e, hit) {
 // contextmenu handler (mouse) and the touch long-press timer (phone). Mirrors the §R20
 // logic: a real "leaf" tool opens the Wrangler menu; card dead-space → card-to-List.
 let lastTouchCtx = 0;
+let lastCtx = { t: 0, card: null };   // §R20 single vs double right-click tracker — MODULE-level so openCtxMenuAt (below) can read it
 function openCtxMenuAt(target, x, y) {
   if (!target || !target.closest) return;
   if (target.closest('input, textarea, .inline-input')) return;
@@ -8252,7 +8253,6 @@ function boot() {
     anchorRecord(r.card, r.recId, r.recType);
   });
   // right-click = send the card to its List View; double right-click = drop the anchor.
-  let lastCtx = { t: 0, card: null };
   document.addEventListener('contextmenu', (e) => {
     if (e.target.closest('input, textarea, .inline-input')) return;            // allow native menu in fields
     if (!e.target.closest('.card') && !e.target.closest('.overlay .popup')) return;
