@@ -25,6 +25,12 @@ We walk this **task by task via poll**; decisions get recorded inline.
 **Phase 1 cross-cutting:** new tabs always open **foreground (switch to it)**. One shared "freeze current session → makeTab → switch" code path serves anchor / search-pick / overtake / +Rental.
 
 ## Phase 2 — Rental Window & picker
+> ✅ **BUILT + LIVE this session**: Clear footer button → R17 commit primary (was danger);
+> Save still shows just left of Clear only on a staged change. Picker prompt centered.
+> Picker is now NON-MODAL — drags arm while it's open (drag a unit/category into the
+> rental), it stays open while working Units/Categories/Customers and closes only on a
+> click truly outside them; opening it reveals Categories (list) + the availability lens.
+> The "available" structured token was already shipped. Gates green.
 - ✅ **Click-away should not force Save** — VERIFIED (Jac): `rentalFragile` rule (billed OR On/End/Off Rent/Returned) is correct. Normal = live-commit + click-away close; fragile = stage + explicit Save. Keep as-is.
 - 🆕 **Clear vs Save buttons** — DECISION (Jac): **restyle only** (keep live-commit). Footer `Clear` becomes a primary **R17** button; `Save` (commit) appears just **left of Clear** only when a staged/fragile change exists (`wp.staged && winStagedChanged()`). Today Clear is `danger`-styled → change to R17.
 - 🔧 **"Available" entry behavior + non-modal picker** — DECISION (Jac): make auto-entered "available" the **real structured token** (filtered through the picked window via `availWin`), not plain text. The picker becomes a **non-modal overlay, no modes**:
@@ -35,6 +41,14 @@ We walk this **task by task via poll**; decisions get recorded inline.
 - 🆕 **Can't drag while the Rental Picker is open** — DECISION (Jac): ALLOW it. Today `dragDown` bails if `state.winpicker` is set (line ~4875) → let unit/customer/category drags arm & run while the picker is open; the drag must NOT trigger the click-away close. Core to the non-modal picker above.
 
 ## Phase 3 — Drag-to-link engine
+> ✅ **BUILT + LIVE this session**: removed the mid-drag card-swap trick (source card
+> stays put; same-column links use the reverse drag direction via the bidirectional
+> matrix); a STANDARD-view card is now a drag source (grab its empty space → its open
+> record); the WO section is a drag source that bills straight onto an invoice
+> (DROP_MATRIX workOrders↔invoices → billWOToInvoiceExplicit). Verified: WO→invoice
+> billing + source resolution. Gates green.
+> NOTE (also done): **Phase 1 follow-up** — overtake now seeds the new tab's card
+> history so the Back/forward jog walks the whole overtake chain (C→B→A) in place.
 - 🔧 **Dragging Customers/Rentals resets/closes the source card** — DECISION (Jac): **remove the mid-drag card-swap trick** (`startDrag` lines ~4928–4933 + `DRAG.restoreCols`/`swappedTo` + the `keepSwap` plumbing). Source card stays exactly as-is. Drop onto valid targets visible in OTHER columns; same-column links (customer↔invoice, which share the right column) use the **reverse drag direction**. Resolves the #9/#10 drag bug (no repro needed).
 - 🆕 **Link by dragging empty space on a Standard View** — DECISION (Jac): a standard-view card becomes a drag SOURCE; grab **anywhere empty on the card** (body / padding / header), excluding interactive elements (buttons, pills, inputs, fields, links, rows). Payload = that card's open record. Drop side already handles standard-view cards.
 - 🆕 **Drag the WO section onto an Invoice** — DECISION (Jac): make the WO section (`.section.wo-<woId>`) a drag SOURCE (entity `workOrders`, grab empty space per Task 2). Add `DROP_MATRIX.workOrders.invoices` (+ reverse `invoices.workOrders`); dropping on an invoice (row or open card) **bills immediately** via `billWOToInvoiceExplicit` (same bill-once + customer-scoping gates as the `+Invoice` / `js-bill-wo` button).
