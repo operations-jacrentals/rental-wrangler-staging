@@ -1263,6 +1263,28 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .rb-idx-row { display: flex; gap: 8px; padding: 2px 0 2px 14px; color: var(--txt-2); }
 .rb-idx-loc { color: var(--accent); font-weight: 700; min-width: 76px; flex-shrink: 0; }
 
+/* ── Rulebook → tabbed DESIGN-SYSTEM reference (Jac 2026-06-14) ── */
+.rb-body { padding-top: 0; }
+.rb-tabs { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 5px;
+  margin: 0 -16px 0; padding: 12px 16px 9px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.rb-tab { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px;
+  font-size: 11.5px; font-weight: 700; color: var(--txt-3); background: var(--bg-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; transition: color .12s, border-color .12s, background .12s; }
+.rb-tab:hover { color: var(--txt); border-color: var(--accent-line); }
+.rb-tab.on { color: var(--on-orange); background: var(--accent); border-color: transparent; }
+.rb-intro { font-size: 12px; color: var(--txt-2); margin: 11px 2px 13px; line-height: 1.5; }
+/* foundation rows give the live specimen full width (tag · stacked example+info) */
+.rb-row.found { grid-template-columns: 52px 1fr; align-items: start; }
+.rb-id.found { font-size: 15px; line-height: 1.4; background: var(--bg-2); color: var(--txt-2); border-color: var(--line); }
+.rb-found-body { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.rb-found-body > .rb-ex { padding: 3px 0; flex-wrap: wrap; }
+/* color swatch + surface sample chips used inside foundation examples */
+.rb-sw { display: inline-flex; flex-direction: column; justify-content: center; min-width: 56px; height: 38px;
+  padding: 0 11px; border-radius: 8px; font-size: 11px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.09); }
+.rb-sw b { font-weight: 800; } .rb-sw i { font-style: normal; font-weight: 600; opacity: .8; font-size: 9px; }
+.rb-surf { display: inline-flex; align-items: center; justify-content: center; min-width: 52px; height: 34px;
+  padding: 0 11px; border: 1px solid var(--line); border-radius: 10px; font-size: 10.5px; color: var(--txt-3); }
+
 /* ── §13 v2 BUILD: gate pills · derived pills · flags · section colors ·
       timeline · yard/transport journeys · history chips · WO grid · toggles
       (spec: drafts/units-rentals-v2.html + HANDOFF "design source of truth") ── */
