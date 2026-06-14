@@ -54,12 +54,20 @@ We walk this **task by task via poll**; decisions get recorded inline.
 - 🆕 **Drag the WO section onto an Invoice** — DECISION (Jac): make the WO section (`.section.wo-<woId>`) a drag SOURCE (entity `workOrders`, grab empty space per Task 2). Add `DROP_MATRIX.workOrders.invoices` (+ reverse `invoices.workOrders`); dropping on an invoice (row or open card) **bills immediately** via `billWOToInvoiceExplicit` (same bill-once + customer-scoping gates as the `+Invoice` / `js-bill-wo` button).
 
 ## Phase 4 — Invoices & Work Orders
+> ✅ **BUILT + LIVE this session**: the Invoice **+WO** button now opens the invoice's
+> LINKED unit(s) in a filtered Units list (transient `state.unitPick`, removable chip) —
+> the list IS the picker; the operator opens a unit and uses its own + Work Order. The
+> other three Phase 4 items were already shipped/confirmed. Verified. Gates green.
 - ✅ **+Invoice/+Transport opens the new invoice on the Invoice card** — shipped (`createInvoiceForRental`); CONFIRMED (Jac): working.
 - ✅ **Delete empty records on click-away** — shipped (`sweepEmptyDrafts`, invoices + rentals); CONFIRMED (Jac): working.
 - ✅ **(PAY) bottom-right of the Invoice section** — shipped (`payCell`); CONFIRMED (Jac): working.
 - 🆕 **+WO from an Invoice opens the linked unit(s)** — DECISION (Jac): **repurpose** the invoice's existing `+WO` (today `js-add-line` kind `WO` adds a blank line — replace that). New behavior: open the invoice's **currently-linked unit(s) in LIST view** (Units card filtered to just those units), uniform for one or many — the list IS the picker; operator opens a unit and uses its own +Work Order. (Resolve linked units via the invoice's rental lines / `li.unitId`.)
 
 ## Phase 5 — Search & filters
+> ✅ **BUILT + LIVE this session**: the orange glow now PERSISTS on both the global
+> Search and the per-card mini-search whenever they hold typed text or a pinned term
+> (clears only when emptied) via a `.has-query` class. The "footer filters → search
+> entries" item was already shipped (verified — the search/filter system works). Gates green.
 - ✅ **Replace persisting footer filters with search entries** — shipped ("dropped the modes"). VERIFY.
 - 🆕 **Persist the orange glow behind Search while it's in use** — DECISION (Jac): applies to **BOTH** the global top Search (`.searchwrap`, line 204) AND the per-card mini-search (`.mini-searchwrap`, line 230). "In use" = **any text typed OR any pinned filter term** (even an unsubmitted half-typed query) — glow stays even after focus leaves, clears only when emptied. Today the orange glow is `:focus-within`-only on `.searchwrap`; add a state class (e.g. `.has-query`) toggled on input/terms and give both wraps the same `box-shadow: 0 0 0 3px var(--accent-soft)` glow.
 
