@@ -744,7 +744,7 @@ const state = {
   filterTerms: [],            // §5.4 — AND-narrowing filter terms (type + Enter)
   fleetFilter: null,          // { categoryId, status } — fleet-summary badge → units by status
   unitPick: null,             // { ids, from } — Invoice +WO narrows the Units list to the invoice's linked units (Phase 4)
-  chat: { open: false, tags: [], roles: null, draft: '', messages: [] },   // §17 internal team dock (Phase 7): tagged-element rail + comment feed + role participants
+  chat: { open: false, tags: [], participants: [], draft: '', messages: [], seen: {} },   // §17 internal team dock (Phase 7): a chat is LIVE while it has participants; ends when everyone leaves. seen = {userKey: lastViewedAt} drives the re-flash.
   woPartForm: null,           // woId whose "+ Add Part/Labor" inline form is open
   invLineForm: null,          // invoiceId whose "+ Add Custom" inline form is open
   dashboard: false,           // §5.3/§11 Office Dispatch Time Grid (grid-swap mode)
@@ -1375,7 +1375,7 @@ function openCtxMenu(e, hit) {
     '<div class="menu-sep"></div>',
     item('search', '🔎 Search'), item('gsearch', '🌐 Global Search'), item('replace', '✏️ Replace'),
     '<div class="menu-sep"></div>',
-    item('comment', '💬 Add Comment'), item('wrangler', '🤠 Ask Mr. Wrangler'),
+    item('comment', '💬 Add Comment'), item('startchat', '🧵 Start chat'), item('wrangler', '🤠 Ask Mr. Wrangler'),
   ].join('');
   document.body.appendChild(m);
   m.style.left = Math.min(e.clientX, window.innerWidth - 205) + 'px';
@@ -1420,6 +1420,7 @@ function runCtxAction(act) {
     if (!hit) { toast('Right-click a record (or open one) to comment.'); return; }
     return openOverlay({ kind: 'comment', card: hit.card, recId: hit.recId, recType: hit.recType, color: 'yellow' });
   }
+  if (act === 'startchat') return startChatFromEl(el);   // §17 — start a team chat seeded from this element
   if (act === 'wrangler') {
     const meta = tg.r ? RULE_META[tg.r] : null;
     const ref = `Ask Mr. Wrangler — ${tg.r ? `${tg.r}${meta ? ` · ${meta[0]}` : ''}` : 'element'} — ${refPath(el)}: `;
@@ -1566,7 +1567,7 @@ function rowEl(card, rec) {
   if (availWin && availUnavailable(card, rec)) extra += ' unavailable';
   const node = el('div', 'row' + extra);
   node.dataset.card = card; node.dataset.rec = id;
-  node.innerHTML = `${rowViz(card, rec)}${commentMarkerHtml(rec)}
+  node.innerHTML = `${rowViz(card, rec)}${commentMarkerHtml(card, rec)}
     <div class="r-actions">
       <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" data-tip="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
       <button class="rbtn js-newtab" data-tip="Open in new tab (+)">${I.plus}</button>
@@ -2189,10 +2190,19 @@ function commentMarker(rec) {
   const top = (list) => list.slice().sort((a, b) => (COMMENT_SEV[b.color] || 0) - (COMMENT_SEV[a.color] || 0))[0];
   return { color: (unread.length ? top(unread) : all[all.length - 1]).color, flash: unread.length > 0, count: all.length, unread: unread.length };
 }
-function commentMarkerHtml(rec) {
-  const m = commentMarker(rec); if (!m) return '';
-  const tip = `${m.count} comment${m.count > 1 ? 's' : ''}${m.unread ? ` · ${m.unread} unread` : ''}`;
-  return `<span class="cmt-marker c-${m.color}${m.flash ? ' flash' : ''}" data-tip="${esc(tip)}" aria-label="${esc(tip)}"></span>`;
+function commentMarkerHtml(card, rec) {
+  const m = commentMarker(rec);
+  const id = card ? idOf(card, rec) : null;
+  const chatFlash = id != null && chatUnseenForRec(card, id);   // §17 — re-flash on unseen chat updates for a tagged element
+  if (!m && !chatFlash) return '';
+  const tagColor = chatFlash ? (state.chat.tags.find((t) => t.ref && t.ref.card === card && String(t.ref.recId) === String(id))?.color) : null;
+  const color = m ? m.color : (tagColor || 'yellow');
+  const flash = (m && m.flash) || chatFlash;
+  const parts = [];
+  if (m) parts.push(`${m.count} comment${m.count > 1 ? 's' : ''}${m.unread ? ` · ${m.unread} unread` : ''}`);
+  if (chatFlash) parts.push('new chat updates');
+  const tip = parts.join(' · ');
+  return `<span class="cmt-marker c-${color}${flash ? ' flash' : ''}" data-tip="${esc(tip)}" aria-label="${esc(tip)}"></span>`;
 }
 function addRecComment(rec, text, color) {
   if (!rec || !text) return;
@@ -3344,7 +3354,7 @@ function cardEl(cardDef, session) {
     head.innerHTML = `
       ${cardJog(card, cs)}
       <span class="c-titlecard"><span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}</span>
-      ${commentMarkerHtml(stdRec)}
+      ${commentMarkerHtml(card, stdRec)}
       ${headFlagsHtml(card, stdRec)}`;
     node.appendChild(head);
   }
@@ -3863,9 +3873,19 @@ function chatFeed() {
   const items = [...chatComments(), ...state.chat.messages.map((m) => ({ ...m, kind: 'msg' }))];
   return items.sort((a, b) => (a.at || 0) - (b.at || 0));
 }
-function chatRoleOn(id) { const r = state.chat.roles; return !r || r.includes(id); }
+const chatLive = () => state.chat.participants.length > 0;
+function chatRoleOn(id) { return state.chat.participants.includes(id); }
+function chatMarkSeen() { if (chatLive()) state.chat.seen[commentUserKey()] = Date.now(); }   // viewing the live chat clears the re-flash for this user
+// an element re-flashes when it's tagged in the LIVE chat and there are messages this user hasn't seen
+function chatUnseenForRec(card, recId) {
+  const ch = state.chat;
+  if (!chatLive() || !ch.messages.length) return false;
+  if (!(ch.tags || []).some((t) => t.ref && t.ref.card === card && String(t.ref.recId) === String(recId))) return false;
+  return Math.max(...ch.messages.map((m) => m.at || 0)) > (ch.seen[commentUserKey()] || 0);
+}
 function chatDockEl() {
   const ch = state.chat;
+  chatMarkSeen();   // §17 — the open dock is "seen": clears the re-flash for this user
   const roleBtns = ROLES.map((r) => `<button class="chat-role${chatRoleOn(r.id) ? ' on' : ''}" data-chat-role="${esc(r.id)}" style="--rc:var(--${r.color})" data-tip="${esc(r.label)} — ${chatRoleOn(r.id) ? 'in the chat' : 'left out'}">${esc(r.label)}</button>`).join('');
   const rail = ch.tags.length
     ? `<div class="chat-rail">${ch.tags.map((t) => `<span class="chat-tag c-${t.color || 'gray'}" data-tip="${esc(t.label)}"><span class="ct-lbl">${esc(t.label)}</span><button class="x" data-chat-untag="${esc(t.id)}" aria-label="Remove">${I.x}</button></span>`).join('')}</div>`
@@ -3886,15 +3906,31 @@ function chatSend() {
   const inp = document.querySelector('.chat-input');
   const text = ((inp ? inp.value : state.chat.draft) || '').trim();
   if (!text) { if (inp) inp.focus(); return; }
+  if (!chatLive()) state.chat.participants = ROLES.map((r) => r.id);   // first message opens the chat to the team
   state.chat.messages.push({ id: 'MSG' + (state.seq++), by: commentUserKey(), when: TODAY_ISO, at: Date.now(), text });
+  state.chat.seen[commentUserKey()] = Date.now();                       // author has seen their own update
   state.chat.draft = ''; saveSoon(); render();
   setTimeout(() => { const i = document.querySelector('.chat-input'); if (i) i.focus(); const f = document.querySelector('.chat-feed'); if (f) f.scrollTop = f.scrollHeight; }, 0);
 }
 function chatToggleRole(id) {
   const ch = state.chat;
-  if (ch.roles == null) ch.roles = ROLES.map((r) => r.id);   // first toggle materializes the "all included" set
-  ch.roles = ch.roles.includes(id) ? ch.roles.filter((x) => x !== id) : [...ch.roles, id];
+  ch.participants = ch.participants.includes(id) ? ch.participants.filter((x) => x !== id) : [...ch.participants, id];
+  if (!ch.participants.length) { ch.tags = []; ch.messages = []; ch.seen = {}; toast('Chat ended — everyone left.'); }   // a chat ends when everyone leaves (Jac)
   render();
+}
+// Start a fresh chat seeded from an element (right-click → Start chat). Everyone's in to begin.
+function startChatFromEl(el) {
+  const hit = cardRecordAt(el);
+  if (!hit) { toast('Right-click a record to start a chat from it.'); return; }
+  const ec = entityCardOf(hit.card, hit.recType), rec = recOf(ec, hit.recId);
+  if (!rec) { toast('Record not found.'); return; }
+  const label = ROW_META[ec] ? ROW_META[ec](rec).title : String(hit.recId);
+  const m = commentMarker(rec);
+  state.chat.tags = [{ id: 'TAG:' + ec + ':' + hit.recId, label, color: m ? m.color : 'gray', ref: { card: ec, recId: hit.recId } }];
+  state.chat.participants = ROLES.map((r) => r.id);
+  state.chat.messages = []; state.chat.seen = { [commentUserKey()]: Date.now() };
+  state.chat.open = true; render();
+  toast(`Started a chat from "${label}".`);
 }
 // Resolve a dragged payload into a chat tag — label from the record, color inherited
 // from any flag it already carries (else neutral). Granular-element sources (line/pill/
@@ -3911,6 +3947,7 @@ function chatAddTag(tag) {
   if (!tag || !tag.label) return;
   state.chat.tags = state.chat.tags || [];
   if (tag.id && state.chat.tags.some((t) => t.id === tag.id)) return;   // no dupes
+  if (!chatLive()) state.chat.participants = ROLES.map((r) => r.id);    // dragging context in starts the chat
   state.chat.tags.push({ id: tag.id || 'TAG' + (state.seq++), label: tag.label, color: tag.color || 'gray', ref: tag.ref || null });
   state.chat.open = true; render();
 }
