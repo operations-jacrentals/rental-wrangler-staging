@@ -56,11 +56,14 @@ We walk this **task by task via poll**; decisions get recorded inline.
 - ✅ **Team KPI → one "Sulphur Team" row + ring layout matches role count** — shipped (Team KPI redesign + N-ring). VERIFY.
 
 ## Phase 7 — Layout, entry & open decisions
-- 🆕 **Move Notes above the Funnel sections** (currently above account).
+- 🆕 **Move Notes above the Funnel sections** — DECISION (Jac): on the **customer** card, render **filled** Notes directly under the title, ABOVE both funnel columns (`detail-cols`, `app.js:2649`); **empty** Notes keep their current bottom slot (above History) per R12. (Move `notes.top` ahead of `detail-cols`.)
 - ✅ **Equal-width +X buttons** — shipped (#12). VERIFY.
-- 🆕 **Tabbed message convos, bottom-right.**
-- 🔧 **History / logging audit** — Clear Unit + draft date now logged; review EVERY action type that should log and add what's missing.
-- 🔧 **+Customer = Quick Add** — shipped (name + phone). Confirm it matches the "speed up logging a new rental" intent.
-- 🆕 **Logins** — passwords managed in Settings (today: single shared password + admin gate).
-- ❓ **DECISION:** Membership billing — monthly vs yearly.
-- ❓ **DEFINE:** "Schedule Actions → Schedule?" — needs a spec.
+- 🆕 **Tabbed message convos in the bottom tool bar** — DECISION (Jac): a tabbed conversation dock along the bottom tool bar, split by side:
+  - **LEFT side = external** — Customer/Vendor chats **& emails** (threads per customer/vendor).
+  - **RIGHT side = internal** — internal team/operator chats (keyed to the signed-in role/user).
+  - Tabs open/minimize like chat heads. NOTE: external customer SMS/email needs a **backend messaging integration** (separate dependency); the internal side is self-contained.
+- 🔧 **History / logging audit** — Clear Unit + draft date now logged; review EVERY action type that should log. DECISION (Jac): **log everything meaningful** — every state-changing action (creates, edits, links/unlinks, status changes, deletes) writes to History; skip only no-op/noise. Build-time: walk the §16 mutations block and ensure each path logs.
+- ✅ **+Customer = Quick Add** — shipped (name + phone); CONFIRMED (Jac): name + phone is the right scope.
+- 🆕 **Logins** — DECISION (Jac): role-based logins already exist (named roles, each with a password, Admin-managed in Settings via `manageLogins` `app.js:6189`; `currentRole` + switch-user). Scope = **mostly done**: VERIFY the flow, and **wire the per-user comment-acknowledgment (Phase 6) to the signed-in role**. (Per-individual accounts NOT needed now — roles are enough.)
+- ✅ **DECISION:** Membership billing — RESOLVED (Jac): support **BOTH monthly and yearly** plans; the customer picks. (Ties into the membership funnel / account type.)
+- 🆕 **Schedule Actions → make scheduled follow-ups actionable** — DECISION (Jac): Schedule already adds a dated follow-up to the customer Activity Log (`app.js:4211`, `6387`). Next: (1) **surface scheduled actions when due** — on a Today/agenda view or as a flash/reminder on the customer, not just sitting in the log; (2) **FUTURE NOTE** — scheduled actions ultimately point to a **Company Calendar / Sales Calendar** plus **graphs/dashboard**; the schedule is the feeder for that. (Calendar/dashboard = its own later phase.)
