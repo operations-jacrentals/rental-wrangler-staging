@@ -1491,10 +1491,12 @@ const RULE_META = {
   R16: ['Day timeline', 'DETAIL.rentals timeline', 'the rental window in day cells; centered gate + naked price·rate'],
   R17: ['Action pill', 'actionPill', 'commit = blue · money = green · danger = solid red; .locked = gated'],
   R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear'],
+  R19: ['Attention flash', 'attnFlash / flashOr', 'a glow that points AT the next action — replaces an error message when the fix is on screen'],
+  R20: ['Context menu', 'openCtxMenu (right-click · long-press)', 'right-click/long-press any element: Cut · Copy · Paste · Search · Replace · Add Comment · Ask Mr. Wrangler'],
   R21: ['File drop', 'fileDrop', 'the MASSIVE popup add-file zone — R5b blue dashed at full size'],
   R22: ['Date picker', 'dateField', 'the ONE app-styled calendar for a single date/time (NOT the rental-window timeline)'],
-  R24: ['Close ✕', 'closeX', 'red circle · white ✕ — the deliberate close/remove; hover-reveal variant on tabs'],
   R23: ['Tooltip', 'data-tip → the one styled tip', 'every hover hint goes through data-tip — a native title attribute is a violation'],
+  R24: ['Close ✕', 'closeX', 'red circle · white ✕ — the deliberate close/remove; hover-reveal variant on tabs'],
 };
 /* structural fallbacks so hovering containers also names their rule */
 const CLASS_RULE = [
@@ -4182,6 +4184,9 @@ function renderOverlay() {
       R9b: flagsStack([flagEl('No Card', 'red', { alert: true })]),
       R22: dateField('exampleDate', ''),
       R24: closeX('', {}),
+      R19: '<span class="pill c-blue" style="animation:attnGlow 1.1s ease-in-out infinite;border-radius:10px"><span class="t">+Card</span></span>',
+      R20: '<div class="ctx-menu" style="position:static;display:inline-block;min-width:0;box-shadow:none;padding:4px"><button class="dd-item">📋 Copy</button><div class="menu-sep"></div><button class="dd-item">🤠 Ask Mr. Wrangler</button></div>',
+      R23: '<span class="pill c-gray" data-tip="The one styled tip"><span class="t">hover me</span></span>',
     };
     const rows = Object.keys(RULE_META).map((r) => {
       // the distinct fields/elements that use this rule, app-wide (scanned from source
