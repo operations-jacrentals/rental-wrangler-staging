@@ -782,6 +782,7 @@ function setAnchor(session, card, recId, recType) {
   // (shop anchors map to their recType member). Pure display; cascade is unchanged.
   const m = entityCardOf(card, recType), col = columnOfMember(m);
   if (col && session.cols) session.cols[col] = m;
+  ackComments(rec);   // anchoring opens the record in standard → viewing = acknowledged (Phase 6)
 }
 
 function anchorRecord(card, recId, recType) {
@@ -885,6 +886,7 @@ function openStandard(card, recId, recType) {
   sweepEmptyDrafts(recId);   // #8 — leaving an empty draft deletes it
   pushCardHistory(cs);       // Task 1 — record the prior (list) view so Back can return
   cs.mode = 'standard'; cs.recId = recId; cs.recType = recType || null;
+  ackComments(recOf(entityCardOf(card, recType), recId));   // viewing = acknowledged (Phase 6)
   render();
 }
 /** Universal pill rule (§0.2): clicking any pill forces its target card into
@@ -948,12 +950,14 @@ function cardBack(card) {
   const cs = activeSession().cards[card]; if (!cs || !cs.backStack.length) return;
   cs.fwdStack.push(cardSnap(cs));
   applySnap(cs, cs.backStack.pop());
+  if (cs.mode === 'standard' && cs.recId != null) ackComments(recOf(entityCardOf(card, cs.recType), cs.recId));
   render();
 }
 function cardFwd(card) {
   const cs = activeSession().cards[card]; if (!cs || !cs.fwdStack.length) return;
   cs.backStack.push(cardSnap(cs));
   applySnap(cs, cs.fwdStack.pop());
+  if (cs.mode === 'standard' && cs.recId != null) ackComments(recOf(entityCardOf(card, cs.recType), cs.recId));
   render();
 }
 // The stamped two-way "jog" — renders ONLY when this card has its own history this
@@ -1409,12 +1413,10 @@ function runCtxAction(act) {
   if (act === 'gsearch') return setQuery(text);
   if (act === 'replace') { if (editSpan) return startInlineEdit(editSpan); return toast('Not an editable field.'); }
   if (act === 'comment') {
-    const card = el.closest('[data-card]')?.dataset.card; const cs = card && activeSession().cards[card];
-    const rec = cs && cs.recId != null ? recOf(cs.recType || card, cs.recId) : null;
-    const c = (typeof prompt === 'function') ? prompt('Comment (logs to History):', '') : '';
-    if (rec && c) { logAction(rec, `💬 ${c}`); toast('Comment logged to History.'); render(); }
-    else if (!rec) toast('Open the record first (comments log to its History).');
-    return;
+    // Phase 6 — open the colored-comment composer for the right-clicked record.
+    const hit = cardRecordAt(el);
+    if (!hit) { toast('Right-click a record (or open one) to comment.'); return; }
+    return openOverlay({ kind: 'comment', card: hit.card, recId: hit.recId, recType: hit.recType, color: 'yellow' });
   }
   if (act === 'wrangler') {
     const meta = tg.r ? RULE_META[tg.r] : null;
@@ -1562,7 +1564,7 @@ function rowEl(card, rec) {
   if (availWin && availUnavailable(card, rec)) extra += ' unavailable';
   const node = el('div', 'row' + extra);
   node.dataset.card = card; node.dataset.rec = id;
-  node.innerHTML = `${rowViz(card, rec)}
+  node.innerHTML = `${rowViz(card, rec)}${commentMarkerHtml(rec)}
     <div class="r-actions">
       <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" data-tip="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
       <button class="rbtn js-newtab" data-tip="Open in new tab (+)">${I.plus}</button>
@@ -2168,6 +2170,53 @@ function customerActivity(c) {
   }
   pct = Math.max(-100, Math.min(100, Math.round(pct)));
   return { pct, ...activityStage(pct) };
+}
+
+/* ── COMMENTS (Jac, Phase 6) — a structured note with a color (red/yellow/green) that
+   drops a marker on the record AND logs to History. The marker FLASHES for a user until
+   they OPEN the record (per-user ack, keyed on the signed-in user); once read it stays
+   as a static colored marker. Its color is the most-urgent UNREAD note (red>yellow>green),
+   resting on the latest note's color once everything is read. ── */
+const COMMENT_SEV = { red: 3, yellow: 2, green: 1 };
+const commentUserKey = () => currentUser || currentRole || 'me';
+const recComments = (rec) => (rec && rec.comments) || [];
+function commentMarker(rec) {
+  const all = recComments(rec); if (!all.length) return null;
+  const u = commentUserKey();
+  const unread = all.filter((c) => !(c.ack || []).includes(u));
+  const top = (list) => list.slice().sort((a, b) => (COMMENT_SEV[b.color] || 0) - (COMMENT_SEV[a.color] || 0))[0];
+  return { color: (unread.length ? top(unread) : all[all.length - 1]).color, flash: unread.length > 0, count: all.length, unread: unread.length };
+}
+function commentMarkerHtml(rec) {
+  const m = commentMarker(rec); if (!m) return '';
+  const tip = `${m.count} comment${m.count > 1 ? 's' : ''}${m.unread ? ` · ${m.unread} unread` : ''}`;
+  return `<span class="cmt-marker c-${m.color}${m.flash ? ' flash' : ''}" data-tip="${esc(tip)}" aria-label="${esc(tip)}"></span>`;
+}
+function addRecComment(rec, text, color) {
+  if (!rec || !text) return;
+  rec.comments = rec.comments || [];
+  rec.comments.push({ id: 'CM' + (state.seq++), text, color: color || 'yellow', by: commentUserKey(), when: TODAY_ISO, ack: [commentUserKey()] });   // the author has already seen it
+  logAction(rec, `💬 ${text}`);   // still logs to History
+  saveSoon();
+}
+// "viewed = acknowledged" (Jac) — opening a record's standard view marks every comment
+// on it read for the current user, so the marker stops flashing for them.
+function ackComments(rec) {
+  if (!rec) return;
+  const u = commentUserKey(); let changed = false;
+  recComments(rec).forEach((c) => { c.ack = c.ack || []; if (!c.ack.includes(u)) { c.ack.push(u); changed = true; } });
+  if (changed) saveSoon();
+}
+function saveCommentOverlay() {
+  const o = state.overlay; if (!o || o.kind !== 'comment') return;
+  const ta = document.querySelector('.overlay .js-cmt-text');
+  const text = ((ta ? ta.value : o.text) || '').trim();
+  if (!text) { if (ta) ta.focus(); return; }
+  const rec = recOf(entityCardOf(o.card, o.recType), o.recId);
+  if (!rec) { toast('Record not found.'); closeOverlay(); return; }
+  addRecComment(rec, text, o.color || 'yellow');
+  closeOverlay(); render();
+  toast('Comment posted — marker set.');
 }
 function woSectionHtml(w) {
   const bn = woBottleneck(w);
@@ -3292,6 +3341,7 @@ function cardEl(cardDef, session) {
     head.innerHTML = `
       ${cardJog(card, cs)}
       <span class="c-titlecard"><span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}</span>
+      ${commentMarkerHtml(stdRec)}
       ${headFlagsHtml(card, stdRec)}`;
     node.appendChild(head);
   }
@@ -3900,6 +3950,21 @@ function renderOverlay() {
         <img class="qr-img" alt="QR code" src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&bgcolor=15171c&color=ff7a1a&data=${encodeURIComponent(url)}" width="220" height="220" style="border-radius:12px;background:var(--panel-2)" />
         <p class="muted" style="margin-top:10px;font-size:12px;word-break:break-all">${esc(url)}</p>
         <p class="muted" style="margin-top:6px;font-size:11px">${esc(o.caption || 'Scan to open this session on another device (single shared login — §1/§4.2).')}</p>
+      </div>`;
+    overlay.appendChild(pop);
+  } else if (o.kind === 'comment') {
+    // Phase 6 — add a colored comment: drops a flashing marker on the record + logs to History.
+    const swatches = [['red', 'Urgent'], ['yellow', 'Heads-up'], ['green', 'FYI']]
+      .map(([c, lbl]) => `<button type="button" class="cmt-sw${(o.color || 'yellow') === c ? ' on' : ''}" data-cmt-color="${c}"><span class="cmt-marker c-${c}"></span>${lbl}</button>`).join('');
+    const rec = recOf(entityCardOf(o.card, o.recType), o.recId);
+    const pop = el('div', 'popup'); pop.style.width = '380px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex;font-size:16px">💬</span><h3>Add comment${rec ? ` — ${esc(detailTitle(entityCardOf(o.card, o.recType), rec))}` : ''}</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body">
+        <textarea class="lf-in js-cmt-text" rows="3" placeholder="Drop a note on this record…" style="width:100%;resize:vertical;min-height:64px">${esc(o.text || '')}</textarea>
+        <div class="cmt-swatches">${swatches}</div>
+        <p class="muted" style="font-size:11px;margin:9px 0 12px">Flashes a colored marker on the record until each teammate opens it — and logs to History.</p>
+        <div class="pillrow" style="justify-content:flex-end">${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', 'Post comment', { js: 'js-cmt-save' })}</div>
       </div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'rulebook') {
@@ -5378,6 +5443,8 @@ function onClick(e) {
   if (closest('.js-feedback')) { e.stopPropagation(); return openOverlay({ kind: 'feedback', fbType: 'Bug', text: '', shot: '', error: '', busy: false }); }
   if (closest('.js-fb-type')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'feedback') { const ta = document.querySelector('.overlay .js-fb-text'); if (ta) o.text = ta.value; o.fbType = closest('.js-fb-type').dataset.val; renderOverlay(); } return; }
   if (closest('.js-fb-shot-x')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'feedback') { const ta = document.querySelector('.overlay .js-fb-text'); if (ta) o.text = ta.value; o.shot = ''; renderOverlay(); } return; }
+  if (closest('[data-cmt-color]')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'comment') { const ta = document.querySelector('.overlay .js-cmt-text'); if (ta) o.text = ta.value; o.color = closest('[data-cmt-color]').dataset.cmtColor; renderOverlay(); } return; }
+  if (closest('.js-cmt-save')) { e.stopPropagation(); return saveCommentOverlay(); }
   if (closest('.js-fb-send')) { e.stopPropagation(); return sendFeedback(); }
   if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^(https?:\/\/|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener'); return; }
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
@@ -6208,6 +6275,7 @@ function onInput(e) {
   }
   // Feedback description → store as they type (so a re-render keeps it).
   if (e.target.classList.contains('js-fb-text')) { if (state.overlay?.kind === 'feedback') state.overlay.text = e.target.value; return; }
+  if (e.target.classList.contains('js-cmt-text')) { if (state.overlay?.kind === 'comment') state.overlay.text = e.target.value; return; }
   // Board View live search → re-render the popup and restore the caret.
   if (e.target.classList.contains('bv-query')) {
     if (state.overlay?.kind === 'boardview') { state.overlay.query = e.target.value; const sel = e.target.selectionStart; renderOverlay(); const q = document.querySelector('.bv-query'); if (q) { q.focus(); q.setSelectionRange(sel, sel); } }
