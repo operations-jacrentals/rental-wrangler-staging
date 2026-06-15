@@ -8131,6 +8131,45 @@ function computeChanges() {
   });
   return { upserts, deletes, n };
 }
+// ── Live multi-user refresh (Jac 2026-06-15) ───────────────────────────────
+// The app loads once at login + pushes diffs; without this, OTHER open sessions
+// never see each other's edits (a comment on a record stayed invisible until the
+// other user reloaded). Poll the backend and adopt remote changes for records the
+// local user HASN'T touched (clean === lastSaved); keep in-progress local edits;
+// NEVER delete on refresh (a transient blip can't wipe data).
+const IDX_MAP = { categories: 'category', units: 'unit', customers: 'customer', invoices: 'invoice', rentals: 'rental', workOrders: 'wo', inspections: 'insp', vendors: 'vendor', parts: 'part', companyFiles: 'file', expenses: 'expense' };
+let refreshing = false, refreshTimer = null;
+async function refreshFromBackend() {
+  if (refreshing || booting || !backendPassword || saving || savePending || !lastSaved) return;
+  if (document.hidden || DRAG.active || DRAG.armed || state.winpicker || state.overlay || hoverNode) return;   // don't disrupt active work
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;              // mid-typing
+  refreshing = true;
+  try {
+    const r = await backendCall('load');
+    if (!r || !r.ok || !r.data) return;
+    const data = r.data; let applied = 0;
+    PERSIST_KEYS.forEach((k) => {
+      if (!Array.isArray(data[k])) return;
+      const idf = PERSIST_ID[k], saved = (lastSaved[k] = lastSaved[k] || new Map());
+      const localById = new Map((DATA[k] || []).map((rec) => [String(rec[idf]), rec]));
+      data[k].forEach((remote) => {
+        const id = String(remote[idf]); if (id === 'undefined' || id === 'null') return;
+        const rjs = JSON.stringify(remote), local = localById.get(id);
+        if (!local) { DATA[k].push(remote); IDX[IDX_MAP[k]]?.set(id, remote); reindex(k, remote); saved.set(id, rjs); applied++; return; }   // new record from another user
+        const ljs = JSON.stringify(local);
+        if (ljs === rjs) { saved.set(id, rjs); return; }
+        if (saved.get(id) === ljs) {   // local is CLEAN (no pending edit) → adopt the remote version in place (keeps IDX refs)
+          Object.keys(local).forEach((kk) => { if (!(kk in remote)) delete local[kk]; });
+          Object.assign(local, remote); reindex(k, local); saved.set(id, rjs); applied++;
+        }                              // else: local has unsaved edits → keep local; it'll push on next save
+      });
+    });
+    if (applied && !state.overlay && !DRAG.active && !hoverNode) { state.cascade = createCascade(DATA); render(); }
+  } catch (e) { /* offline / blip → retry next tick */ }
+  finally { refreshing = false; }
+}
+function startRefreshPoll() { clearInterval(refreshTimer); refreshTimer = setInterval(refreshFromBackend, 18000); }
 function saveSoon() { if (booting || !backendPassword) return; clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 1200); }
 async function flushSave() {
   if (saving) { savePending = true; return; }
@@ -8176,6 +8215,7 @@ function finishLoad() {
   snapshotSaved();                                              // baseline = what the backend currently holds
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
   loadGlobalViews();                                            // pull the shared, company-wide view set
+  startRefreshPoll();                                           // live multi-user: poll for others' changes (§ refreshFromBackend)
   if (migrationDirty) { migrationDirty = false; saveSoon(); }   // push parsed first/last names up to the Sheet
   // #edit=<id> — desktop→phone handoff opens that customer's account form (§7.1).
   const em = (location.hash || '').match(/edit=([\w-]+)/i);
