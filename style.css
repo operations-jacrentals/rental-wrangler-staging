@@ -1757,10 +1757,18 @@ body.dragging .row.drop-ok { opacity: 1; }
 [data-theme="yard"] .col > .card {
   position: relative;
   background: linear-gradient(180deg, var(--steel-1), var(--steel-2));
+  --stripe: var(--yellow, #f5c542);              /* hazard-stripe color, per card type (Jac) */
 }
+/* Each card type stamps its own hazard color, always paired with black. */
+[data-theme="yard"] .col > .card[data-card="customers"]  { --stripe: var(--blue,  #5b9dff); }
+[data-theme="yard"] .col > .card[data-card="rentals"]    { --stripe: var(--green, #34d399); }
+[data-theme="yard"] .col > .card[data-card="units"]      { --stripe: var(--yellow,#f5c542); }
+[data-theme="yard"] .col > .card[data-card="categories"] { --stripe: var(--accent,#ff7a1a); }
+[data-theme="yard"] .col > .card[data-card="invoices"]   { --stripe: var(--red,   #ff4242); }
+[data-theme="yard"] .col > .card[data-card="calendar"]   { --stripe: var(--pink,  #f06fb0); }
 [data-theme="yard"] .col > .card::before {       /* hi-vis hazard stripe — the signature band */
   content:''; position:absolute; top:0; left:0; right:0; height:6px; z-index:5;
-  background: repeating-linear-gradient(135deg, var(--yellow,#f5c542) 0 13px, #14181d 13px 26px);
+  background: repeating-linear-gradient(135deg, var(--stripe) 0 13px, #14181d 13px 26px);
   border-bottom:1px solid rgba(0,0,0,.6); pointer-events:none;
 }
 [data-theme="yard"] .col > .card::after {        /* four corner rivets bolting the plate down */
