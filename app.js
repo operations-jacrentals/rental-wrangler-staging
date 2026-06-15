@@ -3957,18 +3957,27 @@ function kpiFor(roleId) {
   const R = DATA.rentals, W = DATA.workOrders, N = DATA.inspections, INV = DATA.invoices, C = DATA.customers;
   const f = fleetInsp();
   if (roleId === 'mechanic') {
-    const renting = pctOf(f.Ready + f['Not Ready'], f.total);                 // rentable ÷ fleet
-    const woComplete = pctOf(W.filter((w) => w.phase === 'Complete').length, W.length);
-    const billable = W.filter((w) => (w.lineItems || []).some((li) => (li.cost || 0) > 0 || (li.hours || 0) > 0));
-    const billRate = pctOf(billable.filter((w) => w.billCustomer === 'Yes').length, billable.length);
-    return [renting, woComplete, billRate];
+    const healthyFleet = pctOf(f.Ready + f['Not Ready'], f.total);            // rentable ÷ fleet ("Healthy Fleet", was Renting Rate)
+    const liveWO = W.filter((w) => !w.cancelled);                             // cancelled WOs are void — out of the completion ratio
+    const woComplete = pctOf(liveWO.filter((w) => w.phase === 'Complete').length, liveWO.length);
+    // Parts Breakeven (was Bill Rate) — share of parts cost recovered by earnings from billed WOs; goal-ring, 100% = covered.
+    const partsCostTotal = liveWO.reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0);
+    const billedEarnings = liveWO.filter((w) => w.billCustomer === 'Yes').reduce((a, w) => a + (woBillable(w) || 0), 0);
+    const breakeven = partsCostTotal > 0 ? Math.round(Math.min(billedEarnings / partsCostTotal, 1) * 100) : 100;
+    return [healthyFleet, woComplete, breakeven];
   }
   if (roleId === 'mtech') {
     const fc = R.filter((r) => r.fieldCall).length;
     const successful = R.length ? Math.round((1 - fc / R.length) * 100) : 100;
-    const readyRate = pctOf(f.Ready, f.total);
-    const woRate = N.length ? N.filter((n) => n.woId).length / N.length : 0;   // lower is better; full ring = ≤0%, empty = ≥20%
-    const woRing = Math.round(Math.max(0, 1 - Math.min(woRate, 0.2) / 0.2) * 100);
+    // Ready Rate — Ready ÷ rentable fleet, excluding Failed inspections + Inactive/Sold/For-Sale fleetStatus (Jac).
+    const skipFleet = new Set(['Inactive', 'Sold', 'For Sale']);
+    const eligible = DATA.units.filter((u) => !skipFleet.has(u.fleetStatus) && u.inspectionStatus !== 'Failed');
+    const readyRate = pctOf(eligible.filter((u) => u.inspectionStatus === 'Ready').length, eligible.length);
+    // WO Rate — progress toward the GOAL of 20% of the last rolling-30-day inspections spawning a WO (full ring at 20%).
+    const cutoff = new Date(TODAY.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    const recent = N.filter((n) => (n.date || '') >= cutoff);
+    const woRate = recent.length ? recent.filter((n) => n.woId).length / recent.length : 0;
+    const woRing = Math.round(Math.min(woRate / 0.2, 1) * 100);
     return [successful, readyRate, woRing];
   }
   if (roleId === 'driver') {
@@ -4002,12 +4011,12 @@ function kpiFor(roleId) {
 }
 // Plain-English explanation of each KPI's formula — shown on hover in the role popup.
 const KPI_HELP = {
-  'Renting Rate':           'Share of your fleet that’s rentable right now (Ready + Not-Ready units ÷ total fleet).',
-  'WO Completion Rate':     'Work orders marked Complete ÷ all work orders. Higher = the shop is keeping up.',
-  'Bill Rate':              'Of the work orders worth billing (have parts or labor), how many you actually charged the customer for.',
+  'Healthy Fleet':          'Share of your fleet that’s rentable right now (Ready + Not-Ready units ÷ total fleet).',
+  'WO Completion Rate':     'Work orders marked Complete ÷ all live work orders (cancelled ones excluded). Higher = the shop is keeping up.',
+  'Parts Breakeven':        'How much of your parts cost is recovered by earnings from billed work orders. Full ring = billed WOs cover the parts.',
   'Successful Rentals':     'Rentals that went out without a breakdown — 1 minus the share of rentals that got a Field Call.',
-  'Ready Rate':             'Share of the fleet that’s inspected and Ready to rent (Ready units ÷ total fleet).',
-  'WO Rate (≤20%)':         'How few inspections turn into work orders — fewer is better. Full ring at 0%, empty at 20%+.',
+  'Ready Rate':             'Share of the rentable fleet that’s Ready to rent — Ready ÷ eligible units (Failed, Inactive, Sold & For-Sale excluded).',
+  'WO Rate (20% goal)':     'Progress toward the goal: 20% of the last 30 days’ inspections spawning a work order is healthy (catching problems). Full ring at 20%.',
   'On-Time':                'Rentals you actually delivered/handled ÷ rentals scheduled (excludes quotes, cancels, no-shows).',
   'Wash Completion':        'Of the units flagged for a wash, how many got washed (washed ÷ wash-requested).',
   'Driving Score':          'Driving-safety score from the GPS backend — placeholder until that’s connected.',
