@@ -29,7 +29,9 @@ name: Wrangler Fix — auto-patch a reported glitch
 
 on:
   issues:
-    types: [labeled]
+    # `labeled` covers a glitch tagged after the fact; `opened` covers the in-app
+    # reporter, which files a pre-filled issue that already carries the label.
+    types: [opened, labeled]
 
 permissions:
   contents: write
@@ -38,8 +40,10 @@ permissions:
 
 jobs:
   fix:
-    # Only fire on the trigger label.
-    if: github.event.label.name == 'wrangler-fix'
+    # Fire only for the trigger label, on either entry path.
+    if: >
+      (github.event.action == 'labeled' && github.event.label.name == 'wrangler-fix') ||
+      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'wrangler-fix'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
