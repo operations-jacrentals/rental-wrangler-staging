@@ -46,10 +46,12 @@ window.addEventListener('unhandledrejection', (e) => logErr('promise', (e.reason
    Action engine reproduces, patches, gate-checks, and auto-merges to live. The
    browser can't hold a token, so we open a PRE-FILLED issue (one Submit tap). */
 const WRANGLER_REPO = 'operations-jacrentals/rental-wrangler';
-function wranglerIssueUrl(title, body) {
+// label 'wrangler-fix' → the auto-fix Action runs (glitches). 'wrangler-request'
+// → filed for Jac's OK, NOT auto-implemented (he can add the fix label to greenlight).
+function wranglerIssueUrl(title, body, label = 'wrangler-fix') {
   const u = new URL(`https://github.com/${WRANGLER_REPO}/issues/new`);
   u.searchParams.set('title', String(title || 'Reported glitch').slice(0, 120));
-  u.searchParams.set('labels', 'wrangler-fix');
+  u.searchParams.set('labels', label);
   u.searchParams.set('body', String(body || '').slice(0, 6000));   // GitHub URL body cap headroom
   return u.toString();
 }
@@ -4105,9 +4107,8 @@ function bottomBarInner() {
     <span class="bb-sep"></span>
     <button class="iconbtn js-qr" data-tip="Share session (QR)">${I.qr}</button>
     <button class="iconbtn${state.previewsOn ? '' : ' off'} js-previews" data-tip="${state.previewsOn ? 'Hover previews: on' : 'Hover previews: off'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
-    <button class="iconbtn js-feedback" data-tip="Report a bug or request">${I.feedback}</button>
     <button class="iconbtn js-chat-toggle${state.chat.open ? ' on' : ''}" data-tip="Team chat — flagged comments + tagged context">${I.chat}${(() => { const n = chatUnreadCount(); return n ? `<span class="bb-badge">${n > 9 ? '9+' : n}</span>` : ''; })()}</button>
-    <button class="iconbtn js-wrangler" data-tip="Ask Mr. Wrangler — the in-app AI" style="font-size:16px">🤠</button>
+    <button class="iconbtn js-wrangler" data-tip="Mr. Wrangler — ask the yard AI, or report a bug to fix" style="font-size:16px">🤠</button>
     <button class="iconbtn js-hotkeys" data-tip="Mouse &amp; keyboard shortcuts">${I.mouse}</button>
     <button class="iconbtn js-adminlock${adminUnlocked() ? ' on' : ''}" data-tip="${adminUnlocked() ? 'Admin tools unlocked — click to lock' : 'Admin tools — click to unlock'}">${adminUnlocked() ? I.lockOpen : I.lock}</button>
     ${adminUnlocked() ? `<button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
@@ -4373,13 +4374,13 @@ function renderOverlay() {
     const chip = rec ? `<span class="wr-chip">${CARD_ICON[entityCardOf(o.card, o.recType)] || ''}${esc(detailTitle(entityCardOf(o.card, o.recType), rec))}</span>` : '<span class="wr-chip muted">Whole yard</span>';
     const turns = o.messages.length
       ? o.messages.map((m) => `<div class="wr-msg ${m.role}">${m.role === 'assistant' ? '<span class="wr-av">🤠</span>' : ''}<div class="wr-bub">${esc(m.content).replace(/\n/g, '<br>')}</div></div>`).join('')
-      : '<div class="wr-empty">Ask about this record or the whole yard — service due, balances, what needs attention…</div>';
+      : '<div class="wr-empty">Ask about this record or the whole yard — service due, balances, what needs attention… or tell me about a glitch and I’ll get it fixed.</div>';
     const pop = el('div', 'popup wr-pop'); pop.style.width = '440px';
     pop.innerHTML = `
       <div class="popup-head"><span class="mark" style="font-size:18px">🤠</span><h3>Mr. Wrangler</h3>${chip}<span class="spacer"></span><button class="x js-close" aria-label="Close">${I.x}</button></div>
       <div class="wr-feed">${turns}${o.busy ? '<div class="wr-msg assistant"><span class="wr-av">🤠</span><div class="wr-bub wr-think">…wrangling an answer</div></div>' : ''}</div>
       ${o.error ? `<div class="wr-err">${esc(o.error)}</div>` : ''}
-      ${o.messages.some((m) => m.role === 'user') ? `<div class="wr-fixbar"><span class="wr-fixbar-txt">Found a glitch? Mr. Wrangler can round up a fix.</span><button class="wr-fix js-wr-fix" data-tip="File this as a glitch — the auto-fixer patches it, gates it, ships it">🔧 Send to the fixer</button></div>` : ''}
+      ${o.messages.some((m) => m.role === 'user') ? `<div class="wr-fixbar"><span class="wr-fixbar-txt">Hand it to Mr. Wrangler:</span><button class="wr-fix js-wr-fix" data-kind="fix" data-tip="A glitch/bug — the auto-fixer patches it, gates it, ships it to live">🔧 Fix a glitch</button><button class="wr-fix wr-fix-req js-wr-fix" data-kind="request" data-tip="An improvement/idea/change — filed for Jac’s OK, not auto-shipped">💡 Request a change</button></div>` : ''}
       <div class="wr-compose"><input class="wr-in js-wr-in" placeholder="Ask Mr. Wrangler…" value="${esc(o.draft || '')}" ${o.busy ? 'disabled' : ''} /><button class="wr-send js-wr-send" ${o.busy ? 'disabled' : ''} aria-label="Ask">${I.chev}</button></div>`;
     overlay.appendChild(pop);
     setTimeout(() => { const i = pop.querySelector('.js-wr-in'); if (i) i.focus(); const f = pop.querySelector('.wr-feed'); if (f) f.scrollTop = f.scrollHeight; }, 0);
@@ -4948,7 +4949,7 @@ async function sendFeedback() {
    (action 'wrangler'); Code.gs calls api.anthropic.com with the key from a Script
    Property. Carries a compact data digest + (when opened from a record) its detail.
    ════════════════════════════════════════════════════════════════════════ */
-const WRANGLER_SYSTEM = "You are Mr. Wrangler, the in-app AI for JacRentals — a heavy-equipment rental yard in Sulphur, Louisiana. You help the team make sense of their units, rentals, customers, invoices, work orders, and service, and you help triage bugs they report.\n\nSTYLE — keep it tight: answer in 1–3 sentences by default. Lead with the direct answer first; add at most one short supporting clause. Use a bullet list ONLY when enumerating multiple records, one line each. Don't restate the question, don't pad, and don't over-explain what you can't do — just answer.\n\nDATA — the snapshot below holds the LIVE records: every category with its rates, every fleet unit with its type and status, every rental with its date window and customer, customers with balances owed, and the open invoices and work orders. Reason over it directly. Only say a fact is missing if it truly isn't in the snapshot. Never invent records, names, or numbers.\n\nGLITCHES — if the user is reporting a BUG or glitch in the app itself (something not working, a button that does nothing, a broken layout), don't try to fix data: acknowledge it briefly, ask for the one detail you still need to reproduce it (what they tapped + what they expected), and tell them to hit the “Send to the fixer” button below to ship it to the auto-fixer.\n\nA light wrangler/ranch flavor in voice is welcome — never campy.";
+const WRANGLER_SYSTEM = "You are Mr. Wrangler, the in-app AI for JacRentals — a heavy-equipment rental yard in Sulphur, Louisiana. You help the team make sense of their units, rentals, customers, invoices, work orders, and service, and you help triage bugs they report.\n\nSTYLE — keep it tight: answer in 1–3 sentences by default. Lead with the direct answer first; add at most one short supporting clause. Use a bullet list ONLY when enumerating multiple records, one line each. Don't restate the question, don't pad, and don't over-explain what you can't do — just answer.\n\nDATA — the snapshot below holds the LIVE records: every category with its rates, every fleet unit with its type and status, every rental with its date window and customer, customers with balances owed, and the open invoices and work orders. Reason over it directly. Only say a fact is missing if it truly isn't in the snapshot. Never invent records, names, or numbers.\n\nGLITCHES & REQUESTS — this chat is also the ONE place to report problems. If the user reports a BUG/glitch in the app (something not working, a dead button, a broken layout), acknowledge it briefly, ask for the one detail you still need to reproduce it (what they tapped + what they expected), and tell them to hit “🔧 Fix a glitch” below to ship it to the auto-fixer. If instead they want an IMPROVEMENT, idea, or change (not a bug), tell them to hit “💡 Request a change” — that goes to Jac for his OK rather than shipping automatically.\n\nA light wrangler/ranch flavor in voice is welcome — never campy.";
 // The digest is Mr. Wrangler's whole window into the yard, so it carries the ACTUAL
 // records (not just counts): category rates, each unit's type/status, each rental's
 // date window + customer, customer balances, and open invoices/WOs. Sections cap at
@@ -5026,20 +5027,25 @@ async function wranglerSend() {
 // GitHub issue (the Track B repro packet). Carries the transcript, the view/role/
 // record context, and the recent console errors so the auto-fix Action has a real
 // repro. Opens a pre-filled issue → one Submit tap → the engine takes it from there.
-function wranglerFixPacket(o) {
+function wranglerFixPacket(o, kind) {
   const ctx = feedbackContext();
   const transcript = (o.messages || [])
     .map((m) => `${m.role === 'user' ? '**Reporter**' : '**Mr. Wrangler**'}: ${m.content}`)
     .join('\n\n') || '(no message typed)';
   const focus = (o.card && o.recId != null) ? `${entityCardOf(o.card, o.recType)}:${o.recId}` : '—';
   const errs = ERR_LOG.length ? ERR_LOG.slice(-12).join('\n') : '(none captured this session)';
-  const firstUser = ((o.messages || []).find((m) => m.role === 'user') || {}).content || 'Reported glitch';
+  const firstUser = ((o.messages || []).find((m) => m.role === 'user') || {}).content || (kind === 'request' ? 'Requested change' : 'Reported glitch');
   const title = firstUser.replace(/\s+/g, ' ').slice(0, 80);
+  const footer = kind === 'request'
+    ? '_A request for Jac\'s OK — NOT auto-implemented. Jac can add the `wrangler-fix` label to greenlight it._'
+    : '_A Claude agent will reproduce + patch this; the CI gates guard it before it ships to live._';
   const body = [
-    '_Filed straight from the in-app Mr. Wrangler reporter._',
+    `_Filed straight from the in-app Mr. Wrangler ${kind === 'request' ? 'request' : 'reporter'}._`,
     '',
-    '### What was reported',
+    `### What was ${kind === 'request' ? 'requested' : 'reported'}`,
     transcript,
+    '',
+    '> 📎 You can paste or drag a screenshot right here before submitting.',
     '',
     '### Repro context',
     `- **View:** ${ctx.view}`,
@@ -5055,15 +5061,20 @@ function wranglerFixPacket(o) {
     errs,
     '```',
     '',
-    '_A Claude agent will reproduce + patch this; the CI gates guard it before it ships to live._',
+    footer,
   ].join('\n');
   return { title, body };
 }
-function wranglerFileFix() {
+// One chat, two outbound paths: a glitch → the auto-fix engine; a request → Jac's
+// queue. The browser can't hold a token, so each opens a pre-filled GitHub issue.
+function wranglerFile(kind) {
   const o = state.overlay; if (!o || o.kind !== 'wrangler') return;
-  const { title, body } = wranglerFixPacket(o);
-  window.open(wranglerIssueUrl(title, body), '_blank', 'noopener');
-  toast('Opening a fix ticket — tap “Submit new issue” on GitHub and Mr. Wrangler wrangles the rest. 🤠');
+  const { title, body } = wranglerFixPacket(o, kind);
+  const label = kind === 'request' ? 'wrangler-request' : 'wrangler-fix';
+  window.open(wranglerIssueUrl(title, body, label), '_blank', 'noopener');
+  toast(kind === 'request'
+    ? 'Opening a request — tap “Submit new issue” and it lands in Jac’s queue for the OK. 🤠'
+    : 'Opening a fix ticket — tap “Submit new issue” and Mr. Wrangler wrangles the rest. 🤠');
 }
 // Read the customer-form inputs back into the draft (call before any re-render so
 // typed values survive a selfie/signature/pill change).
@@ -6109,7 +6120,7 @@ function onClick(e) {
   }
   if (closest('.js-rbtab')) { e.stopPropagation(); if (state.overlay) state.overlay.rbTab = closest('.js-rbtab').dataset.tab; return renderOverlay(); }
   if (closest('.js-rulebook')) return openOverlay({ kind: 'rulebook' });
-  if (closest('.js-feedback')) { e.stopPropagation(); return openOverlay({ kind: 'feedback', fbType: 'Bug', text: '', shot: '', error: '', busy: false }); }
+  if (closest('.js-feedback')) { e.stopPropagation(); return openOverlay({ kind: 'wrangler', card: null, recId: null, recType: null, messages: [], busy: false, error: '', draft: '' }); }   // §18d folded: the old bug/request form is now the one Mr. Wrangler chat
   // §17 internal team dock
   if (closest('[data-mcol]')) { e.stopPropagation(); state.mobileCol = +closest('[data-mcol]').dataset.mcol; return render(); }   // §M1 dot nav
   if (closest('.js-ext-chat')) { e.stopPropagation(); return toast('External customer & vendor chats arrive with the messaging backend.'); }
@@ -6126,7 +6137,7 @@ function onClick(e) {
   if (closest('.js-cmt-save')) { e.stopPropagation(); return saveCommentOverlay(); }
   if (closest('.js-fb-send')) { e.stopPropagation(); return sendFeedback(); }
   if (closest('.js-wr-send')) { e.stopPropagation(); return wranglerSend(); }   // §18 Mr. Wrangler
-  if (closest('.js-wr-fix')) { e.stopPropagation(); return wranglerFileFix(); }   // §18d hand the glitch to the auto-fixer
+  if (closest('.js-wr-fix')) { e.stopPropagation(); return wranglerFile(closest('.js-wr-fix').dataset.kind); }   // §18d hand a glitch (fix) or request (needs-OK) to Mr. Wrangler
   if (closest('.js-wrangler')) { e.stopPropagation(); return openOverlay({ kind: 'wrangler', card: null, recId: null, recType: null, messages: [], busy: false, error: '', draft: '' }); }
   if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^(https?:\/\/|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener'); return; }
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
