@@ -4306,7 +4306,7 @@ function dispatchEvents() {
     rentalUnits(r).forEach((eu) => {
       if (!eu.unitId || SKIP.has(unitStatus(r, eu)) || !eu.transportType || eu.transportType === 'Self') return;
       const unit = IDX.unit.get(eu.unitId);
-      const base = { rentalId: r.rentalId, unit: unit?.name || '—', cust: cust?.name || cust?.company || '—', addr: eu.deliveryAddress || '', ttype: eu.transportType };
+      const base = { rentalId: r.rentalId, unitId: eu.unitId, unit: unit?.name || '—', cust: cust?.name || cust?.company || '—', addr: eu.deliveryAddress || '', ttype: eu.transportType };
       if (['Delivery', 'Round-Trip'].includes(eu.transportType) && r.startDate) out.push({ ...base, date: r.startDate, time: r.startTime || '', task: 'Deliver', color: 'blue' });
       if (['Round-Trip', 'Recovery'].includes(eu.transportType) && r.endDate) out.push({ ...base, date: r.endDate, time: '', task: 'Pick up', color: 'brown' });
     });
@@ -4315,31 +4315,59 @@ function dispatchEvents() {
 }
 // Body-only dispatch grid (stats + day groups) — rendered inside the Calendar
 // card body in the middle column. Pure derivation; dispatchEvents() unchanged.
+/* §2.3 DISPATCH — the Calendar card is a DAILY DRIVER TIMELINE (Phase 6, Jac):
+   the day's transports, auto-filled from rentals, as an ordered route from the
+   yard and back. D = Deliver, R = Recover, 🏠 = JAC. Drag a stop to reorder the
+   run; type a time; the date rides as a bold-red deadline. Order + times are
+   per-device (localStorage). */
+const DISPATCH_HOME = 'JAC · 102 S Huntington';
+const dispatchStopId = (ev) => `${ev.rentalId}|${ev.unitId || ''}|${ev.task}`;
+const _lsJSON = (k) => { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } };
+const _lsSave = (k, o) => { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) {} };
+const dispatchOrderLS = () => _lsJSON('jactec.dispatchOrder');
+const dispatchTimesLS = () => _lsJSON('jactec.dispatchTimes');
+const addDaysISO = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+const dispatchDayLabel = (iso) => { const d = parseISO(iso); return d ? d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : iso; };
+function dispatchDayStops(day) {
+  const times = dispatchTimesLS();
+  const stops = dispatchEvents().filter((ev) => ev.date === day).map((ev) => ({ ...ev, id: dispatchStopId(ev), time: times[dispatchStopId(ev)] ?? ev.time ?? '' }));
+  const order = dispatchOrderLS()[day] || [];
+  return stops.sort((a, b) => {
+    const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 1e9 : ia) - (ib === -1 ? 1e9 : ib);
+    return (a.time || '~').localeCompare(b.time || '~');
+  });
+}
 function dispatchGridBody() {
-  const events = dispatchEvents();
-  const today = TODAY_ISO;
-  const byDate = {};
-  events.forEach((ev) => { (byDate[ev.date] = byDate[ev.date] || []).push(ev); });
-  const dates = Object.keys(byDate).sort();
-  const stat = (n, label, color) => `<div class="dash-stat"><b style="color:var(--${color})">${n}</b><span>${esc(label)}</span></div>`;
-  const stats = `<div class="dash-stats">
-    ${stat(events.filter((e) => e.date === today && e.task === 'Deliver').length, 'Deliveries today', 'blue')}
-    ${stat(events.filter((e) => e.date === today && e.task === 'Pick up').length, 'Pickups today', 'brown')}
-    ${stat(events.filter((e) => e.date >= today).length, 'Upcoming dispatches', 'green')}
-    ${stat(events.length, 'Total scheduled', 'gray')}</div>`;
-  const groups = dates.length ? dates.map((d) => {
-    const isToday = d === today, isPast = d < today;
-    const rows = byDate[d].map((ev) => `<button class="dash-ev js-dash-ev" data-rec="${esc(ev.rentalId)}">
-        <span class="dash-time">${esc(ev.time || (ev.task === 'Pick up' ? 'EOD' : '—'))}</span>
-        <span class="pill c-${ev.color}"><span class="truck">${I.truck}</span>${esc(ev.task)}</span>
-        <span class="dash-unit">${esc(ev.unit)}</span>
-        <span class="dash-cust">${esc(ev.cust)}</span>
-        <span class="dash-addr">${esc(ev.addr || '—')}</span>
-        <span class="pill c-gray dash-ttype" data-r="R3b">${esc(ev.ttype)}</span>
-      </button>`).join('');
-    return `<div class="dash-day${isToday ? ' today' : ''}${isPast ? ' past' : ''}"><div class="dash-day-head">${esc(fmtShortDate(d))}${isToday ? ' · Today' : ''}<span class="dash-day-count">${byDate[d].length}</span></div>${rows}</div>`;
-  }).join('') : `<div class="empty" style="padding:34px;text-align:center">No dispatches scheduled. Rentals with Delivery / Round-Trip / Recovery transport appear here.</div>`;
-  return `${stats}<div class="dash-grid">${groups}</div>`;
+  const day = state.dispatchDay || TODAY_ISO;
+  const stops = dispatchDayStops(day);
+  const isToday = day === TODAY_ISO;
+  const allUpcoming = dispatchEvents().filter((e) => e.date >= TODAY_ISO).length;
+  const head = `<div class="disp-head">
+    <button class="disp-nav js-disp-day" data-dir="-1" data-tip="Previous day">‹</button>
+    <div class="disp-date"><b>${esc(dispatchDayLabel(day))}</b>${isToday ? '<span class="disp-today">Today</span>' : '<button class="disp-jump js-disp-today">Today</button>'}</div>
+    <button class="disp-nav js-disp-day" data-dir="1" data-tip="Next day">›</button>
+    <span class="spacer"></span>
+    <span class="disp-count">${stops.length} stop${stops.length === 1 ? '' : 's'}${allUpcoming ? ` · ${allUpcoming} upcoming` : ''}</span>
+  </div>`;
+  if (!stops.length) return `${head}<div class="disp-empty">${I.truck}<p>No transports on this day.</p><span>Rentals with Delivery / Round-Trip / Recovery land here automatically — flip days with ‹ ›.</span></div>`;
+  const home = (sub) => `<div class="disp-stop disp-home"><span class="disp-ico home">🏠</span><div class="disp-bd"><div class="disp-unit">${DISPATCH_HOME}</div><div class="disp-sub">${esc(sub)}</div></div></div>`;
+  const rows = stops.map((ev, i) => {
+    const deliver = ev.task === 'Deliver';
+    const overdue = ev.date < TODAY_ISO, dueToday = ev.date === TODAY_ISO;
+    return `<div class="disp-stop js-disp-stop" draggable="true" data-id="${esc(ev.id)}" data-rec="${esc(ev.rentalId)}">
+      <span class="disp-grip" data-tip="Drag to reorder the run">⠿</span>
+      <span class="disp-seq">${i + 1}</span>
+      <input class="disp-time js-disp-time" data-id="${esc(ev.id)}" value="${esc(ev.time || '')}" placeholder="—:—" maxlength="5" data-tip="Set the stop time" />
+      <span class="disp-ico c-${deliver ? 'blue' : 'brown'}" data-tip="${deliver ? 'Deliver' : 'Recover'}">${deliver ? 'D' : 'R'}</span>
+      <div class="disp-bd">
+        <div class="disp-unit">${esc(ev.unit)} <span class="disp-task">${deliver ? 'Deliver' : 'Recover'}</span></div>
+        <div class="disp-sub">${esc(ev.cust)}${ev.addr ? ` · <span class="disp-addr js-site-go" data-rec="${esc(ev.rentalId)}">${esc(ev.addr)}</span>` : ''}</div>
+      </div>
+      <span class="disp-deadline${overdue ? ' over' : dueToday ? ' today' : ''}">${esc(fmtShortDate(ev.date))}${overdue ? ' · LATE' : dueToday ? ' · TODAY' : ''}</span>
+    </div>`;
+  }).join('');
+  return `${head}<div class="disp-route js-disp-route" data-day="${esc(day)}">${home('Roll out')}${rows}${home('Return to yard')}</div>`;
 }
 /** The status badge shown on an item tab (replaces the old datapoint sub-text). */
 function tabBadge(card, rec) {
@@ -6330,6 +6358,10 @@ function onClick(e) {
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
   if (closest('.js-coltab')) { const ct = closest('.js-coltab'); e.stopPropagation(); state.fleetFilter = null; const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render(); }
   if (closest('.js-dash-ev')) { e.stopPropagation(); return anchorRecord('rentals', closest('.js-dash-ev').dataset.rec); }
+  // §2.3 dispatch timeline — day nav + open a stop's rental (Phase 6)
+  if (closest('.js-disp-day')) { e.stopPropagation(); state.dispatchDay = addDaysISO(state.dispatchDay || TODAY_ISO, Number(closest('.js-disp-day').dataset.dir)); return render(); }
+  if (closest('.js-disp-today')) { e.stopPropagation(); state.dispatchDay = TODAY_ISO; return render(); }
+  if (closest('.js-disp-stop') && !closest('.js-disp-time') && !closest('.disp-grip') && !closest('.js-site-go')) { e.stopPropagation(); return anchorRecord('rentals', closest('.js-disp-stop').dataset.rec); }
   if (closest('.js-new-wo-unit')) { e.stopPropagation(); return startNewWorkOrder(closest('.js-new-wo-unit').dataset.rec); }
   if (closest('.js-newitem')) {
     const kind = closest('.js-newitem').dataset.new;
@@ -7200,6 +7232,9 @@ function onChange(e) {
     reader.onload = () => { downscaleImage(reader.result, 1000, 0.6, (out) => { if (!out) { toast('Could not read that image.'); return; } if (state.overlay?.kind === 'feedback') { state.overlay.shot = out; renderOverlay(); } }); };
     reader.readAsDataURL(file);
     return;
+  }
+  if (e.target.classList.contains('js-disp-time')) {   // §2.3 dispatch stop time (per-device)
+    const t = dispatchTimesLS(); t[e.target.dataset.id] = e.target.value.trim(); _lsSave('jactec.dispatchTimes', t); return;
   }
   if (e.target.classList.contains('js-wr-file')) {   // §18d Mr. Wrangler image attach
     [...(e.target.files || [])].forEach((f) => wranglerAttachFile(f));
@@ -8672,6 +8707,22 @@ function boot() {
     if (state.overlay?.kind !== 'partform') return;
     if (e.key === 'Enter' && e.target.matches && e.target.matches('.js-pf2-desc, .js-pf2-cost, .js-pf2-hours, .js-pf2-url, .js-pf2-vendor')) { e.preventDefault(); savePartForm(); }
   });
+  // §2.3 dispatch route reorder — native drag, self-contained (re-render only on drop,
+  // so the grid's custom pointer engine isn't involved). Reorders the day's run.
+  let dispDragId = null;
+  document.addEventListener('dragstart', (e) => { const s = e.target.closest && e.target.closest('.js-disp-stop'); if (s) { dispDragId = s.dataset.id; if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; s.classList.add('disp-dragging'); } });
+  document.addEventListener('dragover', (e) => { if (dispDragId && e.target.closest && e.target.closest('.js-disp-route')) e.preventDefault(); });
+  document.addEventListener('drop', (e) => {
+    const route = e.target.closest && e.target.closest('.js-disp-route'); if (!dispDragId || !route) return; e.preventDefault();
+    const ids = [...route.querySelectorAll('.js-disp-stop')].map((n) => n.dataset.id);
+    const over = e.target.closest('.js-disp-stop');
+    const from = ids.indexOf(dispDragId); if (from !== -1) ids.splice(from, 1);
+    const to = over && over.dataset.id !== dispDragId ? ids.indexOf(over.dataset.id) : ids.length;
+    ids.splice(to < 0 ? ids.length : to, 0, dispDragId);
+    const ord = dispatchOrderLS(); ord[route.dataset.day] = ids; _lsSave('jactec.dispatchOrder', ord);
+    dispDragId = null; render();
+  });
+  document.addEventListener('dragend', () => { dispDragId = null; document.querySelectorAll('.disp-dragging').forEach((n) => n.classList.remove('disp-dragging')); });
   document.addEventListener('mousemove', onInspectMove);   // Design Inspector hover tag (no-op unless state.inspect)
   // Board View formula cells: reveal the raw "=…" on focus, recompute on blur.
   document.addEventListener('focusin', (e) => {
