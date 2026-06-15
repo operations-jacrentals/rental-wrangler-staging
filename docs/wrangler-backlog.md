@@ -1,7 +1,18 @@
 # Rental Wrangler — Jac's task dump (2026-06-15)
 
-Pinned backlog from the 5 sticky-note photos, grouped into like-minded phases.
+Pinned backlog from the sticky-note photos, grouped into like-minded phases.
 (FC = Field Call. Crossed-out notes are parked at the bottom.)
+
+## ✅ Autonomous run summary (2026-06-15, on `claude/ui-overhaul-w55upw`)
+Worked all 6 phases end-to-end. Every commit passed the 3 gates; each UI piece was
+screenshot-checked. **All on the branch (PR #7)** — nothing auto-shipped to live.
+
+- **Phase 1 — bugs:** ✅ right-click-over-preview · Complete-Rental feedback · Bill/Don't-bill toggle · fleet-dropdown z-index · Cancel/Reopen WO · footers-no-longer-change-mode. 📌 3 still pinned (need live repro): the 2 units-list scroll bugs + For-Sale-in-availability.
+- **Phase 2 — chrome:** ✅ per-card striped-header colors · removed Dashboard · removed footer dashed line · Membership/Used-Sales swapped · +Unit pill hidden after first unit · Yard Mode already locked. (Graph icon delivered with Phase 4.)
+- **Phase 3 — KPIs:** ✅ all four (Healthy Fleet, Parts Breakeven, Ready-Rate denominator, WO-Rate 20%/30-day goal-ring).
+- **Phase 4 — graphs:** ✅ per-card Graph icon + the full Units graph (FC stats, leaderboard, FC-history bars, Inspection & Parts donuts, unit roster).
+- **Phase 5 — WO/parts:** ✅ Part-in-Stock status · Part/Task autofocus + Enter-to-add · WO→failed-inspection link · failed-unit re-inspection gated on the last blocking WO.
+- **Phase 6 — transport:** ✅ Calendar = daily driver timeline (D/R/🏠, times, deadlines, drag-reorder, route arrows, day nav). 📌 manual "click-icon-to-icon" arbitrary arrows interpreted as the sequential route order (drag to reorder) — revisit if you want free-form arrows.
 
 ## Phase 1 — Bugs / broken controls (auto-fixer candidates)
 > **Decision:** fix all on the feature branch (PR #7), batched with the redesign — not via the live engine (would collide with the branch).
