@@ -20,7 +20,8 @@ import { AGREEMENTS } from './agreements.js';
 import {
   getStatus, STATUS, ROLES, GRID_CARDS, BACKOFFICE_BOARDS, SORT_FIELDS,
   SHOP_TYPES, SHOP_SEGMENTS, COLUMNS, COLUMN_OF,
-  transportPrice, fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, invoiceShort, TRANSPORT_MAP,
+  legacyTransportPrice, computeTransportPrice, isFueledType, legsForType, YARD_ORIGIN, GOOGLE_MAPS_KEY,
+  fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, invoiceShort, TRANSPORT_MAP,
 } from './config.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -118,7 +119,8 @@ function legacyUnitEntry(r) {
     startHours: r.startHours != null ? r.startHours : null,
     returnHours: r.returnHours != null ? r.returnHours : null,
     startCapture: r.startCapture || null, endCapture: r.endCapture || null, fcCapture: r.fcCapture || null,
-    transportType: r.transportType || null, deliveryAddress: r.deliveryAddress || '', recoveryAddress: r.recoveryAddress || '', sitePin: r.sitePin || null };
+    transportType: r.transportType || null, deliveryAddress: r.deliveryAddress || '', recoveryAddress: r.recoveryAddress || '', sitePin: r.sitePin || null,
+    transportMiles: r.transportMiles != null ? r.transportMiles : null, transportDriveMin: r.transportDriveMin != null ? r.transportDriveMin : null };
 }
 function migrateRentals() {
   DATA.rentals.forEach((r) => {
@@ -444,17 +446,28 @@ function rentalLineItems(r) {
     return { kind: 'rental', ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `${u?.name || 'Rental'} · ${p ? p.rate : '—'}`, amount: p ? p.price : 0 };
   });
 }
+/** Is the unit fueled (gets the $20/leg fuel-fill)? Reads its category's fuelType. */
+function unitFueled(unitId) {
+  return isFueledType(IDX.category.get(IDX.unit.get(unitId)?.categoryId)?.fuelType);
+}
+/** Transport cost from cached Google miles/drive-time when present, else the
+ *  legacy city-tier estimate (un-geocoded demo data / offline). */
+function transportCost({ transportType, miles, driveMin, address, fueled, unlimited }) {
+  if (miles != null) {
+    const p = computeTransportPrice({ transportType, oneWayMiles: miles, fueled, unlimitedTransport: unlimited });
+    return { ...p, driveMin: driveMin != null ? driveMin : p.driveMin };
+  }
+  return legacyTransportPrice(transportType, address, { unlimitedTransport: unlimited });
+}
 /** Transport cost + drive time for a rental (SPEC §10) — primary unit / legacy. */
 function rentalTransport(r) {
-  const cust = IDX.customer.get(r.customerId);
-  const unlimited = !!cust?.unlimitedTransport;
-  return transportPrice(r.transportType, r.deliveryAddress, { unlimitedTransport: unlimited });
+  const unlimited = !!IDX.customer.get(r.customerId)?.unlimitedTransport;
+  return transportCost({ transportType: r.transportType, miles: r.transportMiles, driveMin: r.transportDriveMin, address: r.deliveryAddress, fueled: unitFueled(r.unitId), unlimited });
 }
-/** §20 transport cost for ONE unit (its own type + address). */
+/** §20 transport cost for ONE unit (its own type + address + cached distance). */
 function unitTransport(r, eu) {
-  const cust = IDX.customer.get(r.customerId);
-  const unlimited = !!cust?.unlimitedTransport;
-  return transportPrice(eu.transportType, eu.deliveryAddress, { unlimitedTransport: unlimited });
+  const unlimited = !!IDX.customer.get(r.customerId)?.unlimitedTransport;
+  return transportCost({ transportType: eu.transportType, miles: eu.transportMiles, driveMin: eu.transportDriveMin, address: eu.deliveryAddress, fueled: unitFueled(eu.unitId), unlimited });
 }
 /** §20 one invoice 'transport' line per unit that has transport (ref=rentalId,
    li.unitId identifies it; the unit name is shown only on multi-unit rentals). */
@@ -8908,7 +8921,8 @@ function exposeTestApi() {
       allUnitsTerminal, unitTerminal, unitVoided, rentalLineItems, transportLineItems, syncRentalPrimary,
       addUnitToRental, removeUnitFromRental, removeUnitInvoiceLine, unitLinePaid, invoiceTotals, allocLines,
       rentalAllocated, unitRentalPrice, rentalDisplayName, setWoLinePhase, setWoPhase, woBottleneck,
-      cleanUnitName, planUnitMigration, applyUnitMigration, openMigrationPreview };
+      cleanUnitName, planUnitMigration, applyUnitMigration, openMigrationPreview,
+      computeTransportPrice, isFueledType, unitTransport, rentalTransport };
   } catch (e) { /* no window (non-browser) */ }
 }
 
