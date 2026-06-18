@@ -1196,6 +1196,7 @@ const state = {
   invoiceSeq: DATA.invoices.length,   // monotonic invoice number (never reused after a discard)
   previewsOn: (() => { try { return localStorage.getItem('jactec.previewsOff') !== '1'; } catch (e) { return true; } })(),   // hover previews (per device)
   overbookOn: (() => { try { return localStorage.getItem('jactec.overbook') === '1'; } catch (e) { return false; } })(),   // §10 allow-overbooking policy (per device, default OFF — drag build)
+  hapticsOff: (() => { try { return localStorage.getItem('jactec.hapticsOff') === '1'; } catch (e) { return false; } })(),   // §M-touch Vibration-API feedback (per device, default ON; Android-only, no-op on iOS)
   wranglerRail: (() => { try { return JSON.parse(localStorage.getItem('jactec.wranglerRail') || '[]'); } catch (e) { return []; } })(),   // §18g the bottom-right rail of past Mr. Wrangler conversations (per device); each = a snapshot { id, title, ts, card, recId, recType, reqNumber, reqTitle, reqUrl, messages }
 };
 const activeSession = () => (state.activeTabId ? state.tabs.find((t) => t.id === state.activeTabId)?.session : state.defaultSession) || state.defaultSession;
@@ -1512,7 +1513,7 @@ function scrollToSect(card, sect) {
 function pillTo(card, recId) {
   if (recId == null) return;
   // 3-column display: a link pill forces its column to reveal the target card.
-  const revealCol = (member) => { const cs = activeSession(); const col = COLUMN_OF[member]; if (cs.cols && col) cs.cols[col] = member; };
+  const revealCol = (member) => { const cs = activeSession(); const col = COLUMN_OF[member]; if (cs.cols && col) { cs.cols[col] = member; const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx; } };   // §M1 — also flip the visible phone column so a cross-column link lands where you can see it
   if (SHOP_TYPES.includes(card)) { if (recOf(card, recId)) { revealCol(card); openStandard('shop', recId, card); } return; }
   if (recOf(card, recId)) { revealCol(card); openStandard(card, recId); }
 }
@@ -4168,7 +4169,7 @@ function columnEl(col, session) {
   // stamp the VIEW identity (list vs which record) so render() keys scroll memory by it
   const cs = card.dataset.card && session.cards ? session.cards[card.dataset.card] : null;
   card.dataset.view = (cs && cs.mode === 'standard' && cs.recId != null) ? `${cs.recType || ''}:${cs.recId}` : 'list';
-  card.insertBefore(colTabsEl(col, active, session), card.firstChild);   // toggles live INSIDE the card top
+  if (!document.body.classList.contains('is-phone')) card.insertBefore(colTabsEl(col, active, session), card.firstChild);   // toggles live INSIDE the card top on desktop; on phones they move to the footer dock (§M1)
   const tot = card.querySelector('.card-body .list-totals');             // freeze the totals as a card FOOTER (out of the scroll)
   if (tot) card.appendChild(tot);
   wrap.appendChild(card);
@@ -4178,6 +4179,12 @@ function colTabsEl(col, active, session) {
   // Jac 2026-06-12: the toggle CHIP stays centered; the nav cluster sits OUTSIDE
   // it, parked at the row's right edge (.tabrow wraps both).
   const bar = el('div', 'tabrow');
+  bar.innerHTML = `<div class="col-tabs">${colTabButtonsHtml(col, active, session)}</div>` + colActionsHtml(active, session);
+  return bar;
+}
+/* The coltab buttons themselves (no wrapper) — shared by the desktop in-card tab row
+   (colTabsEl) AND the phone footer (mobileDockEl), so a toggle looks identical in both. */
+function colTabButtonsHtml(col, active, session) {
   // v2 (Jac call #1): the standalone Inspections + Work Orders tabs go away —
   // they live INSIDE the Unit card now; only Service keeps a tab. The hidden
   // tab still renders while its member is ACTIVE so deep links navigate home.
@@ -4186,7 +4193,7 @@ function colTabsEl(col, active, session) {
   // units column — clipboard-? icon + count; hidden when zero; it's just a filter.
   const notReady = col.members.includes('units') ? DATA.units.filter((u) => u.inspectionStatus === 'Not Ready').length : 0;
   const nrChip = notReady ? `<button class="coltab js-notready compact alert" data-tip="${notReady} Not Ready — filter the Units list"><span class="ct-ico">${CARD_ICON.inspectionsPending || CARD_ICON.inspections}</span><span class="ct-n">${notReady}</span></button>` : '';
-  bar.innerHTML = `<div class="col-tabs">` + col.members.filter((m) => !HIDDEN_TABS.has(m) || m === active).map((m) => {
+  return col.members.filter((m) => !HIDDEN_TABS.has(m) || m === active).map((m) => {
     const on = m === active, compact = SHOP_TYPES.includes(m);   // shop sub-types are icon-only
     const n = memberCount(m, session);
     const alert = SHOP_TYPES.includes(m) && shopAlertCount(m, session) > 0;   // red = work needs doing
@@ -4195,8 +4202,7 @@ function colTabsEl(col, active, session) {
       + (compact ? '' : `<span class="ct-lbl">${esc(MEMBER_TITLE[m])}</span>`)
       + `<span class="ct-n">${n}</span>`
       + `</button>`;
-  }).join('') + nrChip + `</div>` + colActionsHtml(active, session);
-  return bar;
+  }).join('') + nrChip;
 }
 /* Jac 2026-06-12: the nav cluster (List / Anchor / New tab) rides the TOGGLE row,
    not the title row — the item header gets room to breathe and head gates align right. */
@@ -4807,15 +4813,29 @@ function bottomBarInner() {
 }
 function bottomBarEl() { const bar = el('div', 'bottombar'); bar.innerHTML = bottomBarInner(); return bar; }
 // §M1 — phone-only per-column bottom strip: Yard→internal chat · Rentals→tool bar · Customers→external chats (shell).
+// §M1/§M3 — the active phone column's card id (state.cards key), for the grid Back/Fwd swipe.
+function activeMobileCard() {
+  const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
+  const s = activeSession();
+  const member = (s.cols && s.cols[colObj.id]) || colObj.default;
+  return SHOP_TYPES.includes(member) ? 'shop' : member;
+}
+// §M1 phone footer — the column's card toggles (active = icon+label+count, the rest
+// icon+count only) + ONE trailing action icon, over a thin column-dot indicator. The
+// whole dock is swipeable left/right to change columns (column switching lives HERE now,
+// not in the grid — the grid swipe is Back/Forward, §M3).
 function mobileDockEl() {
-  const col = state.mobileCol;
+  const col = Math.max(0, Math.min(2, state.mobileCol));
+  const colObj = COLUMNS[col];
+  const session = activeSession();
+  const active = (session.cols && session.cols[colObj.id]) || colObj.default;
   const dots = `<div class="mdock-dots">${[0, 1, 2].map((i) => `<button class="mdot${i === col ? ' on' : ''}" data-mcol="${i}" aria-label="Column ${i + 1}"></button>`).join('')}</div>`;
-  let strip;
-  if (col === 1) strip = `<div class="mdock-tools">${bottomBarInner()}</div>`;                       // Rentals → tool bar
-  else if (col === 2) strip = `<button class="mdock-bar js-ext-chat">${I.chat}<span class="mdock-lbl">External chats</span><span class="mdock-soon">soon</span></button>`;   // Customers → external (shell)
-  else { const n = chatUnreadCount(); strip = `<button class="mdock-bar js-chat-toggle">${I.chat}<span class="mdock-lbl">Team chat</span>${n ? `<span class="bb-badge" style="position:static;margin-left:auto">${n > 9 ? '9+' : n}</span>` : ''}</button>`; }   // Yard → internal chat
+  let action;
+  if (col === 1) action = `<button class="iconbtn mdock-act js-mtools" data-tip="Tools — receipt, share, Mr. Wrangler, admin">${I.sliders || I.menu || '☰'}</button>`;   // Rentals → tools sheet
+  else if (col === 2) action = `<button class="iconbtn mdock-act js-ext-chat" data-tip="External chats (soon)">${I.chat}</button>`;                                       // Customers → external (shell)
+  else { const n = chatUnreadCount(); action = `<button class="iconbtn mdock-act js-chat-toggle" data-tip="Team chat">${I.chat}${n ? `<span class="bb-badge">${n > 9 ? '9+' : n}</span>` : ''}</button>`; }   // Yard → team chat
   const d = el('div', 'mobile-dock');
-  d.innerHTML = dots + strip;
+  d.innerHTML = dots + `<div class="mdock-tabs"><div class="col-tabs">${colTabButtonsHtml(colObj, active, session)}</div><span class="mdock-sp"></span>${action}</div>`;
   return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
@@ -4875,7 +4895,7 @@ function chatDockEl() {
   const c = activeChat();
   const u = commentUserKey();
   // tagged-element rail at the very top (no header, per Jac) — close/back ride the rail's end
-  const tagsHtml = c ? c.tags.map((t) => `<span class="chat-tag c-${t.color || 'gray'}" data-tip="${esc(t.label)}"><span class="ct-dot"></span><span class="ct-lbl">${esc(t.label)}</span><button class="x" data-chat-untag="${esc(t.id)}" aria-label="Remove ${esc(t.label)}">${I.x}</button></span>`).join('') : '<span class="chat-rail-hint">No chat open — right-click a record or drag an element in</span>';
+  const tagsHtml = c ? c.tags.map((t) => `<span class="chat-tag c-${t.color || 'gray'}" data-tip="${esc(t.label)}"><span class="ct-dot"></span><span class="ct-lbl">${esc(t.label)}</span><button class="x" data-chat-untag="${esc(t.id)}" aria-label="Remove ${esc(t.label)}">${I.x}</button></span>`).join('') : '<span class="chat-rail-hint">No chat open — right-click / long-press a record, or drag one in</span>';
   const rail = `<div class="chat-rail">${tagsHtml}<span class="rail-sp"></span>${c ? `<button class="rail-ico js-chat-back" aria-label="All flags" data-tip="All flags">${I.chevL}</button>` : ''}<button class="rail-ico js-chat-close" aria-label="Close chat" data-tip="Close">${I.x}</button></div>`;
   const feed = chatFeed().map((it) => {
     if (it.kind === 'msg') {
@@ -5017,7 +5037,7 @@ function chatSend() {
   let c = activeChat(); if (!c) c = newChat();                          // typing with no active chat opens one to the team
   c.messages.push({ id: 'MSG' + (state.seq++), by: commentUserKey(), when: TODAY_ISO, at: Date.now(), text });
   c.seen[commentUserKey()] = Date.now();                                // author has seen their own update
-  state.chat.draft = ''; saveSoon(); pushChatsSoon(); render();
+  state.chat.draft = ''; saveSoon(); pushChatsSoon(); haptic([12, 30, 12]); render();   // §M-touch — success tick on a posted message
   setTimeout(() => { const i = document.querySelector('.chat-input'); if (i) i.focus(); const f = document.querySelector('.chat-feed'); if (f) f.scrollTop = f.scrollHeight; }, 0);
 }
 function chatToggleRole(id) {
@@ -5819,7 +5839,30 @@ function cardGraphBody(card) {
    §12 OVERLAYS & BOARDS — renderOverlay kinds + back-office board popups
    ════════════════════════════════════════════════════════════════════════ */
 let _ovScroll = {}, _ovLastKind = null;   // keep a popup-body's scroll across its OWN re-renders (sign/selfie)
+/* ── §M3 — phone hardware-BACK button (Android) joins the dismiss chain. We keep at
+   most ONE dummy history entry while any sheet/overlay/dock is open; pressing Back
+   pops it and closes the topmost surface (same order as Esc), re-pushing if more
+   remain. Closing by other means (Esc/✕/backdrop) consumes the dangling entry so the
+   stack stays balanced. Phone-only — desktop keeps Esc/click. Wired in boot(). ── */
+let backGuard = false, backConsuming = false;
+let swipeFired = false;   // §M1/§M3 — a footer (column) or grid (Back/Fwd) swipe sets this so the trailing click is swallowed once
+function anyDismissable() { return !!(state.overlay || state.winpicker || state.chat.open || state.wrangler.open); }
+function dismissTopSheet() {
+  if (state.winpicker) { closeWinPicker(); return true; }
+  if (state.overlay) { closeOverlay(); return true; }
+  if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; render(); return true; }   // mirror js-wr-close
+  if (state.chat.open) { state.chat.open = false; render(); return true; }                                    // mirror js-chat-close
+  return false;
+}
+function syncBackGuard() {
+  if (!document.body.classList.contains('is-phone')) return;
+  const open = anyDismissable();
+  if (open && !backGuard) { try { history.pushState({ rwSheet: true }, ''); } catch (e) {} backGuard = true; }
+  else if (!open && backGuard) { backConsuming = true; backGuard = false; try { history.back(); } catch (e) {} }   // closed via Esc/✕ → eat the dummy entry
+}
+
 function renderOverlay() {
+  syncBackGuard();
   const root = $('#overlay-root');
   if (_ovLastKind) { const _pb = root.querySelector('.popup-body'); if (_pb) _ovScroll[_ovLastKind] = _pb.scrollTop; }
   destroyCardElement();        // any re-render/overlay-switch tears down a mounted Stripe element
@@ -6209,6 +6252,13 @@ function renderOverlay() {
         <span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body board-body bv-body">${o.customize ? bvCustomizePanel(o.card) : ''}${boardViewTable(o, session)}</div>`;
     overlay.appendChild(pop);
+  } else if (o.kind === 'tools') {
+    // §M1 — the global tool tray (the desktop bottom bar) as a phone sheet
+    const pop = el('div', 'popup'); pop.style.width = '360px';
+    pop.innerHTML = `
+      <div class="popup-head"><span class="mark" style="color:var(--accent);display:inline-flex">${I.sliders || I.menu || ''}</span><h3>Tools</h3><span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-body"><div class="tools-tray">${bottomBarInner()}</div></div>`;
+    overlay.appendChild(pop);
   } else if (o.kind === 'settings') {
     const cfg = o.config || { roles: {}, admin: '' };
     const roleRows = Object.keys(cfg.roles).map((role) => `<label class="set-row"><span class="set-role">${esc(role)}</span><input class="set-input" data-role="${esc(role)}" value="${esc(cfg.roles[role])}" autocomplete="off" /></label>`).join('');
@@ -6221,6 +6271,8 @@ function renderOverlay() {
         <label class="set-row set-admin"><span class="set-role">Admin</span><input class="set-input" data-admin="1" value="${esc(cfg.admin)}" autocomplete="off" /></label>
         <div class="set-row" style="margin-top:12px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="ON: dropping a unit onto a conflicting rental links anyway — both sides get a pulsing red 'Overbooked' flag while the overlap exists. OFF: the drop is blocked, naming the conflict.">Allow overbooking</span>${segCtl([{ label: 'Off', js: 'js-overbook', data: { val: '0' }, on: state.overbookOn ? null : 'red' }, { label: 'On', js: 'js-overbook', data: { val: '1' }, on: state.overbookOn ? 'green' : null }])}</div>
         <p class="muted" style="font-size:10.5px;margin:4px 0 0">Drag &amp; drop policy — saved on this device.</p>
+        <div class="set-row" style="margin-top:12px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="A light vibration confirms committed actions on phones (post a chat, drop a link, complete a WO, release-to-cancel). Android only — iOS has no vibration.">Haptic feedback</span>${segCtl([{ label: 'Off', js: 'js-haptics', data: { val: '0' }, on: state.hapticsOff ? 'red' : null }, { label: 'On', js: 'js-haptics', data: { val: '1' }, on: state.hapticsOff ? null : 'green' }])}</div>
+        <p class="muted" style="font-size:10.5px;margin:4px 0 0">Touch feedback — saved on this device.</p>
         ${o.error ? `<div class="login-err" style="text-align:left;margin-top:8px">${esc(o.error)}</div>` : ''}
         <div class="pillrow" style="margin-top:14px;justify-content:flex-end"><button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill c-commit js-settings-save">Save</button></div>
       </div>`;
@@ -7425,16 +7477,15 @@ function render() {
   const header = headerEl();
   const session = activeSession();
   // 3-column layout: each column paints its one active member card (+ a tab strip).
+  // §M1 — on phones we paint ONLY the active column (no 3-wide scroll track): a horizontal
+  // swipe is Back/Forward now, and the column is changed from the footer dock instead.
+  const phone = document.body.classList.contains('is-phone');
   const grid = el('div', 'grid');
-  for (const col of COLUMNS) grid.appendChild(columnEl(col, session));
+  const shown = phone ? [COLUMNS[Math.max(0, Math.min(2, state.mobileCol))]] : COLUMNS;
+  for (const col of shown) grid.appendChild(columnEl(col, session));
   const bottomBar = bottomBarEl();
   $('#app').replaceChildren(header, grid, bottomBar);
-  // §M1 — on phones, the global bar is hidden (CSS) and a per-column strip is docked;
-  // restore the swipe position so an action's re-render doesn't snap back to column 1.
-  if (document.body.classList.contains('is-phone')) {
-    $('#app').appendChild(mobileDockEl());
-    grid.scrollLeft = state.mobileCol * (grid.clientWidth || window.innerWidth);
-  }
+  if (phone) $('#app').appendChild(mobileDockEl());   // the global bar is hidden (CSS); the footer dock carries the toggles + column nav
   // restore scroll by VIEW: same view → keep your spot; back to a list → return to the
   // row you left; opened a record → top of Standard view (a targeted link scrolls itself after).
   document.querySelectorAll('.card[data-card]').forEach((c) => {
@@ -7444,12 +7495,20 @@ function render() {
     else b.scrollTop = 0;
   });
   document.documentElement.setAttribute('data-theme', state.theme);
-  // the rental-window picker floats above the grid, anchored to its trigger (§12.2)
+  // the rental-window picker floats above the grid, anchored to its trigger (§12.2);
+  // on phones it becomes a bottom sheet (§M3) with a tap-to-close backdrop instead.
   if (state.winpicker) {
     const wr = IDX.rental.get(state.winpicker.rentalId);
-    if (wr) { const fl = el('div', 'winpicker-float'); fl.innerHTML = winPickerEl(wr); $('#app').appendChild(fl); positionWinPicker(fl); }
-    else state.winpicker = null;
+    if (wr) {
+      const phone = document.body.classList.contains('is-phone');
+      if (phone) { const bd = el('div', 'sheet-backdrop'); bd.dataset.sheetclose = 'win'; $('#app').appendChild(bd); }
+      const fl = el('div', 'winpicker-float'); fl.innerHTML = winPickerEl(wr); $('#app').appendChild(fl);
+      if (!phone) positionWinPicker(fl);   // phone: CSS pins it to the bottom edge, so skip the JS anchor
+    } else state.winpicker = null;
   }
+  // §M3 — lock the column scroll behind any open sheet/overlay/dock on phones
+  document.body.classList.toggle('sheet-open', !!(state.overlay || state.winpicker || state.chat.open || state.wrangler.open));
+  syncBackGuard();   // §M3 — keep the Android back-button guard in step with what's open
   // §17 — the internal team dock floats bottom-right above the bar when open
   if (state.chat.open) { const d = el('div', 'chat-dock', ''); d.dataset.drop = 'chat'; d.innerHTML = chatDockEl(); $('#app').appendChild(d); }
   // §18 — Mr. Wrangler dock floats alongside the team chat (or alone at bottom-right)
@@ -7570,6 +7629,17 @@ function invoiceUnitIds(inv) {
   return [...ids];
 }
 
+/** §M-touch — haptic reinforcement for a COMMITTED gesture (one pulse, never on
+ *  scroll/hover). Best-effort: Android/Chrome only — iOS Safari has no Vibration
+ *  API, so this is reinforcement, never the sole signal. Gated on the per-device
+ *  off-switch (Settings) + reduced-motion. Vocabulary: 8 = light tick (advance),
+ *  [12,30,12] = success (sent/dropped/done), [35,25,35] = abort (release-to-cancel). */
+function haptic(pattern) {
+  if (state.hapticsOff || !('vibrate' in navigator)) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  try { navigator.vibrate(pattern); } catch (e) {}
+}
+
 /** Called from boot() — builds the #drag-layer singleton (ghost + cancel arc)
  *  on document.body and wires the document-level pointer listeners. */
 function initDrag() {
@@ -7610,6 +7680,10 @@ function initDrag() {
    • a VERTICAL move on touch = scroll intent → disarm, the list scrolls natively,
    • holding STILL ~500ms = the right-click/context menu (armMenuTimer),
    • a quick press-and-release never arms past the click discriminator (= tap/action). ── */
+// §M3 — touch DRAG is now a long-press: a press must be HELD ~300ms before a horizontal
+// move lifts a drag. A quick horizontal flick (before this fires) is a Back/Forward swipe
+// instead (see the grid swipe tracker in boot). Frees the horizontal axis for navigation.
+function armReadyTimer(arm) { return setTimeout(() => { if (DRAG.armed === arm) arm.ready = true; }, 300); }
 function armMenuTimer(arm) {   // §M3 — touch hold-still opens the context menu (not a drag)
   return setTimeout(() => {
     if (DRAG.armed !== arm) return;
@@ -7629,8 +7703,8 @@ function dragDown(e) {
   const chatEl = e.target.closest('[data-chat-el]');
   if (chatEl) {
     DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;
-    const arm = { chatEl: chatElPayload(chatEl), x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType === 'touch', lp: null };
-    if (arm.touch) arm.lp = armMenuTimer(arm);
+    const arm = { chatEl: chatElPayload(chatEl), x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType === 'touch', lp: null, rdy: null, ready: e.pointerType !== 'touch' };
+    if (arm.touch) { arm.lp = armMenuTimer(arm); arm.rdy = armReadyTimer(arm); }
     DRAG.armed = arm; return;
   }
   const bail = e.target.closest('.inline-edit, .inline-input, input, textarea, select, button, .x, .pill, .seg, .add-field, .linkname, .flag, .jnode, .dropdown-menu, .overlay, .hover-preview, .winpicker-float, .ctx-menu');
@@ -7640,8 +7714,8 @@ function dragDown(e) {
   const src = dragSourceAt(e.target);
   if (!src) return;
   DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;                    // seed the ghost/hit-test point — a touch long-press may fire with NO move first
-  const armed = { card: src.card, rec: src.rec, x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType === 'touch', lp: null };
-  if (armed.touch) armed.lp = armMenuTimer(armed);
+  const armed = { card: src.card, rec: src.rec, x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType === 'touch', lp: null, rdy: null, ready: e.pointerType !== 'touch' };
+  if (armed.touch) { armed.lp = armMenuTimer(armed); armed.rdy = armReadyTimer(armed); }
   DRAG.armed = armed;
 }
 /* Resolve what a press grabs, in priority order:
@@ -7669,7 +7743,7 @@ function dragSourceAt(target) {
   }
   return null;
 }
-function disarmDrag() { if (DRAG.armed && DRAG.armed.lp) clearTimeout(DRAG.armed.lp); DRAG.armed = null; }
+function disarmDrag() { if (DRAG.armed) { if (DRAG.armed.lp) clearTimeout(DRAG.armed.lp); if (DRAG.armed.rdy) clearTimeout(DRAG.armed.rdy); } DRAG.armed = null; }
 // Read a granular chat-taggable element's payload from its data-* stamps (§17).
 function chatElPayload(node) {
   return { id: node.dataset.chatId || null, label: (node.dataset.chatLabel || node.textContent || '').trim().slice(0, 48) || 'Item',
@@ -7685,7 +7759,8 @@ function dragMove(e) {
       const adx = Math.abs(e.clientX - a.x), ady = Math.abs(e.clientY - a.y);
       if (adx < 8 && ady < 8) return;                                    // still inside the slop — a hold here becomes the menu
       if (ady >= adx) { disarmDrag(); return; }                         // vertical intent → native scroll
-      return startDrag();                                                // horizontal intent → drag the element
+      if (!a.ready) { disarmDrag(); return; }                            // §M3 horizontal move BEFORE the long-press = a Back/Forward swipe (handled on pointerup), not a drag
+      return startDrag();                                                // held long enough → horizontal drag-to-link
     }
     if (dist > 6) startDrag();
     return;
@@ -7698,6 +7773,7 @@ function dragMove(e) {
 function startDrag() {
   const a = DRAG.armed; if (!a) return;
   if (a.lp) clearTimeout(a.lp);
+  if (a.rdy) clearTimeout(a.rdy);
   if (pendingRowClick) { clearTimeout(pendingRowClick.timer); pendingRowClick = null; }   // nothing pending may fire mid-drag
   hideHoverPreview(); hideTip();
   try { window.getSelection().removeAllRanges(); } catch (err) {}        // pre-threshold mouse travel may have selected text (the dblclick idiom, §16)
@@ -7785,11 +7861,13 @@ function updateHot(under) {
   const padHot = !!(t && t.newChat);
   if (padHot !== chatDropPad.classList.contains('hot')) {    // §17 — light the pad only on the transition
     chatDropPad.classList.toggle('hot', padHot);
+    if (padHot) haptic(10);                                  // §M-touch — tick when the new-chat pad arms
     const cl = chatDropPad.querySelector('.cd-label'); if (cl) cl.textContent = padHot ? 'Release to start' : 'Drop to start a chat';
   }
   const arcHot = !!(t && t.cancel);
   if (arcHot !== dragArc.classList.contains('hot')) {        // only on the transition — no per-frame text churn in the rAF loop
     dragArc.classList.toggle('hot', arcHot);
+    if (arcHot) haptic(8);                                   // §M-touch — tick when "release to cancel" arms
     const lbl = dragArc.querySelector('.ca-label');
     if (lbl) lbl.textContent = arcHot ? 'Release to cancel' : 'Cancel';   // tell the operator exactly what releasing does
   }
@@ -7859,9 +7937,10 @@ function dragUp(e) {
   if (e.pointerId !== DRAG.payload.pointerId) return;
   DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;
   const t = dropTargetAt(e.clientX, e.clientY);
-  if (!t || t.cancel) return cancelDrag();                               // arc, dead space, invalid target → no mutation
+  if (!t || t.cancel) { if (t && t.cancel) haptic([35, 25, 35]); return cancelDrag(); }   // deliberate release on the arc = abort buzz; dead space = silent
   const payload = DRAG.payload;
   endDrag();
+  haptic([12, 30, 12]);                                                  // committed drop → success tick
   dispatchDrop(payload, t);                                              // §16 mutations re-run every hard gate, then render
 }
 function cancelDrag() { if (DRAG.active) endDrag({ rerender: true }); else disarmDrag(); }
@@ -7954,6 +8033,7 @@ function dispatchDrop(p, t) {
 }
 
 function onClick(e) {
+  if (swipeFired) { swipeFired = false; e.stopPropagation(); e.preventDefault(); return; }   // §M1/§M3 — swallow the click that ends a column / Back-Fwd swipe
   const t = e.target;
   const closest = (sel) => t.closest(sel);
 
@@ -8017,6 +8097,7 @@ function onClick(e) {
   if (closest('.js-open-settings')) { e.stopPropagation(); return openSettings(); }
   if (closest('.js-settings-save')) { e.stopPropagation(); return saveSettings(); }
   if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); renderOverlay(); return; }
+  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); renderOverlay(); return; }   // §M-touch — toggle + a sample buzz when turning ON
   if (closest('.js-nc-save')) { e.stopPropagation(); return saveNewCustomer(); }
   if (closest('.js-nc-acct')) { const b = closest('.js-nc-acct'); e.stopPropagation(); ncSyncInputs(); state.overlay.draft.accountType = b.dataset.val; renderOverlay(); return; }
   if (closest('.js-nc-selfie-clear')) { e.stopPropagation(); ncSyncInputs(); state.overlay.draft.selfie = ''; renderOverlay(); return; }
@@ -8084,6 +8165,7 @@ function onClick(e) {
   if (closest('.js-feedback')) { e.stopPropagation(); return wranglerNewChat(); }   // §18d folded: the old bug/request form is now the one Mr. Wrangler chat
   // §17 internal team dock
   if (closest('[data-mcol]')) { e.stopPropagation(); state.mobileCol = +closest('[data-mcol]').dataset.mcol; return render(); }   // §M1 dot nav
+  if (closest('.js-mtools')) { e.stopPropagation(); return openOverlay({ kind: 'tools' }); }   // §M1 phone footer → the global tool tray as a sheet
   if (closest('.js-ext-chat')) { e.stopPropagation(); return toast('External customer & vendor chats arrive with the messaging backend.'); }
   if (closest('.js-chat-toggle')) { e.stopPropagation(); state.chat.open = !state.chat.open; return render(); }
   if (closest('.js-chat-close')) { e.stopPropagation(); state.chat.open = false; return render(); }
@@ -8144,7 +8226,11 @@ function onClick(e) {
     // A1 — the Services (heart) tab filters the Units list to service-due as a removable
     // pill, instead of switching to a stuck Service view you can't clear. (Jac 2026-06-15)
     if (ct.dataset.member === 'serviceOrders') { const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list'; s.cards.units.recId = null; s.cards.units.recType = null; addColFilter('units', '__svc', 'due'); return; }
-    const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member; return render();
+    const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member;
+    // §M1 — on phones the footer toggle is the primary nav (no in-card List button): tapping a
+    // card shows its LIST (the back chevron returns from a record). Desktop keeps per-member state.
+    if (document.body.classList.contains('is-phone')) { const mc = cs.cards[ct.dataset.member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
+    return render();
   }
   // §2.3 dispatch timeline — day nav + open a stop's rental (Phase 6)
   if (closest('.js-disp-day')) { e.stopPropagation(); state.dispArm = null; state.dispatchDay = addDaysISO(state.dispatchDay || TODAY_ISO, Number(closest('.js-disp-day').dataset.dir)); return render(); }
@@ -8277,7 +8363,7 @@ function onClick(e) {
   if (closest('.js-wo-complete')) { const b = closest('.js-wo-complete'); return completeWOAttempt(b.dataset.rec); }
   if (closest('.js-wo-cancel')) { const b = closest('.js-wo-cancel'); const w = IDX.wo.get(b.dataset.rec); if (w) { w.cancelled = true; reindex('workOrders', w); logAction(w, 'Work order cancelled'); toast('Work order cancelled — find it in the done list to reopen.'); reanchorRender(); } return; }   // Jac: can't cancel WOs (reversible flag, terminal like Complete)
   if (closest('.js-wo-reopen')) { const b = closest('.js-wo-reopen'); const w = IDX.wo.get(b.dataset.rec); if (w) { w.cancelled = false; reindex('workOrders', w); logAction(w, 'Work order reopened'); toast('Work order reopened.'); reanchorRender(); } return; }
-  if (closest('.js-wodone-confirm')) { const b = closest('.js-wodone-confirm'); state.overlay = null; setWoPhase(b.dataset.rec, 'Complete'); renderOverlay(); return; }
+  if (closest('.js-wodone-confirm')) { const b = closest('.js-wodone-confirm'); state.overlay = null; setWoPhase(b.dataset.rec, 'Complete'); haptic([12, 30, 12]); renderOverlay(); return; }
   if (closest('.js-migrate-go')) { const o = state.overlay; if (!o || o.kind !== 'migrateUnits') return; const res = applyUnitMigration(o.plan); state.overlay = null; renderOverlay(); render(); toast(`Rounded up ${res.created} unit${res.created === 1 ? '' : 's'} and linked ${res.linked} rental${res.linked === 1 ? '' : 's'}.`); return; }
   if (closest('.js-split-open')) { const b = closest('.js-split-open'); e.stopPropagation(); const r = IDX.rental.get(b.dataset.rec); if (r) openOverlay({ kind: 'splitUnit', rentalId: b.dataset.rec, unitId: b.dataset.unit, splitStart: r.startDate, splitEnd: r.endDate }); return; }
   if (closest('.js-split-go')) { const o = state.overlay; if (!o || o.kind !== 'splitUnit') return; const sib = splitUnitToNewRental(o.rentalId, o.unitId, o.splitStart, o.splitEnd); if (sib) { closeOverlay(); try { anchorRecord('rentals', sib.rentalId); } catch (err) { render(); } } return; }
@@ -8335,6 +8421,7 @@ function onClick(e) {
   if (closest('.js-wp-done')) { e.stopPropagation(); return closeWinPicker(); }
   if (closest('.js-tl-blocker')) { e.stopPropagation(); const st = document.querySelector('.stalls'); if (st) st.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); attnFlash('.stall .pill.dvd'); return; }
   if (closest('.js-open-winpicker')) { e.stopPropagation(); const rec = closest('.js-open-winpicker').dataset.rec; return state.winpicker?.rentalId === rec ? closeWinPicker() : openWinPicker(rec); }
+  if (closest('[data-sheetclose]')) { e.stopPropagation(); return closeWinPicker(); }   // §M3 — tap the phone sheet backdrop to dismiss the winpicker
 
   // sort menu + direction toggle
   if (closest('.js-sortmenu')) { const b = closest('.js-sortmenu'); return openViewMenu(b.dataset.card, b); }
@@ -10899,17 +10986,36 @@ function boot() {
   const onVP = () => { applyViewportClass(); if (!booting) render(); };
   window.matchMedia('(max-width: 640px)').addEventListener('change', onVP);
   window.matchMedia('(max-width: 1024px)').addEventListener('change', onVP);
-  // §M1 — phone swipe: the grid is a scroll-snap track; on settle, sync the active
-  // column (drives the per-column bottom strip + the dot indicator). Capture phase
-  // because scroll doesn't bubble. Change-guarded so the render() scroll-restore is a no-op.
-  let gridScrollT = null;
-  document.addEventListener('scroll', (e) => {
-    if (!e.target.classList || !e.target.classList.contains('grid') || !document.body.classList.contains('is-phone')) return;
-    clearTimeout(gridScrollT);
-    gridScrollT = setTimeout(() => {
-      const g = e.target, idx = Math.max(0, Math.min(2, Math.round(g.scrollLeft / (g.clientWidth || 1))));
-      if (idx !== state.mobileCol) { state.mobileCol = idx; render(); }
-    }, 130);
+  // §M3 — Android hardware-back / swipe-back closes the topmost sheet instead of
+  // leaving the app. backConsuming = our own balancing history.back(), so ignore it.
+  window.addEventListener('popstate', () => {
+    if (backConsuming) { backConsuming = false; return; }
+    if (anyDismissable()) { backGuard = false; dismissTopSheet(); }   // entry already popped by the browser → re-pushed by render if more remain
+  });
+  // §M1/§M3 — phone horizontal swipes. On the FOOTER dock: change column (the only place
+  // columns change now). On the GRID/column: Back/Forward of the active card. A real drag
+  // (long-press then move) is excluded; a fired swipe swallows the trailing click.
+  let swipeStart = null;
+  document.addEventListener('pointerdown', (e) => {
+    if (!document.body.classList.contains('is-phone')) { swipeStart = null; return; }
+    const inFooter = !!(e.target.closest && e.target.closest('.mobile-dock'));
+    const inGrid = !inFooter && !!(e.target.closest && e.target.closest('.grid'));
+    swipeStart = (inFooter || inGrid) ? { x: e.clientX, y: e.clientY, id: e.pointerId, footer: inFooter } : null;
+  }, true);
+  document.addEventListener('pointerup', (e) => {
+    const s = swipeStart; swipeStart = null;
+    if (!s || e.pointerId !== s.id || DRAG.active || DRAG.suppressClick) return;   // a real drag is not a swipe
+    const dx = e.clientX - s.x, dy = e.clientY - s.y;
+    if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.3) return;            // not a clean horizontal swipe
+    swipeFired = true;                                                             // swallow the trailing click (row/toggle)
+    if (s.footer) {
+      const next = Math.max(0, Math.min(2, state.mobileCol + (dx < 0 ? 1 : -1)));  // left → next column, right → previous
+      if (next !== state.mobileCol) { state.mobileCol = next; haptic(8); render(); }
+    } else {
+      const card = activeMobileCard();
+      if (dx > 0) cardBack(card); else cardFwd(card);                              // swipe right → Back, left → Forward
+      haptic(8);
+    }
   }, true);
   initDrag();   // §15c drag & drop link engine — #drag-layer singleton + document pointer listeners
   try { loadGoogleMaps(); } catch (e) {}   // §2.3 warm the Maps SDK at boot so the dispatch cockpit + transport editor open instantly (no first-open wait / "load it twice")
@@ -11028,7 +11134,9 @@ function boot() {
     if (e.target.classList.contains('nc-in') && e.key === 'Enter' && e.target.tagName !== 'SELECT') { e.preventDefault(); return saveNewCustomer(); }
     if (e.target.classList.contains('js-wr-in') && e.key === 'Enter') { e.preventDefault(); return wranglerSend(); }   // §18
     if (e.target.classList.contains('chat-input') && e.key === 'Enter') { e.preventDefault(); return chatSend(); }
-    if (e.key === 'Escape') { if (state.winpicker) { closeWinPicker(); } else if (state.overlay) { closeOverlay(); } }
+    // §M3 — one predictable back/dismiss chain (shared with the Android back button):
+    // winpicker → overlay → Mr. Wrangler dock → team chat dock.
+    if (e.key === 'Escape') dismissTopSheet();
   });
   // mouse hotkeys (§0.1): double-click a row = anchor; right-click = Back
   const hotkeyGuard = (e) => e.target.closest('.inline-edit, input, textarea, select, .pill, button, .x') || state.winpicker;
