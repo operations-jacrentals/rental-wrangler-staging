@@ -17,7 +17,7 @@ import { createCascade } from './cascade.js';
 import { serviceOrdersForUnit, completeService, SERVICE_TASKS } from './service-countdown.js';
 import * as CFG from './config.js';
 import { AGREEMENTS, AGREEMENT_VERSIONS, AGREEMENT_CURRENT } from './agreements.js';
-import { I, CARD_ICON, RING_ICON } from './icons.js';
+import { ico, I, CARD_ICON, RING_ICON } from './icons.js';
 import {
   getStatus, STATUS, ROLES, GRID_CARDS, BACKOFFICE_BOARDS, SORT_FIELDS,
   SHOP_TYPES, SHOP_SEGMENTS, COLUMNS, COLUMN_OF,
@@ -1441,6 +1441,7 @@ const state = {
   overbookOn: (() => { try { return localStorage.getItem('jactec.overbook') === '1'; } catch (e) { return false; } })(),   // §10 allow-overbooking policy (per device, default OFF — drag build)
   hapticsOff: (() => { try { return localStorage.getItem('jactec.hapticsOff') === '1'; } catch (e) { return false; } })(),   // §M-touch Vibration-API feedback (per device, default ON; Android-only, no-op on iOS)
   wranglerRail: [],   // §18g the bottom-right rail of past Mr. Wrangler conversations (per device), each a snapshot { id, title, ts, card, recId, recType, reqNumber, reqTitle, reqUrl, messages }. Loaded async from IndexedDB (wranglerRailLoad) — IndexedDB replaced the localStorage rail that silently overflowed.
+  settings: loadAdminSettings(),   // Settings Board admin customization (config.settings); mirrored to localStorage, applied at boot via applySettings()
 };
 const activeSession = () => (state.activeTabId ? state.tabs.find((t) => t.id === state.activeTabId)?.session : state.defaultSession) || state.defaultSession;
 /** Next unique invoice id — a monotonic counter so deleting a Quote-stage invoice can't reuse a number. */
@@ -1904,6 +1905,539 @@ function filterTermPill(ft, i, scope) {
    stays below in §5, intentionally bespoke. */
 
 /* ════════════════════════════════════════════════════════════════════════
+   SETTINGS BOARD — admin customization (config.settings).
+   A curated, VENDORED subset of Lucide (MIT) glyphs an admin can pin to a
+   status option from the Statuses & Icons tab. Inlined as path data via ico()
+   — same dependency-free pattern as I / CARD_ICON. NEVER a runtime import.
+   ════════════════════════════════════════════════════════════════════════ */
+const STATUS_ICONS = {
+  check:       ico('<path d="M20 6 9 17l-5-5"/>'),
+  checkCircle: ico('<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-4.5"/>'),
+  x:           ico('<path d="M18 6 6 18M6 6l12 12"/>'),
+  xCircle:     ico('<circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>'),
+  alert:       ico('<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>'),
+  ban:         ico('<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>'),
+  clock:       ico('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  hourglass:   ico('<path d="M6 2h12M6 22h12M7 2c0 4 4 5 5 7 1-2 5-3 5-7M7 22c0-4 4-5 5-7 1 2 5 3 5 7"/>'),
+  calendar:    ico('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/>'),
+  truck:       ico('<path d="M14 18V6a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h1"/><path d="M14 9h4l3 3v5a1 1 0 0 1-1 1h-1M15 18H9"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>'),
+  mapPin:      ico('<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>'),
+  refresh:     ico('<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>'),
+  wrench:      CARD_ICON.workOrders,
+  hammer:      CARD_ICON.shop,
+  package:     CARD_ICON.parts,
+  clipboard:   CARD_ICON.inspections,
+  dollar:      ico('<path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
+  cart:        ico('<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.6 12.4a1 1 0 0 0 1 .8h8.7a1 1 0 0 0 1-.78L22 7H6"/>'),
+  tag:         ico('<path d="M12.6 2.6 21 11a2 2 0 0 1 0 3l-6.5 6.5a2 2 0 0 1-3 0L3 12V4a1.4 1.4 0 0 1 1.4-1.4z"/><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor"/>'),
+  flag:        ico('<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>'),
+  star:        ico('<path d="M12 2l3 6.5 7 .9-5 4.8 1.3 7-6.3-3.4L5.7 21l1.3-7-5-4.8 7-.9z"/>'),
+  zap:         ico('<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>'),
+  snowflake:   ico('<path d="M12 2v20M4 7l16 10M20 7 4 17M2 12h20"/>'),
+  shield:      ico('<path d="M12 2 4 5v6c0 5 3.5 8 8 11 4.5-3 8-6 8-11V5z"/>'),
+  lock:        I.lock,
+  unlock:      I.lockOpen,
+  pause:       ico('<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>'),
+  play:        ico('<path d="M6 4v16l13-8z"/>'),
+  arrowUp:     ico('<path d="M12 19V5M5 12l7-7 7 7"/>'),
+  arrowDown:   ico('<path d="M12 5v14M19 12l-7 7-7-7"/>'),
+  thumbsUp:    ico('<path d="M7 11v9H3a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"/><path d="M7 11l4-8a2 2 0 0 1 3 2l-1 5h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 17 21H7"/>'),
+  thumbsDown:  ico('<path d="M17 13V4h4a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1z"/><path d="M17 13l-4 8a2 2 0 0 1-3-2l1-5H6a2 2 0 0 1-2-2.3l1.2-6A2 2 0 0 1 7 3h10"/>'),
+  phone:       ico('<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>'),
+  mail:        ico('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 6 10 7L22 6"/>'),
+  user:        ico('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'),
+  eye:         I.eye,
+  droplet:     I.droplet,
+  bell:        I.bell,
+  gauge:       ico('<path d="M12 14 8 9"/><path d="M3.3 17a9 9 0 1 1 17.4 0z"/>'),
+  circle:      ico('<circle cx="12" cy="12" r="9"/>'),
+};
+// Sets exposed in the Statuses & Icons tab (curated — derived sets like serviceStatus are omitted).
+const SETTINGS_STATUS_SETS = [
+  { set: 'rentalStatus', label: 'Rental Status' }, { set: 'unitInspectionStatus', label: 'Inspection' },
+  { set: 'unitFleetStatus', label: 'Fleet' }, { set: 'invoiceStatus', label: 'Invoice' },
+  { set: 'customerPayStatus', label: 'Customer Pay' }, { set: 'customerAccountType', label: 'Account Type' },
+  { set: 'transportType', label: 'Transport' }, { set: 'woPhase', label: 'WO Phase' },
+  { set: 'funnelStage', label: 'Sales Funnel' }, { set: 'gpsStatus', label: 'GPS' },
+  { set: 'expenseCategory', label: 'Expense Category' }, { set: 'paymentMethod', label: 'Payment Method' },
+];
+
+/* Snapshot the registry's shipped label/color so applyStatusOverrides() can RESET an
+   option an admin later un-customizes. Captured once, at module load. */
+const STATUS_DEFAULTS = {};
+for (const set of Object.keys(STATUS)) {
+  STATUS_DEFAULTS[set] = {};
+  for (const v of Object.keys(STATUS[set])) STATUS_DEFAULTS[set][v] = { color: STATUS[set][v].color, label: STATUS[set][v].label };
+}
+const ovIcon = (st) => (st && st.icon && STATUS_ICONS[st.icon]) || '';   // an admin-assigned status icon (else none)
+
+function loadAdminSettings() { try { return JSON.parse(localStorage.getItem('jactec.settings') || '{}') || {}; } catch (e) { return {}; } }
+/* Apply presentational status overrides by mutating the frozen STATUS records IN PLACE
+   (color/label/icon only — never the value/key, so cascade + import are untouched). Every
+   render reads through getStatus(), so one mutation propagates everywhere. */
+function applyStatusOverrides(over) {
+  over = over || {};
+  for (const set of Object.keys(STATUS)) {
+    const o = over[set] || {};
+    for (const v of Object.keys(STATUS[set])) {
+      const def = STATUS_DEFAULTS[set][v], rec = STATUS[set][v], ov = o[v] || {};
+      rec.color = ov.color || def.color;
+      rec.label = ov.label || def.label;
+      if (ov.icon) rec.icon = ov.icon; else delete rec.icon;
+    }
+  }
+}
+// Self-healing apply: a bad/corrupt customization must NEVER brick the app. If applying the
+// overrides throws, wipe the saved settings and fall back to the shipped defaults so the next
+// render (and every future boot) is clean. Render-time reads are independently defensive.
+let settingsReverted = false;
+function applySettings(s) {
+  s = s || state.settings || {};
+  try {
+    applyStatusOverrides(s.status);
+  } catch (e) {
+    settingsReverted = true;
+    try { applyStatusOverrides(null); } catch (_) {}
+    try { localStorage.removeItem('jactec.settings'); } catch (_) {}
+    state.settings = {};
+    try { console.error('Rental Wrangler: a saved customization failed to apply — reverted to defaults.', e); } catch (_) {}
+  }
+}
+function persistAdminSettings(s) {
+  try { const prev = localStorage.getItem('jactec.settings'); if (prev && prev !== '{}') localStorage.setItem('jactec.settings.prev', prev); } catch (e) {}   // one-level undo backup
+  state.settings = s;
+  try { localStorage.setItem('jactec.settings', JSON.stringify(s)); } catch (e) {}
+  applySettings(s);
+}
+const hasSettingsBackup = () => { try { const p = localStorage.getItem('jactec.settings.prev'); return !!(p && p !== '{}'); } catch (e) { return false; } };
+// The settings slice a given tab owns + the value that resets JUST that tab to shipped defaults.
+// (Empties are explicit per-key so the editor shows defaults regardless of what's still saved.)
+function pageDefaultSlice(tab) {
+  switch (tab) {
+    case 'statuses': return { key: 'status', value: {} };
+    case 'kpis': return { key: 'kpis', value: {} };
+    case 'general': return { key: 'company', value: {} };
+    case 'requirements': return { key: 'rentalRules', value: {} };
+    case 'layout': return { key: 'layout', value: { footers: {} } };
+    case 'fields': return { key: 'customFields', value: { customers: [], units: [], rentals: [], invoices: [] } };
+    case 'inspections': return { key: 'inspections', value: Object.fromEntries((DATA.categories || []).map((c) => [c.categoryId, { required: false, items: [] }])) };
+    default: return null;   // Logins / planned tabs have no resettable slice
+  }
+}
+/* Reset only the CURRENT tab to defaults — a gentle step before "Reset all". Reverts the tab's
+   DRAFT slice (so Cancel undoes it, Save keeps it); other tabs' customizations are untouched. */
+function resetPageSettings() {
+  const o = state.overlay; if (!o || o.kind !== 'settings') return;
+  const slice = pageDefaultSlice(o.tab); if (!slice) return;
+  o.draftSettings = o.draftSettings || {};
+  o.draftSettings[slice.key] = JSON.parse(JSON.stringify(slice.value));
+  if (o.tab === 'fields') o.cfDraft = { label: '', type: 'text', required: false };
+  if (o.tab === 'inspections') o.inspDraft = '';
+  o.resetArm = false;
+  const lbl = (SETTINGS_TABS.find((t) => t.id === o.tab) || {}).label || 'This tab';
+  toast(`${lbl} reset to defaults — Save to keep, or Cancel to undo.`);
+  renderOverlay();
+}
+/* Reset EVERY admin customization back to shipped defaults (Settings → Reset all). Persists the
+   empty config so it sticks across devices, then reloads the board clean. */
+async function resetAllSettings() {
+  const o = state.overlay; if (!o || o.kind !== 'settings') return;
+  try { if (o.adminPw) await backendCall('setConfig', { password: o.adminPw, config: { roles: o.config.roles, admin: o.config.admin, settings: {} } }); } catch (e) {}
+  persistAdminSettings({});
+  o.draftSettings = {}; o.config.settings = {}; o.resetArm = false;
+  closeOverlay(); toast('All customizations reset to the shipped defaults.'); render();
+}
+/* Undo the single most recent Save (restores jactec.settings.prev). */
+async function undoLastSettings() {
+  let prev; try { prev = JSON.parse(localStorage.getItem('jactec.settings.prev') || 'null'); } catch (e) {}
+  if (!prev) { toast('Nothing to undo.'); return; }
+  const o = state.overlay;
+  try { if (o && o.adminPw) await backendCall('setConfig', { password: o.adminPw, config: { roles: o.config.roles, admin: o.config.admin, settings: prev } }); } catch (e) {}
+  try { localStorage.removeItem('jactec.settings.prev'); } catch (e) {}
+  persistAdminSettings(prev);
+  try { localStorage.removeItem('jactec.settings.prev'); } catch (e) {}   // don't chain undos off the restore
+  if (o) { o.draftSettings = JSON.parse(JSON.stringify(prev)); o.config.settings = prev; }
+  toast('Reverted to the previous settings.'); renderOverlay(); render();
+}
+// Company identity (Settings → Company). Read-through with shipped fallbacks, so an empty
+// config keeps every surface exactly as it ships today.
+const companyCfg = () => (state.settings && state.settings.company) || {};
+// Layout prefs (Settings → Layout & Footers). Read-through; default keeps every footer shown.
+const layoutCfg = () => (state.settings && state.settings.layout) || {};
+const footerHidden = (card) => (layoutCfg().footers || {})[card] === 'off';
+// Admin-defined custom fields per entity (Settings → Custom Fields). Values live schema-less
+// on the record (rec.custom[fieldId]); an empty config means no extra fields anywhere.
+const customFieldsFor = (entity) => ((state.settings && state.settings.customFields) || {})[entity] || [];
+// Per-category inspection checklists (Settings → Inspections). Empty = today's quick Pass/Fail only.
+const inspectionCfg = (categoryId) => ((state.settings && state.settings.inspections) || {})[categoryId] || null;
+function checklistFor(unit) { const c = unit && inspectionCfg(unit.categoryId); return (c && Array.isArray(c.items) && c.items.length) ? c : null; }
+const checklistRequired = (unit) => { const c = checklistFor(unit); return !!(c && c.required); };
+const COMPANY_DEFAULTS = { name: 'JacRentals', tagline: 'Heavy-Equipment Rental · Sulphur, LA', revenueGoal: (CFG.REVENUE_GOAL_DEFAULT || 150000), maxNetDays: 30 };
+const companyName = () => (companyCfg().name || '').trim() || COMPANY_DEFAULTS.name;
+const companyTagline = () => (companyCfg().tagline || '').trim() || COMPANY_DEFAULTS.tagline;
+const companyRevenueGoal = () => { const n = Number(companyCfg().revenueGoal); return n > 0 ? n : COMPANY_DEFAULTS.revenueGoal; };
+// System-wide ceiling on customer Net-day terms (Settings → Company). Caps every customer's net days.
+const companyMaxNetDays = () => { const n = Number(companyCfg().maxNetDays); return n >= 0 && isFinite(n) ? n : COMPANY_DEFAULTS.maxNetDays; };
+// Normalize a raw Net-days draft value → an integer 0..max, or undefined when blank.
+const normNetDays = (v) => { if (v === '' || v == null) return undefined; const n = Math.round(Number(v)); return isFinite(n) ? Math.max(0, Math.min(n, companyMaxNetDays())) : undefined; };
+// Invoice due-date from the customer's Net-days terms (capped at the system max). Net X → creation
+// date + X days (0 = COD/due today). Unset keeps the shipped 14-day default, so existing customers
+// are unchanged.
+function dueForCustomer(customerId) {
+  const c = customerId ? IDX.customer.get(customerId) : null;
+  const nd = normNetDays(c && c.netDays);
+  return nd != null ? addDays(TODAY_ISO, nd) : addDays(TODAY_ISO, 14);
+}
+
+/* ── Settings Board render (tab rail + panes). The rail lists every planned tab so
+   the information architecture is visible; v1 ships Logins + Statuses working, the
+   rest as "Planned" stubs (each becomes a follow-on spec). ── */
+const SETTINGS_TABS = [
+  { id: 'logins',        label: 'Roles & Logins',  icon: I.lock,                 v1: true },
+  { id: 'statuses',      label: 'Statuses & Icons', icon: STATUS_ICONS.tag,       v1: true },
+  { id: 'general',       label: 'Company',          icon: CARD_ICON.vendors,      v1: true },
+  { id: 'fields',        label: 'Custom Fields',    icon: I.sliders,              v1: true },
+  { id: 'inspections',   label: 'Inspections',      icon: CARD_ICON.inspections,  v1: true },
+  { id: 'requirements',  label: 'Rental Rules',     icon: STATUS_ICONS.shield,    v1: true },
+  { id: 'kpis',          label: 'KPIs & Rings',     icon: STATUS_ICONS.gauge,     v1: true },
+  { id: 'notifications', label: 'Notifications',    icon: I.bell,                 note: 'Team chat on/off, driver dispatch alerts, customer reminders & cadence.' },
+  { id: 'layout',        label: 'Layout & Footers', icon: I.grid,                 v1: true },
+  { id: 'integrations',  label: 'Integrations',     icon: STATUS_ICONS.zap,       note: 'Stripe, Maps, telematics feed — references & toggles (secrets stay server-side).' },
+];
+const draftStatusOv = (o, set, val) => (((o.draftSettings || {}).status || {})[set] || {})[val] || {};
+function setDraftStatus(o, set, val, patch) {
+  o.draftSettings = o.draftSettings || {};
+  o.draftSettings.status = o.draftSettings.status || {};
+  o.draftSettings.status[set] = o.draftSettings.status[set] || {};
+  const next = { ...(o.draftSettings.status[set][val] || {}), ...patch };
+  if (!next.color) delete next.color; if (!next.icon) delete next.icon; if (!next.label) delete next.label;   // empties → fall back to the shipped default
+  if (Object.keys(next).length) o.draftSettings.status[set][val] = next; else delete o.draftSettings.status[set][val];
+}
+function captureLoginEdits(o) {   // keep typed-but-unsaved password edits across a tab switch
+  const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
+  if (!root.querySelector('.set-input[data-role]')) return;
+  const roles = {}; root.querySelectorAll('.set-input[data-role]').forEach((i) => { roles[i.dataset.role] = i.value; });
+  o.config.roles = roles; o.config.admin = root.querySelector('.set-input[data-admin]')?.value ?? o.config.admin;
+}
+function settingsBoardHtml(o) {
+  const rail = SETTINGS_TABS.map((t) => `<button class="set-tab js-set-tab${o.tab === t.id ? ' on' : ''}" data-tab="${t.id}"><span class="set-tab-ic">${t.icon || ''}</span><span class="set-tab-l">${esc(t.label)}</span>${t.v1 ? '' : '<span class="set-tab-dot" data-tip="Planned — wired in next"></span>'}</button>`).join('');
+  let pane;
+  if (o.tab === 'statuses') pane = settingsStatusesPane(o);
+  else if (o.tab === 'logins') pane = settingsLoginsPane(o);
+  else if (o.tab === 'kpis') pane = settingsKpisPane(o);
+  else if (o.tab === 'general') pane = settingsCompanyPane(o);
+  else if (o.tab === 'requirements') pane = settingsRulesPane(o);
+  else if (o.tab === 'layout') pane = settingsLayoutPane(o);
+  else if (o.tab === 'fields') pane = settingsFieldsPane(o);
+  else if (o.tab === 'inspections') pane = settingsInspectionsPane(o);
+  else pane = settingsPlannedPane(SETTINGS_TABS.find((t) => t.id === o.tab));
+  return `<div class="set-board"><nav class="set-rail" aria-label="Settings sections">${rail}</nav><div class="set-pane">${pane}</div></div>`;
+}
+function settingsLoginsPane(o) {
+  const cfg = o.config || { roles: {}, admin: '' };
+  const roleRows = Object.keys(cfg.roles || {}).map((role) => `<label class="set-row"><span class="set-role">${esc(role)}</span><input class="set-input" data-role="${esc(role)}" value="${esc(cfg.roles[role])}" autocomplete="off" /></label>`).join('');
+  return `
+    <div class="set-pane-head"><h4>Roles &amp; Logins</h4><p>Each role signs in with its password (plus their name). Changes apply at next sign-in.</p></div>
+    ${roleRows}
+    <label class="set-row set-admin"><span class="set-role">Admin</span><input class="set-input" data-admin="1" value="${esc(cfg.admin || '')}" autocomplete="off" /></label>
+    <div class="set-row" style="margin-top:14px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="ON: dropping a unit onto a conflicting rental links anyway — both sides get a pulsing red 'Overbooked' flag while the overlap exists. OFF: the drop is blocked, naming the conflict.">Allow overbooking</span>${segCtl([{ label: 'Off', js: 'js-overbook', data: { val: '0' }, on: state.overbookOn ? null : 'red' }, { label: 'On', js: 'js-overbook', data: { val: '1' }, on: state.overbookOn ? 'green' : null }])}</div>
+    <p class="set-note">Drag &amp; drop policy — saved on this device.</p>
+    <div class="set-row" style="margin-top:12px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="A light vibration confirms committed actions on phones (post a chat, drop a link, complete a WO, release-to-cancel). Android only — iOS has no vibration.">Haptic feedback</span>${segCtl([{ label: 'Off', js: 'js-haptics', data: { val: '0' }, on: state.hapticsOff ? 'red' : null }, { label: 'On', js: 'js-haptics', data: { val: '1' }, on: state.hapticsOff ? null : 'green' }])}</div>
+    <p class="set-note">Touch feedback — saved on this device.</p>`;
+}
+function settingsCompanyPane(o) {
+  const co = (o.draftSettings && o.draftSettings.company) || (state.settings && state.settings.company) || {};
+  const v = (k) => esc(co[k] != null ? co[k] : '');
+  const ph = (k) => esc(COMPANY_DEFAULTS[k]);
+  const goal = Number(co.revenueGoal) > 0 ? Number(co.revenueGoal) : COMPANY_DEFAULTS.revenueGoal;
+  const maxNet = (co.maxNetDays != null && co.maxNetDays !== '' && isFinite(Number(co.maxNetDays))) ? Number(co.maxNetDays) : COMPANY_DEFAULTS.maxNetDays;
+  return `
+    <div class="set-pane-head"><h4>Company</h4><p>Your yard's identity and targets. These flow onto printed receipts and the dashboard — leave one blank to keep the shipped default.</p></div>
+    <div class="co-form">
+      <label class="co-fld"><span class="kpi-cap">COMPANY NAME</span><input class="co-in js-co-field" data-f="name" value="${v('name')}" placeholder="${ph('name')}" autocomplete="off"/></label>
+      <label class="co-fld"><span class="kpi-cap">TAGLINE / SUBLINE</span><input class="co-in js-co-field" data-f="tagline" value="${v('tagline')}" placeholder="${ph('tagline')}" autocomplete="off"/></label>
+      <label class="co-fld co-fld-goal"><span class="kpi-cap">MONTHLY REVENUE GOAL</span><span class="co-goal-wrap"><span class="co-goal-$">$</span><input class="co-in co-in-num js-co-field" data-f="revenueGoal" value="${co.revenueGoal != null ? esc(co.revenueGoal) : ''}" placeholder="${COMPANY_DEFAULTS.revenueGoal}" inputmode="numeric" autocomplete="off"/></span></label>
+      <p class="set-note">Feeds the Sales <strong>Revenue Goal</strong> ring — currently <strong>${esc(money(goal))}/mo</strong>. The ring fills as this month's rental revenue climbs toward it.</p>
+      <label class="co-fld co-fld-goal"><span class="kpi-cap">MAX PAYMENT TERMS (NET DAYS)</span><span class="co-goal-wrap"><input class="co-in co-in-num js-co-field" data-f="maxNetDays" value="${co.maxNetDays != null ? esc(co.maxNetDays) : ''}" placeholder="${COMPANY_DEFAULTS.maxNetDays}" inputmode="numeric" autocomplete="off"/><span class="co-goal-suffix">days</span></span></label>
+      <p class="set-note">The ceiling on any customer's Net-day terms (currently <strong>${esc(maxNet)} days</strong>). A customer's Net X auto-sets their invoice due date, capped here.</p>
+      <div class="co-preview">
+        <span class="kpi-cap">RECEIPT PREVIEW</span>
+        <div class="co-receipt"><div class="co-receipt-brand">${esc(companyDraftName(co))}</div><div class="co-receipt-sub">${esc(companyDraftTagline(co))}</div></div>
+      </div>
+    </div>`;
+}
+const companyDraftName = (co) => (String(co.name || '').trim() || COMPANY_DEFAULTS.name);
+const companyDraftTagline = (co) => (String(co.tagline || '').trim() || COMPANY_DEFAULTS.tagline);
+// Rental Rules — data-ready requirements (enforced) + those still needing a capture field.
+const RENTAL_RULES_READY = [
+  { key: 'card', label: 'Card on file', desc: 'A valid (un-expired) card saved to the customer.' },
+  { key: 'signature', label: 'Signed agreement', desc: 'The customer has e-signed the rental agreement.' },
+  { key: 'selfie', label: 'Customer selfie', desc: 'A selfie captured in the account packet.' },
+  { key: 'id', label: 'Driver’s license / ID', desc: 'An ID / license number on the customer account.' },
+  { key: 'terms', label: 'Payment terms set', desc: 'Customer has Net-days entered (0 = COD; drives the due date).' },
+  { key: 'po', label: 'PO number', desc: "A PO number on the rental's invoice." },
+];
+const RENTAL_RULES_PLANNED = [
+  { label: 'Deposit', desc: 'Needs a deposit amount + payment concept on the rental.' },
+];
+function settingsRulesPane(o) {
+  const draft = (o.draftSettings && o.draftSettings.rentalRules) || (state.settings && state.settings.rentalRules) || {};
+  const rows = RENTAL_RULES_READY.map((r) => {
+    const on = draft[r.key] === 'required';
+    return `<div class="rule-row${on ? ' on' : ''}">
+      <div class="rule-main"><span class="rule-label">${esc(r.label)}</span><span class="rule-desc">${esc(r.desc)}</span></div>
+      ${segCtl([{ label: 'Off', js: 'js-rule-set', data: { rule: r.key, val: 'off' }, on: on ? null : 'gray' }, { label: 'Required', js: 'js-rule-set', data: { rule: r.key, val: 'required' }, on: on ? 'red' : null }])}
+    </div>`;
+  }).join('');
+  const planned = RENTAL_RULES_PLANNED.map((r) => `<div class="rule-row rule-soon">
+      <div class="rule-main"><span class="rule-label">${esc(r.label)}</span><span class="rule-desc">${esc(r.desc)}</span></div>
+      <span class="rule-soon-tag">Needs a field</span>
+    </div>`).join('');
+  return `
+    <div class="set-pane-head"><h4>Rental Rules</h4><p>Set a requirement to <strong>Required</strong> and a unit <strong>cannot go On Rent</strong> until it's met — a hard stop, no override. Leave it Off to change nothing.</p></div>
+    <div class="rule-list">${rows}</div>
+    <div class="rule-planned-head">Coming once their capture field exists</div>
+    <div class="rule-list">${planned}</div>`;
+}
+// Cards that carry a totals footer (the highlighted roll-up row beneath the list).
+const LAYOUT_FOOTER_CARDS = [
+  { key: 'rentals', label: 'Rentals' }, { key: 'units', label: 'Units' }, { key: 'customers', label: 'Customers' },
+  { key: 'categories', label: 'Categories' }, { key: 'invoices', label: 'Invoices' }, { key: 'workOrders', label: 'Work Orders' },
+  { key: 'inspections', label: 'Inspections' },
+];
+function settingsLayoutPane(o) {
+  const draft = (o.draftSettings && o.draftSettings.layout && o.draftSettings.layout.footers) || (state.settings && state.settings.layout && state.settings.layout.footers) || {};
+  const rows = LAYOUT_FOOTER_CARDS.map((c) => {
+    const shown = draft[c.key] !== 'off';
+    return `<div class="rule-row">
+      <div class="rule-main"><span class="rule-label">${CARD_ICON[c.key] || ''}${esc(c.label)} footer</span><span class="rule-desc">The totals roll-up beneath the ${esc(c.label.toLowerCase())} list.</span></div>
+      ${segCtl([{ label: 'Hide', js: 'js-layout-footer', data: { card: c.key, val: 'off' }, on: shown ? null : 'red' }, { label: 'Show', js: 'js-layout-footer', data: { card: c.key, val: 'on' }, on: shown ? 'green' : null }])}
+    </div>`;
+  }).join('');
+  return `
+    <div class="set-pane-head"><h4>Layout &amp; Footers</h4><p>Show or hide each card's <strong>totals footer</strong> — the highlighted roll-up row beneath its list. Everything defaults to shown.</p></div>
+    <div class="rule-list">${rows}</div>
+    <div class="rule-planned-head">More layout controls coming</div>
+    <div class="rule-list"><div class="rule-row rule-soon"><div class="rule-main"><span class="rule-label">Columns · sort · grid order</span><span class="rule-desc">Builds on the existing List-View column picker — a focused follow-on so the two don't fight.</span></div><span class="rule-soon-tag">Planned</span></div></div>`;
+}
+// Entities that can carry custom fields. v1 wires the Customers form; others store defs but
+// their forms aren't wired yet (shown as 'form coming').
+const CF_ENTITIES = [{ key: 'customers', label: 'Customers', wired: true }, { key: 'units', label: 'Units' }, { key: 'rentals', label: 'Rentals' }, { key: 'invoices', label: 'Invoices' }];
+const CF_TYPES = ['text', 'number'];
+const cfSlug = (label) => 'cf_' + (String(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'field') + '_' + Math.random().toString(36).slice(2, 6);
+function draftCustomFields(o, entity) {
+  return (o.draftSettings && o.draftSettings.customFields && o.draftSettings.customFields[entity]) || customFieldsFor(entity);
+}
+function ensureCfDraft(o, entity) {
+  o.draftSettings = o.draftSettings || {};
+  o.draftSettings.customFields = o.draftSettings.customFields || {};
+  if (!o.draftSettings.customFields[entity]) o.draftSettings.customFields[entity] = JSON.parse(JSON.stringify(customFieldsFor(entity)));
+  return o.draftSettings.customFields[entity];
+}
+function ensureInspDraft(o, catId) {
+  o.draftSettings = o.draftSettings || {};
+  o.draftSettings.inspections = o.draftSettings.inspections || {};
+  if (!o.draftSettings.inspections[catId]) { const cur = inspectionCfg(catId); o.draftSettings.inspections[catId] = cur ? JSON.parse(JSON.stringify(cur)) : { required: false, items: [] }; }
+  return o.draftSettings.inspections[catId];
+}
+function draftInspCfg(o, catId) {
+  return (o.draftSettings && o.draftSettings.inspections && o.draftSettings.inspections[catId]) || inspectionCfg(catId) || { required: false, items: [] };
+}
+function settingsInspectionsPane(o) {
+  const cats = DATA.categories || [];
+  const catId = o.inspCat || (cats[0] && cats[0].categoryId) || '';
+  o.inspCat = catId;
+  const pick = cats.map((c) => { const cfg = draftInspCfg(o, c.categoryId); const tag = (cfg.items && cfg.items.length) ? (cfg.required ? ' ●' : ' ○') : ''; return `<button class="set-pick js-insp-cat${c.categoryId === catId ? ' on' : ''}" data-cat="${esc(c.categoryId)}">${esc(c.name)}${tag}</button>`; }).join('');
+  const cfg = draftInspCfg(o, catId);
+  const cat = IDX.category.get(catId);
+  const items = cfg.items || [];
+  const rows = items.length ? items.map((it) => `<div class="rule-row">
+      <div class="rule-main"><span class="rule-label">${esc(it.label)}</span><span class="rule-desc">Pass / Fail line</span></div>
+      <button class="so-reset js-insp-remove" data-cat="${esc(catId)}" data-id="${esc(it.id)}" data-tip="Remove item">${I.x}</button>
+    </div>`).join('') : '<p class="set-note">No checklist items yet — add the things to inspect below.</p>';
+  return `
+    <div class="set-pane-head"><h4>Inspections</h4><p>Build a Pass/Fail checklist per category. When a category's checklist is <strong>Required</strong>, starting an inspection on one of its units opens a full-screen checklist that must be completed — any Fail trips the existing failed-inspection work order.</p></div>
+    <div class="set-picker">${pick}</div>
+    <div class="rule-row" style="margin-bottom:10px"><div class="rule-main"><span class="rule-label">Require a checklist for ${esc(cat ? cat.name : 'this category')}</span><span class="rule-desc">On = +Inspection takes over the sheet until every item is checked.</span></div>${segCtl([{ label: 'Off', js: 'js-insp-req', data: { cat: catId, v: '0' }, on: cfg.required ? null : 'gray' }, { label: 'Required', js: 'js-insp-req', data: { cat: catId, v: '1' }, on: cfg.required ? 'red' : null }])}</div>
+    <div class="rule-list">${rows}</div>
+    <div class="cf-add">
+      <input class="co-in js-insp-label" placeholder="New checklist item (e.g. Hydraulics — no leaks)" value="${esc(o.inspDraft || '')}" autocomplete="off" />
+      <button class="pill ignition js-insp-add" data-r="R17">+ Add item</button>
+    </div>`;
+}
+function settingsFieldsPane(o) {
+  const ent = o.cfEntity || 'customers'; o.cfEntity = ent;
+  const meta = CF_ENTITIES.find((e) => e.key === ent) || {};
+  const add = o.cfDraft || { label: '', type: 'text', required: false };
+  const pick = CF_ENTITIES.map((e) => `<button class="set-pick js-cf-entity${e.key === ent ? ' on' : ''}" data-ent="${e.key}">${esc(e.label)}${e.wired ? '' : ' ·'}</button>`).join('');
+  const fields = draftCustomFields(o, ent);
+  const rows = fields.length ? fields.map((f) => `<div class="rule-row">
+      <div class="rule-main"><span class="rule-label">${esc(f.label)}${f.required ? ' <span class="cf-req">required</span>' : ''}</span><span class="rule-desc">${esc(f.type)} field${f.id ? ' · <code>' + esc(f.id) + '</code>' : ''}</span></div>
+      <button class="so-reset js-cf-remove" data-ent="${ent}" data-id="${esc(f.id)}" data-tip="Remove field">${I.x}</button>
+    </div>`).join('') : '<p class="set-note">No custom fields yet — add one below.</p>';
+  const wiredNote = meta.wired
+    ? `<p class="set-note">These appear on the <strong>${esc(meta.label)}</strong> form under “More details” and save onto each record.</p>`
+    : `<p class="set-note">Fields are stored, but the <strong>${esc(meta.label)}</strong> form isn't wired to show them yet — that's a follow-on. Customers is live today.</p>`;
+  return `
+    <div class="set-pane-head"><h4>Custom Fields</h4><p>Add your own fields to a record. Nothing changes until you add one.</p></div>
+    <div class="set-picker">${pick}</div>
+    ${wiredNote}
+    <div class="rule-list">${rows}</div>
+    <div class="cf-add">
+      <input class="co-in js-cf-label" placeholder="New field label (e.g. Tax-exempt #)" value="${esc(add.label)}" autocomplete="off" />
+      ${segCtl(CF_TYPES.map((t) => ({ label: t, js: 'js-cf-type', data: { type: t }, on: add.type === t ? 'green' : null })))}
+      ${segCtl([{ label: 'Optional', js: 'js-cf-req', data: { v: '0' }, on: add.required ? null : 'gray' }, { label: 'Required', js: 'js-cf-req', data: { v: '1' }, on: add.required ? 'red' : null }])}
+      <button class="pill ignition js-cf-add" data-r="R17">+ Add field</button>
+    </div>`;
+}
+function settingsStatusesPane(o) {
+  const setSel = o.setSel || 'rentalStatus';
+  const picker = SETTINGS_STATUS_SETS.map((s) => `<button class="set-pick js-set-pick${s.set === setSel ? ' on' : ''}" data-set="${s.set}">${esc(s.label)}</button>`).join('');
+  const swatch = (set, val, cur) => CFG.COLOR_TOKENS.map((c) => `<button class="so-sw c-${c}${c === cur ? ' on' : ''} js-set-color" data-set="${esc(set)}" data-val="${esc(val)}" data-color="${c}" data-tip="${c}" aria-label="${c}"></button>`).join('');
+  const rows = Object.keys(STATUS[setSel] || {}).map((val) => {
+    const def = STATUS_DEFAULTS[setSel][val] || {}; const ov = draftStatusOv(o, setSel, val);
+    const color = ov.color || def.color; const iconKey = ov.icon || ''; const label = ov.label || def.label;
+    const dirty = !!(ov.color || ov.icon || ov.label);
+    const open = o.iconFor === setSel + '' + val;
+    const curIc = iconKey ? STATUS_ICONS[iconKey] : (CARD_ICON[SET_CARD[setSel]] || I.plus);
+    const tray = open ? `<div class="so-tray">
+        <button class="so-ic-opt${!iconKey ? ' on' : ''} js-set-icon" data-set="${esc(setSel)}" data-val="${esc(val)}" data-icon="" data-tip="Default (card icon)">${CARD_ICON[SET_CARD[setSel]] || I.circle}<span class="so-ic-def">DEF</span></button>
+        ${Object.keys(STATUS_ICONS).map((k) => `<button class="so-ic-opt${k === iconKey ? ' on' : ''} js-set-icon" data-set="${esc(setSel)}" data-val="${esc(val)}" data-icon="${k}" data-tip="${k}">${STATUS_ICONS[k]}</button>`).join('')}
+      </div>` : '';
+    return `<div class="so-row${open ? ' tray-open' : ''}">
+      <div class="so-prev">${statusPill(setSel, val, { previewColor: color, previewIcon: iconKey, previewLabel: label })}</div>
+      <label class="so-lbl-wrap" data-tip="The label customers and staff see — safe to rename"><span class="so-lbl-cap">LABEL</span><input class="so-lbl js-set-label" data-set="${esc(setSel)}" data-val="${esc(val)}" value="${esc(label)}" autocomplete="off" /></label>
+      <code class="so-val" data-tip="System role — fixed. Logic keys off this value, so a rename can't change what the status does.">${I.lock}${esc(val)}</code>
+      <div class="so-sws">${swatch(setSel, val, color)}</div>
+      <button class="so-ic js-set-icon-open${iconKey ? ' has' : ''}" data-key="${esc(setSel + '' + val)}" data-tip="Choose an icon">${curIc}</button>
+      ${dirty ? `<button class="so-reset js-set-reset" data-set="${esc(setSel)}" data-val="${esc(val)}" data-tip="Reset to default">${I.back}</button>` : '<span class="so-reset-sp"></span>'}
+      ${tray}
+    </div>`;
+  }).join('');
+  return `
+    <div class="set-pane-head"><h4>Statuses &amp; Icons</h4><p>Rename, recolor, and pin an icon to a status. The locked <em>value</em> is its system role and never changes — so <strong>On Rent</strong> can read &ldquo;Out&rdquo; and still behave like On Rent everywhere.</p></div>
+    <div class="set-picker">${picker}</div>
+    <div class="so-list">${rows}</div>`;
+}
+function settingsPlannedPane(t) {
+  if (!t) return '';
+  return `<div class="set-planned">
+      <span class="set-planned-ic">${t.icon || ''}</span>
+      <h4>${esc(t.label)}</h4>
+      <span class="set-planned-tag">Planned</span>
+      <p>${esc(t.note || '')}</p>
+      <p class="set-planned-sub">Wired into this same board next — it'll save through the same admin config.</p>
+    </div>`;
+}
+// Draft KPI rings for a role — the override if present, else the shipped defaults (read-only).
+function draftRoleRings(o, roleId) {
+  const ov = o.draftSettings && o.draftSettings.kpis && o.draftSettings.kpis[roleId];
+  return (Array.isArray(ov) && ov.length === 3) ? ov : (KPI_DEFAULTS[roleId] || []);
+}
+// Clone the defaults into the draft for this role the first time it's edited (so edits have a home).
+function ensureKpiDraft(o, roleId) {
+  o.draftSettings = o.draftSettings || {};
+  o.draftSettings.kpis = o.draftSettings.kpis || {};
+  if (!o.draftSettings.kpis[roleId]) o.draftSettings.kpis[roleId] = JSON.parse(JSON.stringify(KPI_DEFAULTS[roleId] || []));
+  return o.draftSettings.kpis[roleId];
+}
+// Plain-English readback of a DSL metric (for the "MEASURES" line).
+const kpiSrcText = (s) => s ? `${(s.agg === 'sum' ? 'sum of ' + (s.field || '?') + ' in ' : '')}${s.entity || '?'}${(s.where && s.where.length) ? ' [' + s.where.map((c) => `${c.f} ${c.op} ${Array.isArray(c.v) ? c.v.join('/') : c.v}`).join(', ') + ']' : ''}` : '?';
+function kpiMetricReadback(m) {
+  if (!m) return 'Built-in metric.';
+  if (m.kind === 'builtin') return 'Built-in metric.';
+  if (m.kind === 'ratio') return `${kpiSrcText(m.num)} ÷ ${m.den && m.den.const != null ? m.den.const : kpiSrcText(m.den)}`;
+  if (m.kind === 'count') return `${kpiSrcText(m.src)} ÷ all ${m.src && m.src.entity || ''}`;
+  if (m.kind === 'goal' || m.kind === 'sum') return `${kpiSrcText(m.src)} toward a target`;
+  return 'Custom metric.';
+}
+function settingsKpisPane(o) {
+  const roleId = o.kpiRole || 'mechanic'; o.kpiRole = roleId;
+  const role = ROLES.find((r) => r.id === roleId) || {};
+  const rolePick = ROLES.map((r) => `<button class="set-pick js-kpi-role${r.id === roleId ? ' on' : ''}" data-role="${r.id}">${esc(r.label)}</button>`).join('');
+  const rings = draftRoleRings(o, roleId);
+  const previewVals = rings.map((r) => { const v = kpiEval(r).pct; return v == null ? 0 : v; });
+  const rows = rings.map((ring, idx) => {
+    const ev = kpiEval(ring);
+    const val = ev.pct == null ? '—' : ev.pct + '%';
+    const isDSL = ring.metric && ring.metric.kind && ring.metric.kind !== 'builtin';
+    const measure = kpiMetricReadback(ring.metric) === 'Built-in metric.' ? (ring.help || KPI_HELP[ring.label] || 'Built-in metric.') : kpiMetricReadback(ring.metric);
+    const tune = isDSL ? `<div class="kpi-tune">
+        <label class="kpi-fld kpi-fld-sm"><span class="kpi-cap">TARGET</span><input class="kpi-tgt js-kpi-tgt" data-role="${roleId}" data-i="${idx}" value="${esc(ring.target != null ? ring.target : '')}" inputmode="numeric" autocomplete="off"/></label>
+        <div class="kpi-fld kpi-fld-sm"><span class="kpi-cap">BETTER</span>${segCtl([{ label: '▲ High', js: 'js-kpi-band', data: { role: roleId, i: idx, band: 'up' }, on: ring.band !== 'down' ? 'green' : null }, { label: '▼ Low', js: 'js-kpi-band', data: { role: roleId, i: idx, band: 'down' }, on: ring.band === 'down' ? 'green' : null }])}</div>
+      </div>` : '';
+    return `<div class="kpi-row">
+      <span class="kpi-slot">RING ${idx + 1}</span>
+      <div class="kpi-main">
+        <label class="kpi-fld"><span class="kpi-cap">LABEL</span><input class="kpi-lbl js-kpi-lbl" data-role="${roleId}" data-i="${idx}" value="${esc(ring.label || '')}" autocomplete="off"/></label>
+        <div class="kpi-measure"><span class="kpi-cap">MEASURES</span><span class="kpi-measure-t${isDSL ? ' dsl' : ''}">${esc(measure)}</span></div>
+        ${tune}
+      </div>
+      <div class="kpi-val"><span class="kpi-val-n">${esc(val)}</span><span class="kpi-val-c">live</span></div>
+      <button class="pill ignition js-kpi-refine" data-role="${roleId}" data-i="${idx}" data-r="R17" data-tip="Describe it in plain English — Mr. Wrangler builds it">🤠 Refine</button>
+      ${isDSL ? `<button class="so-reset js-kpi-reset" data-role="${roleId}" data-i="${idx}" data-tip="Reset to default">${I.back}</button>` : '<span class="so-reset-sp"></span>'}
+    </div>`;
+  }).join('');
+  return `
+    <div class="set-pane-head"><h4>KPIs &amp; Rings</h4><p>Each role shows 3 rings. Rename one or set its target, or tap <strong>🤠 Refine</strong> to describe a new metric in plain English — Mr. Wrangler interrogates it, proves it against your live data, and locks it in.</p></div>
+    <div class="set-picker">${rolePick}</div>
+    <div class="kpi-board">
+      <div class="kpi-rows">${rows}</div>
+      <div class="kpi-preview"><div class="kpi-preview-ring">${ring3SVG(previewVals, null, { size: 120 })}</div><span class="kpi-preview-l">${esc(role.label || '')} — live rings</span></div>
+    </div>`;
+}
+/* Hand a ring off to Mr. Wrangler to author. Carries the board's in-progress settings +
+   the admin credential forward so lock-in can persist without re-auth, then reopens the
+   board on the KPIs tab. The dock floats free, so the modal board is closed meanwhile. */
+function openWranglerForKpi(roleId, idx) {
+  const o = state.overlay;
+  const draftSettings = (o && o.draftSettings) ? JSON.parse(JSON.stringify(o.draftSettings)) : JSON.parse(JSON.stringify(state.settings || {}));
+  const role = ROLES.find((r) => r.id === roleId) || {};
+  const ring = draftRoleRings({ draftSettings }, roleId)[idx] || {};
+  const kt = { role: roleId, roleLabel: role.label, idx, adminPw: (o && o.adminPw) || '', roles: (o && o.config && o.config.roles) || {}, admin: (o && o.config && o.config.admin) || '', draftSettings };
+  if (o) closeOverlay();
+  state.wrangler.kpiTarget = kt;
+  openWranglerDock({
+    messages: [{ role: 'assistant', content: `🤠 Let's wrangle the ${role.label} role's Ring ${idx + 1} (now “${ring.label || '—'}”). Tell me in plain English what this ring should measure — I'll ask anything I need, prove it against your live yard data, and lock it in.` }],
+    draft: '',
+  });
+}
+// The KPI-authoring addendum — appended to the system prompt ONLY while a ring is being built.
+function wranglerKpiSystem() {
+  const kt = state.wrangler.kpiTarget; if (!kt) return '';
+  const fields = Object.keys(KPI_FIELDS).map((e) => `  ${e}: ${KPI_FIELDS[e].join(', ')}`).join('\n');
+  return `KPI AUTHORING MODE — you are building the "${kt.roleLabel}" role's Ring ${kt.idx + 1}. The admin will describe a metric; ask any quick clarifying question (window? what counts? higher or lower is better?), then emit EXACTLY this block when it's nailed down:\n` +
+    '```wrangler-action\n{"action":"kpi","role":"' + kt.role + '","ring":' + kt.idx + ',"label":"<≤28 chars>","help":"<one plain sentence>","band":"up|down","target":<number, ONLY for goal/sum>,"unit":"%|$|count","metric":{ … }}\n```\n' +
+    'metric is ONE of:\n' +
+    '• {"kind":"ratio","num":SOURCE,"den":SOURCE|{"const":N}} — a percentage (num÷den). Cross-entity allowed.\n' +
+    '• {"kind":"count","src":SOURCE} — filtered count ÷ all rows of that entity.\n' +
+    '• {"kind":"goal","src":SOURCE} — value vs target (set "target"). SOURCE.agg may be "sum" (set "field").\n' +
+    'SOURCE = {"entity":E,"where":[{"f":FIELD,"op":OP,"v":VALUE}],"agg":"count"|"sum","field":FIELD}. ' +
+    'OP ∈ eq, ne, in, nin, gt, gte, lt, lte, contains, exists, truthy, falsy. Tokens @thisMonth / @today.\n' +
+    'ONLY these entities + fields (nothing money/auth/pricing):\n' + fields + '\n' +
+    'Derived fields: _ageDays, _month, _revenue (rental price), _paid/_billed (invoice $), _totalPaid/_activePct (customer). ' +
+    'Keep chat short and natural; never mention JSON, fields, or this block. Emit it only once the metric is unambiguous.';
+}
+/** Apply a validated Wrangler-authored KPI: write the ring into settings.kpis, persist (with
+ *  the carried admin credential), apply live, and reopen the board on the KPIs tab. */
+async function lockKpiFromWrangler(mi) {
+  const w = state.wrangler, kt = w.kpiTarget; if (!kt) return;
+  const m = w.messages[mi]; if (!m || !m.action || m.filed) return;
+  const v = m.action._kpi || wrValidateKpi(m.action); if (!v.ok) return;
+  const settings = kt.draftSettings || {};
+  settings.kpis = settings.kpis || {};
+  if (!settings.kpis[kt.role]) settings.kpis[kt.role] = JSON.parse(JSON.stringify(KPI_DEFAULTS[kt.role] || []));
+  settings.kpis[kt.role][kt.idx] = v.ring;
+  let warn = '';
+  try { if (kt.adminPw) { const r = await backendCall('setConfig', { password: kt.adminPw, config: { roles: kt.roles, admin: kt.admin, settings } }); if (!r || !r.ok) warn = ' (saved on this device — sync retry needed)'; } }
+  catch (e) { warn = ' (saved on this device — offline)'; }
+  persistAdminSettings(settings);           // mirror + apply live so the header ring updates now
+  m.filed = true; w.kpiTarget = null;
+  toast(`Locked in “${v.ring.label}” for ${kt.roleLabel} · Ring ${kt.idx + 1}.${warn} 🤠`);
+  openOverlay({ kind: 'settings', config: { roles: kt.roles, admin: kt.admin, settings }, adminPw: kt.adminPw, tab: 'kpis', kpiRole: kt.role, draftSettings: settings });
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    §5 UI BUILDERS — ONE function per design rule (the SPEC v8 rulebook).
    Every builder stamps its output with data-r="Rn". The flash-lint (R0)
    slowly pulses anything WITHOUT a stamp: if it flashes, it bypassed the
@@ -1924,17 +2458,20 @@ function filterTermPill(ft, i, scope) {
 // R3: each status badge carries the icon of the card the status belongs to
 const SET_CARD = { rentalStatus: 'rentals', unitRentalStatus: 'rentals', invoiceStatus: 'invoices', unitInspectionStatus: 'inspections', inspectionResult: 'inspections', unitFleetStatus: 'units', gpsStatus: 'units', unitOrderStatus: 'workOrders', woPhase: 'workOrders', woType: 'workOrders', customerPayStatus: 'customers', accountType: 'customers', serviceStatus: 'serviceOrders', expenseReconcile: 'expenses', vendorType: 'vendors', companyFileType: 'files' };
 const dataAttrs = (data) => Object.entries(data || {}).map(([k, v]) => ` data-${k}="${esc(String(v))}"`).join('');
-function statusPill(set, value, { card, recId, x, truck } = {}) {
+function statusPill(set, value, { card, recId, x, truck, previewColor, previewIcon, previewLabel } = {}) {
   const st = getStatus(set, value);
+  const color = previewColor || st.color;   // Settings Board live preview overrides the applied color
+  const label = previewLabel != null ? previewLabel : st.label;
   const data = card ? ` data-pill-card="${card}" data-pill-rec="${esc(recId)}"` : '';
   const tk = truck ? `<span class="truck">${I.truck}</span>` : '';
   const xb = x ? `<span class="x" data-x="${esc(x)}">✕</span>` : '';
-  const ic = truck ? '' : (CARD_ICON[SET_CARD[set]] || '');   // R3: parent-card icon hugs the label
+  const oIc = previewIcon !== undefined ? (STATUS_ICONS[previewIcon] || '') : ovIcon(st);   // admin-assigned status icon (or preview)
+  const ic = truck ? '' : (oIc || CARD_ICON[SET_CARD[set]] || '');   // R3: admin status icon, else parent-card icon
   // §17 — a status badge is draggable into a chat (drag/long-press; tap is unaffected)
   const crec = card ? recOf(card, recId) : null;
   const chatLbl = st.label + (crec ? ' — ' + (detailTitle(card, crec) || recId) : '');
   const chat = card ? ` data-chat-el data-chat-label="${esc(chatLbl)}" data-chat-color="${esc(st.color)}" data-chat-card="${esc(card)}" data-chat-rec="${esc(recId)}"` : '';
-  return `<span class="pill c-${st.color}${truck ? ' truck' : ''}" data-r="R3" data-badge${data}${chat}>${tk}${ic}<span class="t">${esc(st.label)}</span>${xb}</span>`;
+  return `<span class="pill c-${color}${truck ? ' truck' : ''}" data-r="R3" data-badge${data}${chat}>${tk}${ic}<span class="t">${esc(label)}</span>${xb}</span>`;
 }
 function refPill(card, recId, label, { x, xData } = {}) {
   const xb = x ? `<span class="x" data-x="${esc(x)}"${xData != null ? ` data-id="${esc(xData)}"` : ''}>✕</span>` : '';
@@ -1958,7 +2495,7 @@ const badge = (label, color = 'gray') => `<span class="pill c-${color}" data-r="
 function gatePill(set, value, js, data, { truck } = {}) {
   const st = getStatus(set, value);
   const tk = truck ? `<span class="truck">${I.truck}</span>` : '';
-  return `<span class="pill gate c-${st.color} ${js}" data-r="R1"${dataAttrs(data)}>${tk}${esc(st.label)} ${I.chev}</span>`;
+  return `<span class="pill gate c-${st.color} ${js}" data-r="R1"${dataAttrs(data)}>${tk}${ovIcon(st)}${esc(st.label)} ${I.chev}</span>`;
 }
 /** R1: a gate with a custom label (e.g. ETA-as-status on WO lines). */
 function gatePillRaw(label, color, js, data, noChev) {
@@ -2793,6 +3330,7 @@ const footDropBadge = (card, value) =>
  *  numeric roll-ups (e.g. "6 Tomorrow · 900 HRS avg · 12 Part Needed"). */
 function listTotalsEl(card, rows, session) {
   if (!rows || !rows.length) return null;
+  if (footerHidden(card)) return null;   // Settings → Layout & Footers: this card's totals footer is hidden
   const cols = cardColumns(card, session);
   const sel = loadListTotals(card);                 // null = every aggregatable column
   const allowed = sel ? new Set(sel) : null;
@@ -3666,7 +4204,9 @@ const DETAIL = {
       <h4>Inspection <span class="hmuted">· ${esc(stamp)}</span></h4>
       <div class="fieldstack">
         <div class="kv" style="justify-content:center">
-          ${segCtl([
+          ${checklistRequired(u)
+    ? `<button class="pill ignition js-open-checklist" data-rec="${u.unitId}" data-r="R17">${CARD_ICON.inspections} ${pendingInspForUnit(u.unitId) ? 'Resume inspection' : '+ Inspection'}</button>`
+    : segCtl([
             { label: '✓ Pass', js: 'js-cond', data: { rec: u.unitId, val: 'Pass' }, on: cond === 'Ready' ? 'green' : null },
             { label: 'Not Ready', js: 'js-cond', data: { rec: u.unitId, val: 'Not Ready' }, on: cond === 'Not Ready' ? 'yellow' : null },
             { label: '✕ Fail', js: 'js-cond', data: { rec: u.unitId, val: 'Fail' }, on: cond === 'Failed' ? 'red' : null },
@@ -4854,7 +5394,7 @@ function fleetInsp() {
   DATA.units.forEach((u) => { if (c[u.inspectionStatus] != null) c[u.inspectionStatus]++; });
   return { ...c, total: c.Ready + c['Not Ready'] + c.Failed };
 }
-function kpiFor(roleId) {
+function legacyKpiPct(roleId) {
   const R = DATA.rentals, W = DATA.workOrders, N = DATA.inspections, INV = DATA.invoices, C = DATA.customers;
   const f = fleetInsp();
   if (roleId === 'mechanic') {
@@ -4900,7 +5440,7 @@ function kpiFor(roleId) {
     // in the current calendar month. (A future Settings board will make the goal admin-set.)
     const ym = TODAY_ISO.slice(0, 7);
     const revenue = R.reduce((a, r) => { if ((r.startDate || '').slice(0, 7) !== ym) return a; const p = rentalPrice(r); return a + (p ? p.price : 0); }, 0);
-    const revGoal = pctOf(revenue, CFG.REVENUE_GOAL_DEFAULT || 150000);
+    const revGoal = pctOf(revenue, companyRevenueGoal());   // Settings → Company sets the monthly goal (defaults to SPEC §10)
     const big = C.filter((c) => (c._digest?.totalPaid || 0) > 1999);
     const activeRate = pctOf(big.filter((c) => (c._digest?.activePct || 0) > 0).length, big.length);
     const members = C.filter((c) => /Member/.test(c.accountType || '') && c.accountType !== 'Member Incomplete').length;
@@ -4928,6 +5468,133 @@ const KPI_HELP = {
   'Active Customer Rate':   'Of your big customers (paid $2k+ lifetime), how many are currently active.',
   'Pipeline':               'Sales pipeline strength — members signed + leads moved past “Inbound”, toward a target of 10.',
 };
+
+/* ════════════════════════════════════════════════════════════════════════
+   §11b KPI METRIC ENGINE — admin-definable KPIs (Settings → KPIs & Rings).
+   A SAFE, declarative spec (no eval, Pages-public-safe): a metric is filters +
+   an aggregate over an entity allowlist, evaluated by kpiEval(). The shipped 15
+   KPIs route through kind:'builtin' (the legacy math above), so with no admin
+   override the dashboard is byte-for-byte unchanged. Custom KPIs author via the
+   DSL (ratio/goal/count/sum) — Mr. Wrangler emits + validates the spec.
+   ════════════════════════════════════════════════════════════════════════ */
+const KPI_ENTITY = {   // entity key → live rows (the authoring UI + validator gate on these names)
+  units: () => DATA.units, rentals: () => DATA.rentals, workOrders: () => DATA.workOrders,
+  inspections: () => DATA.inspections, invoices: () => DATA.invoices, customers: () => DATA.customers,
+};
+// Curated derived fields (prefix _) — safe computed accessors so common needs work without code.
+const KPI_DERIVED = {
+  _ageDays:   (r) => { const d = r.date || r.openedDate || r.createdDate || r.startDate; return d ? Math.max(0, Math.round((TODAY.getTime() - parseISO(d).getTime()) / 86400000)) : 0; },
+  _month:     (r) => (r.startDate || r.date || '').slice(0, 7),
+  _revenue:   (r) => { const p = rentalPrice(r); return p ? p.price : 0; },
+  _paid:      (r) => invoiceTotals(r).paid,
+  _billed:    (r) => invoiceTotals(r).total,
+  _totalPaid: (r) => (r._digest && r._digest.totalPaid) || 0,
+  _activePct: (r) => (r._digest && r._digest.activePct) || 0,
+};
+const KPI_TOKENS = { '@thisMonth': () => TODAY_ISO.slice(0, 7), '@today': () => TODAY_ISO };
+const kpiField = (rec, f) => (f && f[0] === '_' && KPI_DERIVED[f]) ? KPI_DERIVED[f](rec) : rec[f];
+const kpiVal = (v) => (typeof v === 'string' && KPI_TOKENS[v]) ? KPI_TOKENS[v]() : v;
+function kpiCond(rec, cond) {
+  const a = kpiField(rec, cond.f), b = kpiVal(cond.v);
+  switch (cond.op) {
+    case 'eq': return a === b; case 'ne': return a !== b;
+    case 'in': return Array.isArray(b) && b.includes(a); case 'nin': return Array.isArray(b) && !b.includes(a);
+    case 'gt': return Number(a) > Number(b); case 'gte': return Number(a) >= Number(b);
+    case 'lt': return Number(a) < Number(b); case 'lte': return Number(a) <= Number(b);
+    case 'contains': return String(a == null ? '' : a).toLowerCase().includes(String(b == null ? '' : b).toLowerCase());
+    case 'exists': return a != null && a !== ''; case 'truthy': return !!a; case 'falsy': return !a;
+    default: return false;
+  }
+}
+function kpiRows(src) {
+  const get = KPI_ENTITY[src && src.entity]; if (!get) return [];
+  let rows = get() || [];
+  (src.where || []).forEach((cond) => { rows = rows.filter((r) => { try { return kpiCond(r, cond); } catch (e) { return false; } }); });
+  return rows;
+}
+const kpiAgg = (src) => src && src.agg === 'sum'
+  ? kpiRows(src).reduce((a, r) => a + (Number(kpiField(r, src.field)) || 0), 0)
+  : kpiRows(src).length;
+const kpiBand = (ring, pct, raw, unit) => ({ pct: Math.max(0, Math.min(100, (ring && ring.band === 'down') ? 100 - pct : pct)), raw, unit });
+const kpiTarget = (ring) => (ring && ring.target != null ? Number(ring.target) : 0);
+/** Evaluate one ring spec → { pct (0-100 | null), raw numerator, unit }. Defensive:
+ *  a malformed spec yields a zero ring, never a thrown render. */
+function kpiEval(ring) {
+  const m = (ring && ring.metric) || {};
+  try {
+    if (m.kind === 'builtin') {
+      const pcts = legacyKpiPct(m.ref) || [], raws = legacyKpiRaw(m.ref) || [], raw = raws[m.idx] || { v: 0, unit: '' };
+      return { pct: pcts[m.idx] != null ? pcts[m.idx] : null, raw: raw.v, unit: raw.unit };
+    }
+    if (m.kind === 'ratio') {
+      const num = kpiAgg(m.num);
+      const den = (m.den && m.den.const != null) ? Number(m.den.const) : kpiAgg(m.den || { entity: m.num.entity });
+      return kpiBand(ring, pctOf(num, den), num, m.unit || '');
+    }
+    if (m.kind === 'count') {
+      const n = kpiAgg({ ...m.src, agg: 'count' });
+      const tot = kpiAgg({ ...(m.of || { entity: m.src.entity }), agg: 'count' });
+      return kpiBand(ring, pctOf(n, tot), n, m.unit || '');
+    }
+    if (m.kind === 'goal' || m.kind === 'sum') {
+      const v = kpiAgg(m.src), tgt = kpiTarget(ring);
+      return kpiBand(ring, tgt > 0 ? Math.round(Math.min(v / tgt, 1) * 100) : 0, v, m.unit || (m.src && m.src.agg === 'sum' ? '$' : ''));
+    }
+  } catch (e) { /* defensive — a bad spec must never crash the dashboard */ }
+  return { pct: 0, raw: 0, unit: m.unit || '' };
+}
+// Shipped defaults: every current KPI as a builtin ring (guarantees defaults === today).
+const KPI_DEFAULTS = {};
+ROLES.forEach((role) => {
+  KPI_DEFAULTS[role.id] = (role.kpis || []).map((label, idx) => ({
+    id: `${role.id}-${idx}`, label, help: KPI_HELP[label] || '', metric: { kind: 'builtin', ref: role.id, idx },
+  }));
+});
+/** The 3 ring specs for a role — admin override (config.settings.kpis) if valid, else defaults. */
+function roleRings(roleId) {
+  const ov = state.settings && state.settings.kpis && state.settings.kpis[roleId];
+  if (Array.isArray(ov) && ov.length === 3 && ov.every((r) => r && typeof r === 'object' && r.metric)) return ov;
+  return KPI_DEFAULTS[roleId] || [];
+}
+// kpiFor / kpiRaw now read through the spec layer (defaults route to the legacy math unchanged).
+function kpiFor(roleId) { return roleRings(roleId).map((r) => kpiEval(r).pct); }
+function kpiRaw(roleId) { return roleRings(roleId).map((r) => { const e = kpiEval(r); return { v: e.raw, unit: e.unit }; }); }
+
+/* Filterable field allowlist per entity (+ derived _fields) — gates BOTH the Wrangler
+   validator and what the authoring prompt is told it may reference. Nothing money/auth. */
+const KPI_FIELDS = {
+  units: ['name', 'fleetStatus', 'inspectionStatus', 'assignedMechanic', 'make', 'model', 'year', 'gpsType', 'categoryId'],
+  rentals: ['status', 'fieldCall', 'transportType', 'customerId', 'startDate', 'endDate', '_month', '_revenue'],
+  workOrders: ['phase', 'cancelled', 'billCustomer', 'type', '_ageDays'],
+  inspections: ['result', 'wash', 'woId', 'date', '_ageDays'],
+  invoices: ['date', 'dueDate', '_paid', '_billed'],
+  customers: ['accountType', 'usedSalesStage', 'membershipStage', 'industry', '_totalPaid', '_activePct'],
+};
+function wrValidateKpiSource(s, issues, label) {
+  if (!s || !KPI_ENTITY[s.entity]) { issues.push(`${label}: unknown entity "${s && s.entity}"`); return; }
+  const allow = KPI_FIELDS[s.entity] || [];
+  (s.where || []).forEach((c) => { if (!c || !allow.includes(c.f)) issues.push(`${label}: field "${c && c.f}" not allowed on ${s.entity}`); });
+  if (s.agg === 'sum' && !allow.includes(s.field)) issues.push(`${label}: sum field "${s.field}" not allowed on ${s.entity}`);
+}
+/** Validate a Mr. Wrangler kpi action → { ok, ring, issues, value, role, idx }. The ring is
+ *  rebuilt from the allowlisted parts only, then computed live to prove it functions. */
+function wrValidateKpi(act) {
+  const issues = []; act = act || {};
+  if (!ROLES.find((r) => r.id === act.role)) issues.push(`unknown role "${act.role}"`);
+  const idx = Number(act.ring);
+  if (!(idx >= 0 && idx <= 2)) issues.push('ring must be 1, 2, or 3');
+  const m = act.metric || {};
+  if (!['ratio', 'count', 'goal', 'sum'].includes(m.kind)) issues.push(`unknown metric kind "${m.kind}"`);
+  if (m.kind === 'ratio') { wrValidateKpiSource(m.num, issues, 'numerator'); if (!(m.den && m.den.const != null)) wrValidateKpiSource(m.den, issues, 'denominator'); }
+  if (m.kind === 'count') wrValidateKpiSource(m.src, issues, 'source');
+  if (m.kind === 'goal' || m.kind === 'sum') { wrValidateKpiSource(m.src, issues, 'source'); if (!(Number(act.target) > 0)) issues.push('a positive target is required'); }
+  const ring = { id: `${act.role}-${idx}-c`, label: String(act.label || 'KPI').slice(0, 28), help: String(act.help || '').slice(0, 160),
+    target: act.target != null ? Number(act.target) : undefined, unit: act.unit, band: act.band === 'down' ? 'down' : 'up', metric: m };
+  let value = null;
+  if (!issues.length) { try { value = kpiEval(ring).pct; if (value == null) issues.push('metric did not compute'); } catch (e) { issues.push('metric did not compute'); } }
+  return { ok: !issues.length, ring, issues, value, role: act.role, idx };
+}
+
 /** §11 Team ring — per-position average across the 5 roles (skips null placeholders). */
 function kpiTeam() {
   const all = ROLES.map((r) => kpiFor(r.id));
@@ -4939,7 +5606,7 @@ function kpiTeam() {
    on counts) and flash the ring green ×3, video-game style. Detected by diffing
    the metrics each render, so it covers EVERY action — present and future —
    without per-action hooks. kpiRaw mirrors kpiFor's numerators, higher = better. */
-function kpiRaw(roleId) {
+function legacyKpiRaw(roleId) {
   const R = DATA.rentals, W = DATA.workOrders, N = DATA.inspections, INV = DATA.invoices, C = DATA.customers;
   const f = fleetInsp();
   const c = (v) => ({ v, unit: '' }), usd = (v) => ({ v, unit: '$' });
@@ -5165,6 +5832,14 @@ function wranglerDockEl() {
           act = m.filed
             ? `<span class="wr-actdone">✓ Applied — ${esc(sum)}</span>`
             : `<div class="wr-apply"><div class="wr-apply-sum">Preview: ${esc(sum)}</div>${cut}${skip}${plan.ops.length ? `<button class="wr-actbtn wr-actbtn-build js-wr-apply" data-mi="${i}">✓ Apply these changes</button>` : '<span class="wr-apply-none">Nothing here I can safely apply.</span>'}</div>`;
+        } else if (m.action && m.action.action === 'kpi') {
+          const v = m.action._kpi || (m.action._kpi = wrValidateKpi(m.action));
+          const valTxt = v.value == null ? '—' : v.value + '%';
+          act = m.filed
+            ? `<span class="wr-actdone">✓ Locked in — ${esc(v.ring.label)} (${esc(valTxt)})</span>`
+            : v.ok
+              ? `<div class="wr-apply"><div class="wr-apply-sum">${esc(v.role)} · Ring ${v.idx + 1}: <b>${esc(v.ring.label)}</b> — live <b>${esc(valTxt)}</b></div><div class="wr-kpi-readback">${esc(kpiMetricReadback(v.ring.metric))}</div><button class="wr-actbtn wr-actbtn-build js-wr-kpi-lock" data-mi="${i}">✓ Lock in this KPI</button></div>`
+              : `<div class="wr-apply"><div class="wr-apply-skip">can’t build that yet: ${esc(v.issues.join('; '))}</div></div>`;
         } else if (m.action) {
           const ak = m.action.action;
           const doneLbl = ak === 'plan' ? 'Building to your plan' : ak === 'request' ? 'Sent to the developer for OK' : 'Fixing now — I’ll let you know when it’s done';
@@ -6657,20 +7332,21 @@ function renderOverlay() {
       body: `<div class="tools-tray">${notifBtn}${bottomBarInner()}</div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'settings') {
-    const cfg = o.config || { roles: {}, admin: '' };
-    const roleRows = Object.keys(cfg.roles).map((role) => `<label class="set-row"><span class="set-role">${esc(role)}</span><input class="set-input" data-role="${esc(role)}" value="${esc(cfg.roles[role])}" autocomplete="off" /></label>`).join('');
-    const pop = el('div', 'popup'); pop.style.width = '380px';
-    pop.innerHTML = popupShell({ icon: I.grid, title: 'Settings — Logins', tag: 'Admin · access',
-      foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-settings-save" data-r="R17">Save</button>`,
-      body: `
-        <p class="muted" style="font-size:11px;margin:0 0 10px">Each role signs in with its password (plus their name). Changes apply at next sign-in.</p>
-        ${roleRows}
-        <label class="set-row set-admin"><span class="set-role">Admin</span><input class="set-input" data-admin="1" value="${esc(cfg.admin)}" autocomplete="off" /></label>
-        <div class="set-row" style="margin-top:12px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="ON: dropping a unit onto a conflicting rental links anyway — both sides get a pulsing red 'Overbooked' flag while the overlap exists. OFF: the drop is blocked, naming the conflict.">Allow overbooking</span>${segCtl([{ label: 'Off', js: 'js-overbook', data: { val: '0' }, on: state.overbookOn ? null : 'red' }, { label: 'On', js: 'js-overbook', data: { val: '1' }, on: state.overbookOn ? 'green' : null }])}</div>
-        <p class="muted" style="font-size:10.5px;margin:4px 0 0">Drag &amp; drop policy — saved on this device.</p>
-        <div class="set-row" style="margin-top:12px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="A light vibration confirms committed actions on phones (post a chat, drop a link, complete a WO, release-to-cancel). Android only — iOS has no vibration.">Haptic feedback</span>${segCtl([{ label: 'Off', js: 'js-haptics', data: { val: '0' }, on: state.hapticsOff ? 'red' : null }, { label: 'On', js: 'js-haptics', data: { val: '1' }, on: state.hapticsOff ? null : 'green' }])}</div>
-        <p class="muted" style="font-size:10.5px;margin:4px 0 0">Touch feedback — saved on this device.</p>
-        ${o.error ? `<div class="login-err" style="text-align:left;margin-top:8px">${esc(o.error)}</div>` : ''}` });
+    o.config = o.config || { roles: {}, admin: '' };
+    o.tab = o.tab || 'logins';
+    o.setSel = o.setSel || 'rentalStatus';
+    if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
+    const pop = el('div', 'popup board-popup settings-popup');
+    const foot = `${pageDefaultSlice(o.tab) ? '<button class="pill ghost js-settings-resetpage" data-r="R18" data-tip="Reset just this tab to defaults (Save to keep)">Reset page</button>' : ''}<button class="pill ghost set-danger js-settings-reset${o.resetArm ? ' armed' : ''}" data-r="R18">${o.resetArm ? 'Click again — reset everything' : 'Reset all'}</button>${hasSettingsBackup() ? '<button class="pill ghost js-settings-undo" data-r="R18">Undo last change</button>' : ''}<span class="spacer"></span>${o.error ? `<span class="set-err">${esc(o.error)}</span>` : ''}<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-settings-save" data-r="R17">Save settings</button>`;
+    pop.innerHTML = `
+      <div class="popup-head">
+        <span class="pl-ic">${I.sliders}</span>
+        <div class="pl-title"><h3>Settings</h3><span class="pl-tag">Admin · Wrangle the yard</span></div>
+        <span class="spacer"></span>
+        <button class="x js-close" aria-label="Close">${I.x}</button>
+      </div>
+      <div class="popup-body settings-body">${settingsBoardHtml(o)}</div>
+      <div class="popup-foot">${foot}</div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'newCustomer') {
     const d = o.draft; const isEdit = !!o.editId;
@@ -6706,7 +7382,10 @@ function renderOverlay() {
             </div>
           </div>
           <div class="nc-field nc-wide"><span>Account type</span><div class="nc-pills">${acctPills}</div></div>
+          <label class="nc-field"><span>Driver’s license / ID #</span><input class="nc-in" data-f="idNumber" value="${esc(d.idNumber || '')}" autocomplete="off" /></label>
+          <label class="nc-field"><span>Payment terms — Net days</span><input class="nc-in" data-f="netDays" type="number" min="0" max="${companyMaxNetDays()}" value="${d.netDays != null && d.netDays !== '' ? esc(d.netDays) : ''}" placeholder="0 = COD" autocomplete="off" /><span class="nc-hint">0 = Cash on delivery · max ${companyMaxNetDays()} days (set in Settings → Company)</span></label>
         </div>
+        ${cfSectionHtml('customers', d.custom || {})}
         <datalist id="nc-industries">${indOpts}</datalist>`;
     } else {
       const k = cards.find((x) => x.id === tab);
@@ -6768,6 +7447,27 @@ function renderOverlay() {
         <div class="nc-ag-meta">${esc(fullName(c))}${c.agreementSignedAt ? ` · accepted ${esc(c.agreementSignedAt)}` : ' · not yet signed'}</div>
         <div class="nc-agreement" tabindex="0">${esc(ag.text)}</div>
         ${c.signature ? `<div class="nc-ag-sigline"><span class="nc-cap-lbl">Signature</span><img class="nc-thumb sig" src="${esc(c.signature)}" alt="signature" /></div>` : ''}` });
+    overlay.appendChild(pop);
+  } else if (o.kind === 'checklist') {
+    // Required-checklist takeover (Settings → Inspections): replaces the sheet until completed;
+    // closing keeps it as a pending inspection. Any item Fail → overall Fail → existing auto-WO.
+    const u = IDX.unit.get(o.unitId); const cfg = u && checklistFor(u); const n = IDX.insp.get(o.inspId);
+    if (!u || !cfg || !n) { state.overlay = null; return; }
+    n.items = n.items || {};
+    const items = cfg.items || [];
+    const done = items.filter((it) => n.items[it.id]).length; const allDone = done === items.length;
+    const cat = IDX.category.get(u.categoryId) || {};
+    const itemRows = items.map((it) => `<div class="ck-row"><span class="ck-label">${esc(it.label)}</span>${segCtl([{ label: '✓ Pass', js: 'js-ck-item', data: { id: it.id, val: 'Pass' }, on: n.items[it.id] === 'Pass' ? 'green' : null }, { label: '✕ Fail', js: 'js-ck-item', data: { id: it.id, val: 'Fail' }, on: n.items[it.id] === 'Fail' ? 'red' : null }])}</div>`).join('');
+    const pop = el('div', 'popup board-popup ck-popup');
+    pop.innerHTML = `
+      <div class="popup-head">
+        <span class="pl-ic">${CARD_ICON.inspections}</span>
+        <div class="pl-title"><h3>Inspection — ${esc(u.name)}</h3><span class="pl-tag">${esc(cat.name || '')} checklist · ${done}/${items.length} checked</span></div>
+        <span class="spacer"></span>
+        <button class="x js-ck-pending" aria-label="Keep as pending">${I.x}</button>
+      </div>
+      <div class="popup-body ck-body">${itemRows}</div>
+      <div class="popup-foot"><button class="pill ghost js-ck-pending" data-r="R18">Keep as pending</button><button class="pill ignition js-ck-complete${allDone ? '' : ' is-disabled'}" data-r="R17">Complete inspection</button></div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'inspection') {
     // §12.8 Failure report — triggered when an inspection is marked Failed: capture a
@@ -7092,7 +7792,7 @@ async function wranglerSend() {
   syncWranglerComment(o, 'user', text, imgs);   // §18e mirror the turn onto the issue thread
   wranglerClearNeedsAnswer(o.reqNumber);        // §18e answering a "Needs your answer" request clears it from the inbox
   o.draft = ''; o.attach = []; o.files = []; o.busy = true; o.error = ''; render();
-  const system = WRANGLER_SYSTEM + '\n\n' + wranglerContext(o);
+  const system = WRANGLER_SYSTEM + (o.kpiTarget ? '\n\n' + wranglerKpiSystem() : '') + '\n\n' + wranglerContext(o);
   // Build the payload: images become a content-block array; CSV/text files fold
   // into the message text so Mr. Wrangler reads their rows.
   const fileBlock = (m) => (m.files && m.files.length)
@@ -7117,7 +7817,7 @@ async function wranglerSend() {
       let shown = stripWranglerAction(raw);
       const truncated = /```wrangler-action/.test(raw) && !act;   // #152 a fence arrived but nothing usable came out of it
       if (truncated) shown = (shown ? shown + '\n\n' : '') + '⚠️ My reply got cut off before I could finish that action — too much in one go. Ask me to do it in smaller batches and I’ll send a preview you can apply.';
-      else if (!shown) shown = act ? (act.action === 'data' ? 'Here’s what I’ll change — preview it and hit apply when it looks right.' : act.action === 'request' ? 'Got it — I’ll send this to the developer to OK.' : act.action === 'plan' ? 'Here’s the plan — tap Build when it’s right.' : 'On it — I’ll fix this right now and let you know when I’m done.') : '(no answer)';
+      else if (!shown) shown = act ? (act.action === 'data' ? 'Here’s what I’ll change — preview it and hit apply when it looks right.' : act.action === 'kpi' ? 'Here’s the KPI — lock it in when the live number looks right.' : act.action === 'request' ? 'Got it — I’ll send this to the developer to OK.' : act.action === 'plan' ? 'Here’s the plan — tap Build when it’s right.' : 'On it — I’ll fix this right now and let you know when I’m done.') : '(no answer)';
       o.messages.push({ role: 'assistant', content: shown, action: act || null, filed: false });
       syncWranglerComment(o, 'assistant', shown);   // §18e mirror Mr. Wrangler's reply onto the issue thread
     } else {
@@ -7463,8 +8163,17 @@ function fabStackEl() {
 // typed values survive a selfie/signature/pill change).
 function ncSyncInputs() {
   const o = state.overlay; if (!o || o.kind !== 'newCustomer') return;
-  const root = document.querySelector('.overlay .popup-body'); if (root) root.querySelectorAll('[data-f]').forEach((i) => { o.draft[i.dataset.f] = i.value.trim(); });
+  const root = document.querySelector('.overlay .popup-body'); if (!root) return;
+  root.querySelectorAll('[data-f]').forEach((i) => { o.draft[i.dataset.f] = i.value.trim(); });
+  o.draft.custom = o.draft.custom || {};
+  root.querySelectorAll('[data-cf]').forEach((i) => { o.draft.custom[i.dataset.cf] = i.value.trim(); });
   ncApplyName(o.draft);
+}
+// Admin custom-fields section for an entity form. Empty when no fields are defined.
+function cfSectionHtml(entity, vals) {
+  const defs = customFieldsFor(entity); if (!defs.length) return '';
+  const rows = defs.map((f) => `<label class="nc-field"><span>${esc(f.label)}${f.required ? ' *' : ''}</span><input class="nc-in js-cf-val" data-cf="${esc(f.id)}" type="${f.type === 'number' ? 'number' : 'text'}" value="${esc((vals && vals[f.id]) || '')}" autocomplete="off" /></label>`).join('');
+  return `<div class="nc-sec-title">More details</div><div class="nc-grid">${rows}</div>`;
 }
 /* The form uses ONE "Name" field — everything after the first space is the last
    name. Split it into firstName/lastName (the model's canonical pair). */
@@ -8696,8 +9405,38 @@ function onClick(e) {
   if (closest('.js-switch-user')) { e.stopPropagation(); return switchUser(); }
   if (closest('.js-open-settings')) { e.stopPropagation(); return openSettings(); }
   if (closest('.js-settings-save')) { e.stopPropagation(); return saveSettings(); }
+  if (closest('.js-settings-resetpage')) { e.stopPropagation(); return resetPageSettings(); }   // gentle: default just this tab
+  if (closest('.js-settings-reset')) { e.stopPropagation(); const o = state.overlay; if (!o) return; if (o.resetArm) return resetAllSettings(); o.resetArm = true; renderOverlay(); return; }   // armed two-click confirm
+  if (closest('.js-settings-undo')) { e.stopPropagation(); return undoLastSettings(); }
   if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); renderOverlay(); return; }
   if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); renderOverlay(); return; }   // §M-touch — toggle + a sample buzz when turning ON
+  // Settings Board — tab rail + Statuses & Icons editing
+  if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; renderOverlay(); } return; }
+  if (closest('.js-set-pick')) { e.stopPropagation(); const o = state.overlay; if (o) { o.setSel = closest('.js-set-pick').dataset.set; o.iconFor = null; renderOverlay(); } return; }
+  if (closest('.js-set-color')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-color'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { color: b.dataset.color }); renderOverlay(); } return; }
+  if (closest('.js-set-icon-open')) { e.stopPropagation(); const o = state.overlay, k = closest('.js-set-icon-open').dataset.key; if (o) { o.iconFor = o.iconFor === k ? null : k; renderOverlay(); } return; }
+  if (closest('.js-set-icon')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-icon'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { icon: b.dataset.icon || '' }); o.iconFor = null; renderOverlay(); } return; }
+  if (closest('.js-set-reset')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-reset'); if (o && o.draftSettings && o.draftSettings.status && o.draftSettings.status[b.dataset.set]) { delete o.draftSettings.status[b.dataset.set][b.dataset.val]; renderOverlay(); } return; }
+  // KPIs & Rings tab
+  if (closest('.js-kpi-role')) { e.stopPropagation(); const o = state.overlay; if (o) { o.kpiRole = closest('.js-kpi-role').dataset.role; renderOverlay(); } return; }
+  if (closest('.js-kpi-band')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-kpi-band'); if (o) { const rings = ensureKpiDraft(o, b.dataset.role); rings[Number(b.dataset.i)].band = b.dataset.band; renderOverlay(); } return; }
+  if (closest('.js-kpi-reset')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-kpi-reset'); if (o) { const rings = ensureKpiDraft(o, b.dataset.role); rings[Number(b.dataset.i)] = JSON.parse(JSON.stringify((KPI_DEFAULTS[b.dataset.role] || [])[Number(b.dataset.i)] || {})); renderOverlay(); } return; }
+  if (closest('.js-kpi-refine')) { e.stopPropagation(); const b = closest('.js-kpi-refine'); openWranglerForKpi(b.dataset.role, Number(b.dataset.i)); return; }
+  // Rental Rules tab
+  if (closest('.js-rule-set')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-rule-set'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.rentalRules = o.draftSettings.rentalRules || { ...((state.settings && state.settings.rentalRules) || {}) }; o.draftSettings.rentalRules[b.dataset.rule] = b.dataset.val === 'required' ? 'required' : 'off'; renderOverlay(); } return; }
+  // Layout & Footers tab
+  if (closest('.js-layout-footer')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-layout-footer'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.layout = o.draftSettings.layout || { ...((state.settings && state.settings.layout) || {}) }; o.draftSettings.layout.footers = { ...(o.draftSettings.layout.footers || {}), [b.dataset.card]: b.dataset.val === 'off' ? 'off' : 'on' }; renderOverlay(); } return; }
+  // Custom Fields tab
+  if (closest('.js-cf-entity')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfEntity = closest('.js-cf-entity').dataset.ent; renderOverlay(); } return; }
+  if (closest('.js-cf-type')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), type: closest('.js-cf-type').dataset.type }; renderOverlay(); } return; }
+  if (closest('.js-cf-req')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), required: closest('.js-cf-req').dataset.v === '1' }; renderOverlay(); } return; }
+  if (closest('.js-cf-add')) { e.stopPropagation(); const o = state.overlay; if (!o) return; const lblEl = document.querySelector('.settings-popup .js-cf-label'); const label = (o.cfDraft && o.cfDraft.label || (lblEl ? lblEl.value : '')).trim(); if (!label) { if (lblEl) { lblEl.focus(); } toast('Give the field a label first.'); return; } const fields = ensureCfDraft(o, o.cfEntity || 'customers'); fields.push({ id: cfSlug(label), label, type: (o.cfDraft && o.cfDraft.type) || 'text', required: !!(o.cfDraft && o.cfDraft.required) }); o.cfDraft = { label: '', type: 'text', required: false }; renderOverlay(); return; }
+  if (closest('.js-cf-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-cf-remove'); if (o) { const fields = ensureCfDraft(o, b.dataset.ent); const i = fields.findIndex((f) => f.id === b.dataset.id); if (i >= 0) fields.splice(i, 1); renderOverlay(); } return; }
+  // Inspections tab
+  if (closest('.js-insp-cat')) { e.stopPropagation(); const o = state.overlay; if (o) { o.inspCat = closest('.js-insp-cat').dataset.cat; renderOverlay(); } return; }
+  if (closest('.js-insp-req')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-req'); if (o) { ensureInspDraft(o, b.dataset.cat).required = b.dataset.v === '1'; renderOverlay(); } return; }
+  if (closest('.js-insp-add')) { e.stopPropagation(); const o = state.overlay; if (!o) return; const el2 = document.querySelector('.settings-popup .js-insp-label'); const label = ((o.inspDraft != null ? o.inspDraft : (el2 ? el2.value : '')) || '').trim(); if (!label) { if (el2) el2.focus(); toast('Type a checklist item first.'); return; } const cfg = ensureInspDraft(o, o.inspCat); cfg.items = cfg.items || []; cfg.items.push({ id: 'ck_' + (label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'item') + '_' + Math.random().toString(36).slice(2, 5), label }); o.inspDraft = ''; renderOverlay(); return; }
+  if (closest('.js-insp-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-remove'); if (o) { const cfg = ensureInspDraft(o, b.dataset.cat); cfg.items = (cfg.items || []).filter((it) => it.id !== b.dataset.id); renderOverlay(); } return; }
   if (closest('.js-nc-save')) { e.stopPropagation(); return saveNewCustomer(); }
   if (closest('.js-nc-acct')) { const b = closest('.js-nc-acct'); e.stopPropagation(); ncSyncInputs(); state.overlay.draft.accountType = b.dataset.val; renderOverlay(); return; }
   if (closest('.js-nc-po')) { e.stopPropagation(); ncSyncInputs(); const o = state.overlay; o.draft.requiresPO = (o.draft.requiresPO === true) ? false : true; if (o.editId) { const c = IDX.customer.get(o.editId); if (c) { c.requiresPO = o.draft.requiresPO; reindex('customers', c); } } renderOverlay(); return; }
@@ -8807,6 +9546,7 @@ function onClick(e) {
   if (closest('.js-wr-close')) { e.stopPropagation(); wranglerRailSnapshot(); state.wrangler.open = false; return render(); }   // §18 close the dock back to the launcher; the chat lands on the §18g rail
   if (closest('.js-wr-act')) { e.stopPropagation(); return wranglerFileAction(Number(closest('.js-wr-act').dataset.mi)); }   // §18d file the fix/request Mr. Wrangler proposed inline
   if (closest('.js-wr-apply')) { e.stopPropagation(); const o = state.wrangler; if (!o.open) return; const m = o.messages[Number(closest('.js-wr-apply').dataset.mi)]; if (!m || !m.action || m.filed) return; const plan = m.action._plan || wrValidatePlan(m.action); if (!plan.ops.length) return; m.filed = true; applyWranglerData(plan); return; }   // Mr. Wrangler applies the previewed add/update/import
+  if (closest('.js-wr-kpi-lock')) { e.stopPropagation(); lockKpiFromWrangler(Number(closest('.js-wr-kpi-lock').dataset.mi)); return; }   // Mr. Wrangler locks in an authored KPI ring
   if (closest('.js-wr-unattach')) { e.stopPropagation(); const o = state.wrangler; if (o.open && o.attach) { o.attach.splice(Number(closest('.js-wr-unattach').dataset.i), 1); render(); } return; }   // §18d drop a pending image attachment
   if (closest('.js-wr-unfile')) { e.stopPropagation(); const o = state.wrangler; if (o.open && o.files) { o.files.splice(Number(closest('.js-wr-unfile').dataset.i), 1); render(); } return; }   // §18d drop a pending file attachment
   if (closest('.js-wrangler')) { e.stopPropagation(); if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; return render(); } return wranglerNewChat(); }   // §18 toggle Mr. Wrangler dock — opening always starts a fresh chat (the last one waits on the §18g rail)
@@ -8973,6 +9713,10 @@ function onClick(e) {
   }
   // ── v2 build: condition/wash segs · yard captures · site popup · WO complete · history chips ──
   if (closest('.js-cond')) { const b = closest('.js-cond'); return setUnitCondition(b.dataset.rec, b.dataset.val); }
+  if (closest('.js-open-checklist')) { e.stopPropagation(); return openChecklist(closest('.js-open-checklist').dataset.rec); }
+  if (closest('.js-ck-item')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-item'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n) { n.items = n.items || {}; n.items[b.dataset.id] = b.dataset.val; renderOverlay(); } } return; }
+  if (closest('.js-ck-complete')) { e.stopPropagation(); return completeChecklist(); }
+  if (closest('.js-ck-pending')) { e.stopPropagation(); closeOverlay(); toast('Inspection kept as pending — resume it anytime.'); return; }
   if (closest('.js-washseg')) { const b = closest('.js-washseg'); return setUnitWash(b.dataset.rec, b.dataset.val); }
   if (closest('.js-yard')) { const b = closest('.js-yard'); return yardCapture(b.dataset.rec, b.dataset.cap, b.dataset.unit); }
   if (closest('.js-cap-save')) return saveYardCapture();
@@ -9309,6 +10053,23 @@ function cardOverrideRental(rentalId, val) {
     setRentalStatus(rentalId, val);
   });
 }
+/* Admin "Rental Rules" (Settings → Rental Rules) — HARD-BLOCK On Rent until every
+   requirement an admin marked Required is met. Pure + defensive: with no rules set
+   (the default) it always returns null, so the On Rent flow is byte-for-byte today's. */
+function rentalRuleBlock(r, cust, val) {
+  if (val !== 'On Rent') return null;
+  const rules = (state.settings && state.settings.rentalRules) || {};
+  const req = (k) => rules[k] === 'required';
+  if (!['card', 'signature', 'selfie', 'po', 'id', 'terms'].some(req)) return null;
+  const inv = r && r.invoiceId ? IDX.invoice.get(r.invoiceId) : null;
+  if (req('card') && !(cust && hasValidCard(cust))) return 'Rental rule: a valid card on file is required before On Rent.';
+  if (req('signature') && !(cust && cust.signature)) return 'Rental rule: a signed agreement is required before On Rent.';
+  if (req('selfie') && !(cust && cust.selfie)) return 'Rental rule: a customer selfie is required before On Rent.';
+  if (req('id') && !(cust && cust.idNumber)) return "Rental rule: a driver's license / ID is required before On Rent.";
+  if (req('terms') && !(cust && cust.netDays != null && cust.netDays !== '')) return 'Rental rule: payment terms (Net days) must be set before On Rent.';
+  if (req('po') && !(inv && inv.po)) return 'Rental rule: a PO number on the invoice is required before On Rent.';
+  return null;
+}
 function setRentalStatus(rentalId, val) {
   const r = IDX.rental.get(rentalId);
   if (!r) return;
@@ -9316,6 +10077,7 @@ function setRentalStatus(rentalId, val) {
   // §9 hard gates
   if (val === 'On Rent' && !r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
   if (['On Rent', 'Reserved'].includes(val) && cust && /Blacklist/i.test(cust.accountType || '')) { toast('Blocked: customer is blacklisted (§9).'); return; }
+  const _rb = rentalRuleBlock(r, cust, val); if (_rb) { flashOr('.js-add-card', _rb); return; }   // admin Rental Rules — hard block
   // §14 — a booking requires a valid card that is SIGNED for the current account
   // type; any unsigned card blocks. An Admin can override. (Charging is never gated.)
   if (BOOKING_STATUSES.includes(val) && cardGateBlocked(cust) && !r.cardOverride) {
@@ -9346,6 +10108,7 @@ function setUnitStatus(rentalId, unitId, val) {
   const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
   if (val === 'On Rent' && !r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
   if (['On Rent', 'Reserved'].includes(val) && cust && /Blacklist/i.test(cust.accountType || '')) { toast('Blocked: customer is blacklisted (§9).'); return; }
+  { const _rb = rentalRuleBlock(r, cust, val); if (_rb) { toast(_rb); return; } }   // admin Rental Rules — hard block
   if (BOOKING_STATUSES.includes(val) && cardGateBlocked(cust) && !r.cardOverride) { toast(`${cust.name} — ${cardGateReason(cust)}. Admin override required.`); return; }
   // §20 No-Show / Cancel: don't commit the terminal status while a payment is
   // assigned to the unit (it would count toward Complete yet stay billed) — block first.
@@ -9427,6 +10190,34 @@ function setUnitCondition(unitId, val) {
   u.inspectionStatus = 'Not Ready';
   reindex('units', u); logAction(u, 'Condition → Not Ready');
   toast('Condition → Not Ready'); reanchorRender();
+}
+// A required-checklist inspection started but not yet completed (Jac: kept as Pending).
+function pendingInspForUnit(unitId) {
+  return (DATA.inspections || []).find((n) => n.unitId === unitId && (n.checklist === '' || n.checklist == null) && n.items && typeof n.items === 'object');
+}
+// Open the full-screen checklist takeover for a unit whose category requires one (resumes a pending draft).
+function openChecklist(unitId) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  if (!checklistFor(u)) return toast('No checklist is set for this category.');
+  let n = pendingInspForUnit(unitId);
+  if (!n) n = newInspectionForUnit(u);
+  n.items = n.items || {};
+  state.overlay = { kind: 'checklist', unitId, inspId: n.inspectionId };
+  render();
+}
+// Complete the checklist → overall result cascades through the existing setInspResult (auto-WO on fail).
+function completeChecklist() {
+  const o = state.overlay; if (!o || o.kind !== 'checklist') return;
+  const u = IDX.unit.get(o.unitId); const cfg = u && checklistFor(u); const n = IDX.insp.get(o.inspId);
+  if (!u || !cfg || !n) { closeOverlay(); return; }
+  const items = cfg.items || [];
+  const left = items.filter((it) => !n.items[it.id]).length;
+  if (left) { toast(`Mark every item first — ${left} left.`); return; }
+  const failed = items.filter((it) => n.items[it.id] === 'Fail');
+  if (failed.length) n.description = 'Failed checklist: ' + failed.map((it) => it.label).join(', ');
+  state.overlay = null;                                   // close the takeover; a Fail re-opens the photo/notes popup
+  setInspResult(n.inspectionId, failed.length ? 'Fail' : 'Pass');   // cascade onto the inspection section + auto-WO
+  toast(failed.length ? `Inspection failed — work order opened for ${u.name}.` : `Inspection passed — ${u.name} is Ready. ✓`);
 }
 function setUnitWash(unitId, val) {
   const u = IDX.unit.get(unitId); if (!u) return;
@@ -9851,6 +10642,28 @@ function onInput(e) {
 
 /* change events — native <input type="date"> / <select> on draft details. */
 function onChange(e) {
+  // Settings Board — relabel a status (commit on blur/enter; the value/role stays locked)
+  if (e.target.classList.contains('js-set-label')) {
+    const o = state.overlay; if (!o) return;
+    const def = (STATUS_DEFAULTS[e.target.dataset.set] || {})[e.target.dataset.val] || {};
+    const v = e.target.value.trim();
+    setDraftStatus(o, e.target.dataset.set, e.target.dataset.val, { label: (v && v !== def.label) ? v : '' });
+    renderOverlay(); return;
+  }
+  // Settings Board — Company identity (commit on blur)
+  if (e.target.classList.contains('js-co-field')) {
+    const o = state.overlay; if (!o) return;
+    o.draftSettings = o.draftSettings || {}; o.draftSettings.company = o.draftSettings.company || { ...((state.settings && state.settings.company) || {}) };
+    const f = e.target.dataset.f, raw = e.target.value.trim();
+    if (f === 'revenueGoal') { const n = Number(raw.replace(/[^0-9.]/g, '')); o.draftSettings.company.revenueGoal = (raw && isFinite(n) && n > 0) ? n : undefined; }
+    else if (f === 'maxNetDays') { const n = Math.round(Number(raw.replace(/[^0-9.]/g, ''))); o.draftSettings.company.maxNetDays = (raw && isFinite(n) && n >= 0) ? n : undefined; }
+    else o.draftSettings.company[f] = raw || undefined;
+    renderOverlay(); return;
+  }
+  // Settings Board — KPI ring label / target (commit on blur)
+  if (e.target.classList.contains('js-insp-label')) { const o = state.overlay; if (o) o.inspDraft = e.target.value; return; }
+  if (e.target.classList.contains('js-kpi-lbl')) { const o = state.overlay; if (!o) return; const rings = ensureKpiDraft(o, e.target.dataset.role); rings[Number(e.target.dataset.i)].label = e.target.value.trim(); renderOverlay(); return; }
+  if (e.target.classList.contains('js-kpi-tgt')) { const o = state.overlay; if (!o) return; const rings = ensureKpiDraft(o, e.target.dataset.role); const n = Number(e.target.value); rings[Number(e.target.dataset.i)].target = isFinite(n) && e.target.value.trim() ? n : undefined; renderOverlay(); return; }
   // F2 — +File upload: read the chosen photo/document; images are downscaled, others kept
   // as-is. Held in state.overlay.fileUpload until "Add file" (which sends it to Drive).
   if (e.target.classList.contains('js-ff-file')) {
@@ -10035,14 +10848,25 @@ async function openSettings() {
 }
 async function saveSettings() {
   const o = state.overlay; if (!o || o.kind !== 'settings') return;
-  const root = document.querySelector('.overlay .popup-body'); if (!root) return;
-  const roles = {}; root.querySelectorAll('.set-input[data-role]').forEach((i) => { roles[i.dataset.role] = i.value.trim(); });
-  const admin = root.querySelector('.set-input[data-admin]')?.value.trim() || '';
-  if (!admin || Object.values(roles).some((v) => !v)) { o.error = 'Passwords can\'t be empty.'; renderOverlay(); return; }
+  const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
+  // Logins inputs only exist while the Logins tab is open — when they're absent, keep the
+  // passwords from o.config so saving from another tab can't wipe them.
+  const haveLogins = !!root.querySelector('.set-input[data-role]');
+  let roles = o.config.roles || {}, admin = o.config.admin || '';
+  if (haveLogins) {
+    roles = {}; root.querySelectorAll('.set-input[data-role]').forEach((i) => { roles[i.dataset.role] = i.value.trim(); });
+    admin = root.querySelector('.set-input[data-admin]')?.value.trim() || '';
+    if (!admin || Object.values(roles).some((v) => !v)) { o.error = 'Passwords can\'t be empty.'; o.tab = 'logins'; renderOverlay(); return; }
+  }
+  const settings = o.draftSettings || state.settings || {};
   try {
-    const r = await backendCall('setConfig', { password: o.adminPw, config: { roles, admin } });
-    if (r && r.ok) { if (currentRole === 'Admin' || currentRole === 'Owner') { const myNew = currentRole === 'Admin' ? admin : (roles[currentRole] || o.adminPw); backendPassword = myNew; sessionStorage.setItem('jactec.pw', myNew); o.adminPw = myNew; } closeOverlay(); toast('Logins updated.'); }
-    else { o.error = 'Save failed.'; renderOverlay(); }
+    const r = await backendCall('setConfig', { password: o.adminPw, config: { roles, admin, settings } });
+    if (r && r.ok) {
+      if (haveLogins && (currentRole === 'Admin' || currentRole === 'Owner')) { const myNew = currentRole === 'Admin' ? admin : (roles[currentRole] || o.adminPw); backendPassword = myNew; sessionStorage.setItem('jactec.pw', myNew); o.adminPw = myNew; }
+      o.config.roles = roles; o.config.admin = admin; o.config.settings = settings;
+      persistAdminSettings(settings);   // mirror locally + apply the status overrides live
+      closeOverlay(); toast('Settings saved.'); render();
+    } else { o.error = 'Save failed.'; renderOverlay(); }
   } catch (e) { o.error = 'Could not reach the database.'; renderOverlay(); }
 }
 const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
@@ -10137,6 +10961,7 @@ function openCustomerForm(editId, prefill, linkTo) {
     email: f('email'), industry: f('industry'), accountType: f('accountType', 'Non-Business'),
     requiresPO: c ? !!c.requiresPO : undefined, accountNotes: f('accountNotes'), selfie: f('selfie'), signature: f('signature'),
     agreementType: f('agreementType'), agreementSignedAt: f('agreementSignedAt'),
+    idNumber: f('idNumber'), netDays: f('netDays'), custom: (c && c.custom) ? { ...c.custom } : {},
   } });
 }
 // Downscale + JPEG-compress an image data URL so it fits inside one Sheet cell
@@ -10172,6 +10997,7 @@ function quickSaveCustomer(o) {
     company: d.company, phone: d.phone, email: d.email, address: '',
     industry: d.industry, accountType: d.accountType || 'Non-Business', payStatus: 'New Customer',
     requiresPO: !!d.requiresPO, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
+    idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
     interestedCategoryIds: [], activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
@@ -10211,15 +11037,19 @@ function saveNewCustomer() {
   const o = state.overlay; if (!o || o.kind !== 'newCustomer') return;
   const root = document.querySelector('.overlay .popup-body'); if (!root) return;
   root.querySelectorAll('[data-f]').forEach((i) => { o.draft[i.dataset.f] = i.value.trim(); });
+  o.draft.custom = o.draft.custom || {};
+  root.querySelectorAll('[data-cf]').forEach((i) => { o.draft.custom[i.dataset.cf] = i.value.trim(); });
   ncApplyName(o.draft);
   if (!o.draft.firstName) { o.error = 'A name is required (we use it for marketing).'; renderOverlay(); document.querySelector('.overlay [data-f="name"]')?.focus(); return; }
   if (!o.draft.phone) { o.error = 'A phone number is required.'; renderOverlay(); document.querySelector('.overlay [data-f="phone"]')?.focus(); return; }
   if (o.draft.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.draft.email)) { o.error = 'That email doesn’t look valid (or leave it blank).'; renderOverlay(); return; }
+  const missingCf = customFieldsFor('customers').find((f) => f.required && !(o.draft.custom[f.id] || '').trim());
+  if (missingCf) { o.error = `“${missingCf.label}” is required.`; renderOverlay(); document.querySelector(`.overlay [data-cf="${missingCf.id}"]`)?.focus(); return; }
   if (o.draft.requiresPO !== true && o.draft.requiresPO !== false) { o.error = ''; o.tab = 'account'; renderOverlay(); flashOr('.overlay .js-nc-po', 'Choose PO — Yes or No before saving.'); return; }   // force the PO answer
   const d = o.draft;
   if (o.editId) {                                   // ── editing / completing an existing customer ──
     const c = IDX.customer.get(o.editId); if (!c) { closeOverlay(); return; }
-    Object.assign(c, { firstName: d.firstName, lastName: d.lastName, company: d.company, phone: d.phone, email: d.email, industry: d.industry, accountType: d.accountType || 'Non-Business', requiresPO: !!d.requiresPO, accountNotes: d.accountNotes });   // §7.1b signature/agreement live on the card
+    Object.assign(c, { firstName: d.firstName, lastName: d.lastName, company: d.company, phone: d.phone, email: d.email, industry: d.industry, accountType: d.accountType || 'Non-Business', requiresPO: !!d.requiresPO, accountNotes: d.accountNotes, idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {} });   // §7.1b signature/agreement live on the card
     if (!c.accountNotes) c.accountNotesColor = '';   // popup has no dot picker — don't leave a stale tag on a cleared note
     c.name = `${d.firstName} ${d.lastName}`.trim() || c.name;
     reindex('customers', c);
@@ -10237,6 +11067,7 @@ function saveNewCustomer() {
     company: d.company, phone: d.phone, email: d.email, address: '',
     industry: d.industry, accountType: d.accountType || 'Non-Business', payStatus: 'New Customer',
     requiresPO: !!d.requiresPO, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
+    idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
     interestedCategoryIds: [], activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
@@ -10695,7 +11526,7 @@ function printInvoice(invoiceId) {
   if (!host) { host = document.createElement('div'); host.id = 'print-root'; document.body.appendChild(host); }
   host.innerHTML = `
     <div class="pr-doc">
-      <div class="pr-head"><div class="pr-brand">JacRentals</div><div class="pr-sub">Heavy-Equipment Rental · Sulphur, LA</div></div>
+      <div class="pr-head"><div class="pr-brand">${esc(companyName())}</div><div class="pr-sub">${esc(companyTagline())}</div></div>
       <div class="pr-meta">
         <div><span class="pr-k">Invoice</span><span class="pr-v">${esc(inv.invoiceId)}</span></div>
         <div><span class="pr-k">Bill to</span><span class="pr-v">${esc(cust ? cust.name : '—')}</span></div>
@@ -10759,7 +11590,7 @@ function startNewWorkOrder(unitId) {
 function startNewInvoice(customerId) {
   const cust = customerId ? IDX.customer.get(customerId) : null;
   const id = nextInvoiceId();
-  const draft = { invoiceId: id, customerId: customerId || null, rentalIds: [], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
+  const draft = { invoiceId: id, customerId: customerId || null, rentalIds: [], date: TODAY_ISO, dueDate: dueForCustomer(customerId), po: '', amountPaid: 0, lineItems: [], mock: true };
   DATA.invoices.push(draft); IDX.invoice.set(id, draft); reindex('invoices', draft);
   logAction(draft, cust ? `Invoice created for ${cust.name}` : 'Invoice created');
   anchorRecord('invoices', id);   // no pick mode — drag links it up (Wave 2)
@@ -10813,7 +11644,7 @@ function createInvoiceForRental(rentalId) {
   if (!r.startDate || !r.endDate) { flashOr('.timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   if (!rentalUnitIds(r).length) { flashOr('.stall-empty, [data-slot="unit"]', 'Add at least one unit before invoicing.'); return; }
   const id = nextInvoiceId();
-  const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
+  const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: dueForCustomer(r.customerId), po: '', amountPaid: 0, lineItems: [], mock: true };
   rentalLineItems(r).forEach((li) => inv.lineItems.push(li));      // one rental line per unit (§20)
   transportLineItems(r).forEach((li) => inv.lineItems.push(li));   // one transport line per unit (§20)
   DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
@@ -11364,7 +12195,7 @@ function billWOToInvoice(woId) {
   let inv = DATA.invoices.find((i) => i.customerId === custId && !['Paid', 'Refunded'].includes(invoiceTotals(i).status));
   if (!inv) {
     const id = nextInvoiceId();
-    inv = { invoiceId: id, customerId: custId, rentalIds: [], date: TODAY_ISO, dueDate: addDays(TODAY_ISO, 14), po: '', amountPaid: 0, lineItems: [], mock: true };
+    inv = { invoiceId: id, customerId: custId, rentalIds: [], date: TODAY_ISO, dueDate: dueForCustomer(custId), po: '', amountPaid: 0, lineItems: [], mock: true };
     DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
   }
   addWOToInvoice(inv.invoiceId, woId);
@@ -11486,6 +12317,14 @@ async function loadFromBackend() {
   // could overwrite real data on a transient blip. A fresh backend is populated
   // explicitly via #reseed (admin), never silently from the demo file.
   PERSIST_KEYS.forEach((k) => { if (Array.isArray(data[k])) { DATA[k].length = 0; data[k].forEach((x) => DATA[k].push(x)); } });
+  // Settings Board: the backend now ships admin customizations with every load, so they
+  // sync to EVERY signed-in role (not just admins via getConfig). Server wins when it has
+  // settings; an empty server is left alone so it can't wipe a device's local config mid-rollout.
+  if (r.settings && typeof r.settings === 'object' && Object.keys(r.settings).length) {
+    state.settings = r.settings;
+    try { localStorage.setItem('jactec.settings', JSON.stringify(r.settings)); } catch (e) {}
+    applySettings(r.settings);
+  }
 }
 
 // ── Incremental persistence (diff-based sync) ──────────────────────────────
@@ -11789,6 +12628,14 @@ function applyViewportClass() {
   document.body.classList.toggle('is-narrow', window.matchMedia('(max-width: 1024px)').matches);
 }
 function boot() {
+  // Recovery hatch: app.jacrentals.com/#reset-settings (or #safe-mode) wipes saved customizations
+  // before they apply — the guaranteed way back if a bad setting ever breaks the screen.
+  try {
+    const h = (location.hash || '').toLowerCase();
+    if (h.includes('reset-settings') || h.includes('safe-mode')) { localStorage.removeItem('jactec.settings'); localStorage.removeItem('jactec.settings.prev'); state.settings = {}; settingsReverted = true; }
+  } catch (e) {}
+  applySettings();   // Settings Board: apply admin status overrides (color/icon) before the first render
+  if (settingsReverted) setTimeout(() => { try { toast('Customizations reset to defaults (recovery mode).'); } catch (e) {} }, 800);
   initTooltip();
   applyViewportClass();
   const onVP = () => { applyViewportClass(); if (!booting) render(); };
@@ -12076,7 +12923,9 @@ function exposeTestApi() {
       cleanUnitName, planUnitMigration, applyUnitMigration, openMigrationPreview,
       computeTransportPrice, isFueledType, unitTransport, rentalTransport,
       wrValidatePlan, applyWranglerData, wrFunnel, invoiceMergeable, mergeInvoiceInto, parseWranglerAction,
-      latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails };
+      latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails,
+      kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
+      companyRevenueGoal, companyName, companyTagline, rentalRuleBlock, dueForCustomer, footerHidden, customFieldsFor, checklistFor, checklistRequired, applySettings, getStatus, pageDefaultSlice, __state: state };
   } catch (e) { /* no window (non-browser) */ }
 }
 

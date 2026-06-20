@@ -343,6 +343,140 @@ try {
     m = T.mergeWranglerRails([], [C, B]);
     ok(m.merged.map((c) => c.id).join(',') === 'c,b' && m.changed === true, 'mergeWranglerRails: empty local → adopts remote, sorted newest-first');
 
+    // 19) KPIs & RINGS — admin-definable metric engine (step 1: defaults === today + DSL correctness)
+    const ROLE_IDS = ['mechanic', 'mtech', 'driver', 'office', 'sales'];
+    let kpiMatch = true, kpiRawMatch = true;
+    ROLE_IDS.forEach((id) => {
+      if (JSON.stringify(T.kpiFor(id)) !== JSON.stringify(T.legacyKpiPct(id))) kpiMatch = false;
+      const nr = T.kpiRaw(id).map((m) => [m.v, m.unit]), or = T.legacyKpiRaw(id).map((m) => [m.v, m.unit]);
+      if (JSON.stringify(nr) !== JSON.stringify(or)) kpiRawMatch = false;
+    });
+    ok(kpiMatch, 'KPI defaults reproduce legacy kpiFor for all 5 roles (no dashboard regression)');
+    ok(kpiRawMatch, 'KPI raw numerators reproduce legacy kpiRaw for all 5 roles (gamification unchanged)');
+    ok(T.kpiFor('driver')[2] === null && T.kpiFor('office')[2] === null, 'GPS/email placeholder rings stay null (not coerced to 0)');
+    // DSL engine — synthetic specs computed over live demo data
+    const kUnits = T.DATA.units, kWos = T.DATA.workOrders;
+    const readyN = kUnits.filter((u) => u.inspectionStatus === 'Ready').length;
+    const ce = T.kpiEval({ metric: { kind: 'count', src: { entity: 'units', where: [{ f: 'inspectionStatus', op: 'eq', v: 'Ready' }] } } });
+    ok(ce.raw === readyN && ce.pct === Math.round(readyN / kUnits.length * 100), `count kind: Ready units (${ce.raw}) ÷ fleet → ${ce.pct}%`);
+    const compN = kWos.filter((w) => w.phase === 'Complete').length, liveN = kWos.filter((w) => !w.cancelled).length;
+    const re = T.kpiEval({ metric: { kind: 'ratio', num: { entity: 'workOrders', where: [{ f: 'phase', op: 'eq', v: 'Complete' }], agg: 'count' }, den: { entity: 'workOrders', where: [{ f: 'cancelled', op: 'ne', v: true }], agg: 'count' } } });
+    ok(re.raw === compN && re.pct === (liveN > 0 ? Math.round(compN / liveN * 100) : 0), `ratio kind: Complete (${compN}) ÷ live WOs (${liveN}) → ${re.pct}%`);
+    const totalPaid = T.DATA.invoices.reduce((a, i) => a + T.invoiceTotals(i).paid, 0);
+    const ge = T.kpiEval({ target: 1000000, metric: { kind: 'goal', src: { entity: 'invoices', agg: 'sum', field: '_paid' } } });
+    ok(ge.raw === totalPaid && ge.unit === '$', `goal kind: collected $${ge.raw} sums via the _paid derived field`);
+    ok(T.kpiEval({ band: 'down', metric: { kind: 'count', src: { entity: 'units', where: [{ f: 'inspectionStatus', op: 'eq', v: 'Ready' }] } } }).pct === 100 - ce.pct, 'band:down inverts the ring fill (lower-is-better)');
+    ok(T.kpiEval({ metric: { kind: 'ratio', num: { entity: 'NOPE' } } }).pct === 0, 'malformed metric → safe 0 ring (never throws)');
+
+    // 20) Mr. Wrangler KPI authoring — validate + lock-in write path
+    const goodKpi = { action: 'kpi', role: 'mechanic', ring: 1, label: 'WO ≤ 2 days', band: 'up', unit: '%',
+      metric: { kind: 'ratio', num: { entity: 'workOrders', where: [{ f: 'phase', op: 'eq', v: 'Complete' }, { f: '_ageDays', op: 'lte', v: 2 }], agg: 'count' }, den: { entity: 'workOrders', where: [{ f: 'cancelled', op: 'ne', v: true }], agg: 'count' } } };
+    const gv = T.wrValidateKpi(goodKpi);
+    ok(gv.ok && typeof gv.value === 'number' && gv.idx === 1, `wrValidateKpi accepts a sound cross-field ratio (live ${gv.value}%)`);
+    const badField = T.wrValidateKpi({ action: 'kpi', role: 'mechanic', ring: 1, target: 5, metric: { kind: 'goal', src: { entity: 'units', where: [{ f: 'currentHours', op: 'gt', v: 0 }] } } });
+    ok(!badField.ok && badField.issues.some((s) => /currentHours/.test(s)), 'wrValidateKpi rejects a non-allowlisted field (currentHours — money/ops fields stay off-limits)');
+    ok(!T.wrValidateKpi({ action: 'kpi', role: 'nope', ring: 9, metric: { kind: 'bogus' } }).ok, 'wrValidateKpi rejects bad role / ring / kind');
+    // lock-in write path: a non-trivial custom ring flows through roleRings → kpiFor
+    const nz = T.wrValidateKpi({ action: 'kpi', role: 'mechanic', ring: 1, label: 'WO done rate', band: 'up',
+      metric: { kind: 'ratio', num: { entity: 'workOrders', where: [{ f: 'phase', op: 'eq', v: 'Complete' }], agg: 'count' }, den: { entity: 'workOrders', where: [{ f: 'cancelled', op: 'ne', v: true }], agg: 'count' } } });
+    const st = T.__state; const savedKpis = st.settings.kpis;
+    st.settings.kpis = { mechanic: JSON.parse(JSON.stringify(T.KPI_DEFAULTS.mechanic)) };
+    st.settings.kpis.mechanic[1] = nz.ring;
+    const overridden = T.kpiFor('mechanic')[1];
+    ok(nz.value > 0 && overridden === nz.value, `kpiFor reflects a locked-in custom ring (${overridden}%, ≠ default)`);
+    st.settings.kpis = savedKpis;   // restore
+    ok(JSON.stringify(T.kpiFor('mechanic')) === JSON.stringify(T.legacyKpiPct('mechanic')), 'removing the override restores the default ring');
+
+    // 21) Company tab — identity read-through with shipped fallbacks; revenue goal feeds the Sales ring
+    const savedCo = st.settings.company;
+    ok(T.companyRevenueGoal() === 150000 && T.companyName() === 'JacRentals', 'company helpers fall back to the shipped defaults when unset');
+    st.settings.company = { name: 'Bayou Iron', tagline: 'Diggers & Dozers', revenueGoal: 222000 };
+    ok(T.companyRevenueGoal() === 222000 && T.companyName() === 'Bayou Iron' && T.companyTagline() === 'Diggers & Dozers', 'company override is read back');
+    const salesGoalHi = T.kpiFor('sales')[0];
+    st.settings.company = { revenueGoal: 1 };
+    const salesGoalLo = T.kpiFor('sales')[0];
+    ok(salesGoalLo >= salesGoalHi, `Sales Revenue Goal ring tracks the company goal (goal=1 → ${salesGoalLo}% ≥ goal=222k → ${salesGoalHi}%)`);
+    st.settings.company = savedCo;   // restore
+    ok(JSON.stringify(T.kpiFor('sales')) === JSON.stringify(T.legacyKpiPct('sales')), 'no company override → Sales ring matches the shipped default (150k)');
+
+    // 22) Rental Rules — hard-block On Rent (default Off = zero change; pure rentalRuleBlock)
+    const savedRules = st.settings.rentalRules;
+    st.settings.rentalRules = {};
+    ok(T.rentalRuleBlock({ invoiceId: null }, { name: 'X' }, 'On Rent') === null, 'no rules set → On Rent never blocked (regression-safe default)');
+    st.settings.rentalRules = { signature: 'required' };
+    ok(T.rentalRuleBlock({}, { name: 'X' }, 'Reserved') === null, 'rules gate ONLY On Rent (Reserved passes)');
+    ok(/sign/i.test(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') || ''), 'signature Required + no signature → On Rent blocked');
+    ok(T.rentalRuleBlock({}, { name: 'X', signature: 'data:sig' }, 'On Rent') === null, 'signature Required + signature on file → allowed');
+    st.settings.rentalRules = { card: 'required' };
+    ok(/card/i.test(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') || ''), 'card Required + no card → On Rent blocked (true hard stop)');
+    st.settings.rentalRules = { po: 'required' };
+    ok(/PO/.test(T.rentalRuleBlock({ invoiceId: null }, { name: 'X' }, 'On Rent') || ''), 'PO Required + no invoice/PO → On Rent blocked');
+    const poInv = T.DATA.invoices.find((i) => i.po);
+    if (poInv) ok(T.rentalRuleBlock({ invoiceId: poInv.invoiceId }, { name: 'X' }, 'On Rent') === null, 'PO Required + invoice carries a PO → allowed');
+    st.settings.rentalRules = { id: 'required' };
+    ok(/ID/i.test(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') || '') && T.rentalRuleBlock({}, { name: 'X', idNumber: 'LA-12345' }, 'On Rent') === null, 'ID Required: blocks without an ID #, allows with one');
+    st.settings.rentalRules = { terms: 'required' };
+    ok(/terms/i.test(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') || '') && T.rentalRuleBlock({}, { name: 'X', netDays: 0 }, 'On Rent') === null, 'Payment-terms Required: blocks until Net days entered (0/COD counts)');
+    st.settings.rentalRules = savedRules;   // restore
+
+    // 23) Net-days terms → invoice due date, capped by the system max (Settings → Company)
+    const tc = T.DATA.customers[0]; const savedNd = tc.netDays; const savedCo2 = st.settings.company;
+    st.settings.company = { maxNetDays: 30 };
+    tc.netDays = undefined; ok(T.dueForCustomer(tc.customerId) > T.TODAY_ISO, 'no terms → the shipped 14-day default, unchanged');
+    const due14b = T.dueForCustomer(tc.customerId);
+    tc.netDays = 0; ok(T.dueForCustomer(tc.customerId) === T.TODAY_ISO, 'Net 0 → due today (COD)');
+    tc.netDays = 30; const due30b = T.dueForCustomer(tc.customerId); ok(due30b > due14b, `Net 30 → later due date than the 14-day default (${due30b})`);
+    tc.netDays = 999; const dueCap = T.dueForCustomer(tc.customerId); ok(dueCap === due30b, `customer Net 999 is CAPPED at the system max of 30 (${dueCap})`);
+    st.settings.company = { maxNetDays: 60 }; const dueCap60 = T.dueForCustomer(tc.customerId); ok(dueCap60 > due30b, 'raising the system max to 60 lets the same Net 999 customer go further out');
+    tc.netDays = savedNd; st.settings.company = savedCo2;   // restore
+
+    // 24) Layout & Footers — per-card footer visibility (default shown = zero change)
+    const savedLayout = st.settings.layout;
+    st.settings.layout = undefined;
+    ok(T.footerHidden('rentals') === false, 'no layout config → footers shown (default)');
+    st.settings.layout = { footers: { rentals: 'off' } };
+    ok(T.footerHidden('rentals') === true && T.footerHidden('units') === false, 'a card footer can be hidden without affecting others');
+    st.settings.layout = savedLayout;   // restore
+
+    // 25) Custom Fields — admin-defined fields per entity (default none = forms unchanged)
+    const savedCF = st.settings.customFields;
+    st.settings.customFields = undefined;
+    ok(T.customFieldsFor('customers').length === 0, 'no custom fields configured → none on any form (default)');
+    st.settings.customFields = { customers: [{ id: 'cf_tax_id_ab12', label: 'Tax-exempt #', type: 'text', required: true }] };
+    const cf = T.customFieldsFor('customers');
+    ok(cf.length === 1 && cf[0].required && cf[0].id === 'cf_tax_id_ab12', 'a defined custom field reads back with its type/required');
+    ok(T.customFieldsFor('units').length === 0, 'custom fields are per-entity (units unaffected)');
+    st.settings.customFields = savedCF;   // restore
+
+    // 26) Inspections — per-category required checklist (default none = quick toggles unchanged)
+    const savedInsp = st.settings.inspections;
+    const aUnit = T.DATA.units[0]; const aCat = aUnit.categoryId;
+    st.settings.inspections = undefined;
+    ok(T.checklistFor(aUnit) === null && T.checklistRequired(aUnit) === false, 'no checklist config → unit uses the quick Pass/Fail toggles (default)');
+    st.settings.inspections = { [aCat]: { required: true, items: [{ id: 'ck_brakes_a1', label: 'Brakes' }, { id: 'ck_lights_b2', label: 'Lights' }] } };
+    ok(T.checklistRequired(aUnit) === true && T.checklistFor(aUnit).items.length === 2, 'a required checklist is picked up for units of that category');
+    const otherCat = T.DATA.units.find((u) => u.categoryId !== aCat);
+    if (otherCat) ok(T.checklistRequired(otherCat) === false, 'checklists are per-category (other categories unaffected)');
+    st.settings.inspections = { [aCat]: { required: false, items: [{ id: 'ck_x', label: 'X' }] } };
+    ok(T.checklistRequired(aUnit) === false && T.checklistFor(aUnit) !== null, 'a defined-but-not-required checklist is available but does not take over');
+    st.settings.inspections = savedInsp;   // restore
+
+    // 27) Reversibility — a corrupt customization must self-heal, never brick the app
+    const savedAll = st.settings;
+    st.settings = { status: { rentalStatus: 'this-is-not-an-object-it-is-garbage' } };   // malformed
+    let threw = false; try { T.applySettings(st.settings); } catch (e) { threw = true; }
+    ok(!threw, 'applySettings never throws on a corrupt settings object');
+    ok(T.getStatus('rentalStatus', 'On Rent').label === 'On Rent', 'after a corrupt apply, the status registry is back to its shipped default');
+    st.settings = savedAll; T.applySettings(st.settings);   // restore + re-apply clean
+    ok(JSON.stringify(T.kpiFor('mechanic')) === JSON.stringify(T.legacyKpiPct('mechanic')), 'clean settings re-apply leaves the dashboard at defaults');
+
+    // 28) Per-tab "Reset page" — each tab maps to its own slice + a defaults value
+    ok(T.pageDefaultSlice('statuses').key === 'status' && T.pageDefaultSlice('kpis').key === 'kpis', 'each tab resets only its own settings slice');
+    const cfReset = T.pageDefaultSlice('fields').value;
+    ok(Array.isArray(cfReset.customers) && cfReset.customers.length === 0 && Array.isArray(cfReset.units), 'Reset page (Custom Fields) empties every entity, not just the active one');
+    ok(JSON.stringify(T.pageDefaultSlice('layout').value) === JSON.stringify({ footers: {} }), 'Reset page (Layout) restores all footers shown');
+    ok(T.pageDefaultSlice('logins') === null && T.pageDefaultSlice('notifications') === null, 'tabs with no settings slice (Logins/planned) have no Reset page');
+
     return out;
   });
 
