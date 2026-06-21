@@ -1,0 +1,34 @@
+name: Sync from upstream staging
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: sync-staging
+  cancel-in-progress: true
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pull upstream staging into this repo
+        run: |
+          set -e
+          git config user.name "staging-sync[bot]"
+          git config user.email "actions@github.com"
+          tmp=$(mktemp -d)
+          git clone --depth 1 --branch staging https://github.com/operations-jacrentals/rental-wrangler.git "$tmp/up"
+          rm -rf "$tmp/up/.git"
+          rm -f "$tmp/up/CNAME"
+          rsync -a --delete --exclude='.git' --exclude='.github' "$tmp/up/" ./
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "Sync from upstream staging @ $(date -u +%FT%TZ)"
+            git push
+          else
+            echo "no changes to sync"
+          fi
