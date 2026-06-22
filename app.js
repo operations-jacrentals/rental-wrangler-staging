@@ -257,8 +257,21 @@ const CARD_FLAG_META = { ok: { label: 'Card OK', color: 'green' }, expiring: { l
 const requiredAgreementKey = (c) => /member/i.test((c && c.accountType) || '') ? 'membership' : 'rental';
 const cardSignings = (k) => (k && Array.isArray(k.agreements)) ? k.agreements : (k && k.agreement && k.agreement.signature ? [{ key: k.agreement.version === 'membership' ? 'membership' : 'rental', signedAt: k.agreement.signedAt, signature: k.agreement.signature, selfie: k.agreement.selfie }] : []);
 function cardCurrentSigning(c, k) { const want = requiredAgreementKey(c); const s = cardSignings(k); for (let i = s.length - 1; i >= 0; i--) { if ((s[i].key || 'rental') === want) return s[i]; } return null; }
-const cardAuthorized = (c, k) => !!cardCurrentSigning(c, k);
+/* §7.1c independent capture: the selfie is a durable per-card photo; the signature is held
+   in card.draftSignature until completion, then frozen into an immutable agreements[] record
+   stamped with ONE completion date. A card is COMPLETE (= authorized) only when card + selfie
+   + a signature matching the CURRENT account type are all present. (cardSelfie inlines its own
+   record fallback so legacy cards — whose selfie lived inside the signing — still read.) */
+const cardSelfie = (k) => { if (!k) return ''; if (k.driveSelfieUrl || k.selfie) return k.driveSelfieUrl || k.selfie; const s = cardSignings(k); const last = s[s.length - 1]; return (last && (last.driveSelfieUrl || last.selfie)) || ''; };
+const cardHasSelfie = (k) => !!cardSelfie(k);
+const cardDraftSig = (k) => (k && k.draftSignature && k.draftSignature.signature) ? k.draftSignature : null;
+const cardHasSignature = (c, k) => !!cardCurrentSigning(c, k) || !!cardDraftSig(k);
+const cardComplete = (c, k) => !!cardCurrentSigning(c, k) && cardHasSelfie(k);
+const cardAuthorized = (c, k) => cardComplete(c, k);
 function cardSignState(c, k) { return cardAuthorized(c, k) ? 'authorized' : (cardSignings(k).length ? 'stale' : 'unsigned'); }
+/* 'complete' | 'stale' (a finalized signing exists but for the wrong account type → re-sign)
+   | 'in-progress' (a card exists but is missing the selfie and/or a matching signature) */
+function cardCaptureState(c, k) { if (cardComplete(c, k)) return 'complete'; if (cardSignings(k).length && !cardCurrentSigning(c, k)) return 'stale'; return 'in-progress'; }
 /* Resolve a signing's frozen title/text from the version registry (storage-light:
    the signing stores only `version`, not the ~6–8 KB text). Falls back to a baked
    `text`/`title` on legacy records, then to the current agreement for its key. */
@@ -298,29 +311,41 @@ const cardGateBlocked = (cust) => !!cust && (!hasValidCard(cust) || accountAgree
 function cardGateReason(cust) {
   if (!cust) return '';
   if (!hasValidCard(cust)) return 'no valid card on file';
-  if (accountAgreementsBlocked(cust)) { const n = unsignedCardCount(cust); return `${n} card${n > 1 ? 's' : ''} not signed for the current account type`; }
+  if (accountAgreementsBlocked(cust)) { const n = unsignedCardCount(cust); return `${n} card${n > 1 ? 's' : ''} not complete (needs selfie + signature for the current account type)`; }
   return '';
 }
 /* Signing-form glyphs (existing inline marks, hoisted to module scope so the
    per-card tab AND the account-level "held draft" share one capture form). */
 const AG_LOCK = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 const AG_CAM = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+/* §7.1c the 3-piece capture progress strip — typographic (matches the un-stamped
+   .ag-meta/.ag-gate content pattern, NOT a pill, so it's outside the R0 lint family).
+   `pieces` = [{label, done}]; ✓ done / — pending, in the stamped Saira voice. */
+function capProgress(pieces) {
+  const left = pieces.filter((p) => !p.done).length;
+  const row = pieces.map((p) => `<span class="ag-prog-item${p.done ? ' done' : ''}">${esc(p.label)} ${p.done ? '✓' : '—'}</span>`).join('');
+  return `<div class="ag-prog"><div class="ag-prog-row">${row}</div><div class="ag-prog-note">${esc(left === 0 ? 'Complete — authorized ✓' : `Finish ${left} more to authorize`)}</div></div>`;
+}
 /* The shared selfie + signature capture controls — emitted on a CARD's signing tab and
-   in the +Card panel (no card yet). There's no in-block commit button: the bottom-right
-   Save persists whatever's captured (commitCapture). `readKey` distinguishes whose Terms
-   toggle is open (a card id, or 'account'); the live selfie/signature ride o.signDraft. */
+   in the +Card panel (no card yet). §7.1c: each piece AUTO-SAVES on capture (no commit button)
+   straight onto the card — or, pre-card, onto c.pendingCapture. `readKey` is the target: a
+   card id, or 'account' (the held pre-card bucket). */
 function agCaptureBlock(o, ag, readKey) {
-  const selfie = o.signDraft && o.signDraft.selfie;
+  const c = o && o.editId ? IDX.customer.get(o.editId) : null;
+  const k = (readKey && readKey !== 'account' && c) ? customerCards(c).find((x) => x.id === readKey) : null;
+  const selfie = k ? cardSelfie(k) : ((c && c.pendingCapture && c.pendingCapture.selfie) || '');
+  const hasSig = k ? !!cardDraftSig(k) : !!(c && c.pendingCapture && c.pendingCapture.signature);
   return `
     <div class="ag-readref"><span><b>${esc(ag.title)}</b></span>${linkName(o.signRead === readKey ? 'Hide' : 'Terms', { js: 'js-ncsign-read', data: { card: readKey } })}</div>
     ${o.signRead === readKey ? `<div class="nc-agreement" tabindex="0">${esc(ag.text)}</div>` : ''}
-    <div class="ag-caphead"><span class="ag-capcap">Capture both to authorize</span>${linkName('Open Window', { js: 'js-sign-popout', data: { title: ag.title } })}</div>
+    <div class="ag-caphead"><span class="ag-capcap">Capture selfie + signature</span>${linkName('Open Window', { js: 'js-sign-popout', data: { title: ag.title } })}</div>
     <div class="ag-caprow">
       <label class="ag-selfiebtn js-ag-selfie">${selfie
-        ? `<img class="ag-selfie" src="${esc(selfie)}" alt="selfie" /><span class="ag-cam-cap">Retake</span>`
+        ? `<img class="ag-selfie" src="${esc(selfie)}" alt="selfie" /><span class="ag-cam-cap">✓ Saved · Retake</span>`
         : `<video class="ag-cam-feed" autoplay muted playsinline></video><span class="ag-cam-fallback">${AG_CAM}<span class="l">Selfie</span></span><span class="ag-cam-cap ag-cam-hint">Tap to capture</span>`}<input type="file" accept="image/*" capture="user" class="js-ncsign-selfie" hidden /></label>
       <canvas class="nc-sigpad ag-pad" width="500" height="220"></canvas>
     </div>
+    ${(selfie || hasSig) ? `<div class="ag-saverow">${selfie ? '<span class="ag-savedhint on">Selfie ✓ saved</span>' : ''}${hasSig ? '<span class="ag-savedhint on">Signature ✓ saved</span>' : ''}</div>` : ''}
     <div class="ag-acceptrow">${ghostPill('Clear', { js: 'js-nc-sig-clearpad' })}</div>`;
 }
 /* Sign-before-a-card capture, rendered inside the +Card panel before the first card
@@ -330,17 +355,11 @@ function agCaptureBlock(o, ag, readKey) {
 function heldSignBlock(o, custRec, d) {
   const key = requiredAgreementKey(custRec || { accountType: d.accountType });
   const ag = AGREEMENTS[key] || AGREEMENTS.rental;
-  const p = custRec && custRec.pendingSigning;
-  const inner = (p && p.signature)
-    ? `<div class="ag-signed"><span class="ag-lock">${AG_LOCK}</span><span class="t"><b>${esc(p.title || ag.title)}</b> · signed ${esc(p.signedAt || '—')}</span>${ghostPill('Redo', { js: 'js-ncsign-holdclear' })}</div>
-       <div class="ag-packet">
-         <div class="ag-pcell"><div class="ag-pcap">Selfie</div>${p.selfie ? `<img class="ag-selfie" src="${esc(p.selfie)}" alt="selfie on hand" />` : '<div class="ag-selfie empty">—</div>'}</div>
-         <div class="ag-pcell"><div class="ag-pcap">Signature</div>${p.signature ? `<img class="ag-sigthumb" src="${esc(p.signature)}" alt="signature on hand" />` : '<div class="ag-sigthumb"></div>'}</div>
-       </div>
-       <p class="muted" style="font-size:11px;margin:12px 2px 0">✓ Signed and on hand — it saddles onto the first card you add. Add a card to authorize On-Rent &amp; delivery.</p>`
-    : `<div class="ag-gate"><span class="lead">On Rent blocked until Selfie + Card + Signature</span></div>
-       ${agCaptureBlock(o, ag, 'account')}`;
-  return `<div class="ag-capcap" style="margin:16px 2px 8px">Signed agreement</div>${inner}`;
+  const p = (custRec && custRec.pendingCapture) || {};   // §7.1c pre-card held pieces (saddle onto the first card)
+  return `<div class="ag-capcap" style="margin:16px 2px 8px">Signed agreement</div>
+    ${capProgress([{ label: 'Card', done: false }, { label: 'Selfie', done: !!p.selfie }, { label: 'Signature', done: !!p.signature }])}
+    <p class="muted" style="font-size:11px;margin:2px 2px 0">Selfie &amp; signature save now and saddle onto the first card you add; On-Rent &amp; delivery unlock once that card is complete.</p>
+    ${agCaptureBlock(o, ag, 'account')}`;
 }
 /* Move an account-level HELD signing onto a freshly-added card — the draft's FROZEN
    key/version/date is preserved verbatim (it's the agreement they actually accepted,
@@ -374,6 +393,19 @@ function signCardAgreement(c, k, signature, selfie) {
   logAction(c, `${ag.title} signed on ${brandName(k.brand)} ••${k.last4}`);
   archiveAgreementMedia(c, k, sig);   // offload images to Drive when the backend supports it
 }
+/* §7.1c finalize-on-complete: when a card has all three pieces — the card, a selfie, and a
+   held draft signature matching the CURRENT account type — freeze the signature into an
+   immutable agreements[] record (one completion date = TODAY_ISO) and clear the draft. Called
+   after each piece auto-saves; a no-op until all three are present. Charging is never gated
+   on this; only On-Rent/delivery is. Returns true if it finalized (→ flip the tab to Complete). */
+function maybeFinalizeCard(c, k) {
+  if (!c || !k || cardCurrentSigning(c, k)) return false;            // nothing to do / already complete for this type
+  const draft = cardDraftSig(k);
+  if (!draft || (draft.key || 'rental') !== requiredAgreementKey(c) || !cardHasSelfie(k)) return false;
+  signCardAgreement(c, k, draft.signature, cardSelfie(k));           // freezes the record (reindex + log + Drive offload)
+  k.draftSignature = null;                                           // the signature now lives in the immutable record
+  return true;
+}
 /* Frozen snapshot of the account fields + card ••last4 AT SIGNING — the signed-agreement
    PDF reprints exactly what was true when accepted, even if the account is edited later. */
 function acctSnapshot(c, k) {
@@ -390,14 +422,48 @@ function holdSigning(c, signature, selfie) {
     signedAt: TODAY_ISO, signerName: c.name || fullName(c), signature, selfie: selfie || '', acct: acctSnapshot(c, null) };
   reindex('customers', c); logAction(c, `${ag.title} signed & held (no card yet)`);
 }
-/* Save is the only commit now: persist a captured selfie + signature onto the active card
-   (the open card tab) or, with no card yet, hold it on the account. No-op without a full capture. */
+/* §7.1c independent capture — each piece (card · selfie · signature) AUTO-SAVES the moment
+   it's captured, in any order, and the card finalizes (one completion date) once all three
+   are present. The capture target is the open card tab, or — with no card yet — a held bucket
+   on the account (c.pendingCapture) that saddles onto the first card added. */
+function captureCtx(o) {
+  const c = o && o.editId ? IDX.customer.get(o.editId) : null;
+  if (!c) return { c: null, k: null };
+  if (o.cardSub) return { c, k: null };                                            // the +Card panel (no card yet) → held
+  const k = (o.tab && o.tab !== 'account') ? customerCards(c).find((x) => x.id === o.tab) || null : null;
+  return { c, k };
+}
+function captureSelfie(o, dataUrl) {
+  const { c, k } = captureCtx(o); if (!c) return;
+  if (k) { k.selfie = dataUrl; k.driveSelfieUrl = ''; maybeFinalizeCard(c, k); }   // durable per-card photo
+  else { c.pendingCapture = c.pendingCapture || {}; c.pendingCapture.selfie = dataUrl; }
+  reindex('customers', c); saveSoon();
+}
+function captureSignature(o, dataUrl) {                                            // auto-saves the draft; finalize is debounced (scheduleFinalizeSign) so a multi-stroke signature isn't cut off after the first stroke
+  const { c, k } = captureCtx(o); if (!c) return;
+  if (k) k.draftSignature = { signature: dataUrl, key: requiredAgreementKey(c), accountType: c.accountType || '', signerName: c.name || fullName(c) };
+  else { c.pendingCapture = c.pendingCapture || {}; c.pendingCapture.signature = dataUrl; c.pendingCapture.key = requiredAgreementKey(c); }
+  reindex('customers', c); saveSoon();
+}
+/* The signature is drawn over several strokes, so finalize only after the pen has rested a
+   beat (reset on every new stroke). If that completes the card, flip the tab to Complete. */
+let _signFinalizeT = null;
+function scheduleFinalizeSign(o) { clearTimeout(_signFinalizeT); _signFinalizeT = setTimeout(() => { const { c, k } = captureCtx(o); if (c && k && maybeFinalizeCard(c, k)) { renderOverlay(); render(); } }, 1200); }
+function clearCaptureSelfie(o) { const { c, k } = captureCtx(o); if (!c) return; if (k) { k.selfie = ''; k.driveSelfieUrl = ''; } else if (c.pendingCapture) c.pendingCapture.selfie = ''; reindex('customers', c); saveSoon(); }
+function clearCaptureSignature(o) { const { c, k } = captureCtx(o); if (!c) return; if (k) k.draftSignature = null; else if (c.pendingCapture) c.pendingCapture.signature = ''; reindex('customers', c); saveSoon(); }
+/* Move pre-card held pieces (c.pendingCapture) onto a freshly-added card, then finalize. */
+function saddlePendingCapture(c, k) {
+  const p = c && c.pendingCapture; if (!p || !k) return;
+  if (p.selfie) k.selfie = p.selfie;
+  if (p.signature) k.draftSignature = { signature: p.signature, key: p.key || requiredAgreementKey(c), accountType: c.accountType || '', signerName: c.name || fullName(c) };
+  c.pendingCapture = null;
+  maybeFinalizeCard(c, k);
+}
+/* Save no longer commits capture (each piece auto-saves on capture). It just finalizes any
+   card now holding all three pieces — a belt-and-suspenders pass over the customer's cards. */
 function commitCapture(o, c) {
-  const sd = o && o.signDraft; if (!c || !sd || !sd.selfie || !sd.sigData) return;
-  const k = (o.tab && o.tab !== 'account') ? customerCards(c).find((x) => x.id === o.tab) : null;
-  if (k) signCardAgreement(c, k, sd.sigData, sd.selfie);
-  else if (!customerCards(c).some((x) => cardAuthorized(c, x))) holdSigning(c, sd.sigData, sd.selfie);
-  o.signDraft = null;
+  if (!c) return;
+  customerCards(c).forEach((k) => maybeFinalizeCard(c, k));
 }
 /* Offload a signing's selfie + signature to Drive (per-customer folder) and replace
    the heavy inline data-URLs with light Drive URLs — keeps the synced customer record
@@ -2043,7 +2109,7 @@ function pageDefaultSlice(tab) {
     case 'requirements': return { key: 'rentalRules', value: {} };
     case 'layout': return { key: 'layout', value: { footers: {} } };
     case 'fields': return { key: 'customFields', value: { customers: [], units: [], rentals: [], invoices: [] } };
-    case 'inspections': return { key: 'inspections', value: Object.fromEntries((DATA.categories || []).map((c) => [c.categoryId, { required: false, items: [] }])) };
+    case 'inspections': return { key: 'inspections', value: Object.fromEntries([...new Set((DATA.categories || []).map((c) => inspFamilyKey(c)))].map((k) => [k, { required: false, items: [] }])) };
     default: return null;   // Logins / planned tabs have no resettable slice
   }
 }
@@ -2091,8 +2157,22 @@ const footerHidden = (card) => (layoutCfg().footers || {})[card] === 'off';
 // Admin-defined custom fields per entity (Settings → Custom Fields). Values live schema-less
 // on the record (rec.custom[fieldId]); an empty config means no extra fields anywhere.
 const customFieldsFor = (entity) => ((state.settings && state.settings.customFields) || {})[entity] || [];
-// Per-category inspection checklists (Settings → Inspections). Empty = today's quick Pass/Fail only.
-const inspectionCfg = (categoryId) => ((state.settings && state.settings.inspections) || {})[categoryId] || null;
+// Inspection checklists are keyed by EQUIPMENT FAMILY so one list covers the whole
+// family (Settings → Inspections): all *Excavator* categories share one, all
+// *Trailer* categories share one EXCEPT *Dump Trailer* (its own). Everything else
+// stays per-category (keyed by its own categoryId, so prior per-category configs are
+// unchanged). Empty = today's quick Pass/Fail only.
+function inspFamilyKey(cat) {
+  const n = ((cat && cat.name) || '').toLowerCase();
+  if (n.includes('excavator')) return 'fam:excavator';                              // incl. "Microexcavator"
+  if (n.includes('trailer')) return n.includes('dump') ? 'fam:trailer-dump' : 'fam:trailer';
+  return cat ? cat.categoryId : '';
+}
+const INSP_FAM_LABELS = { 'fam:excavator': 'Excavator', 'fam:trailer': 'Trailer', 'fam:trailer-dump': 'Dump Trailer' };
+const inspKeyOfCat = (categoryId) => inspFamilyKey(IDX.category.get(categoryId));
+const inspFamilyLabel = (key) => INSP_FAM_LABELS[key] || (IDX.category.get(key) ? IDX.category.get(key).name : key);
+const inspCfgByKey = (key) => ((state.settings && state.settings.inspections) || {})[key] || null;
+const inspectionCfg = (categoryId) => inspCfgByKey(inspKeyOfCat(categoryId));
 function checklistFor(unit) { const c = unit && inspectionCfg(unit.categoryId); return (c && Array.isArray(c.items) && c.items.length) ? c : null; }
 const checklistRequired = (unit) => { const c = checklistFor(unit); return !!(c && c.required); };
 const INSP_TYPES = ['toggle','file','select','number','date','text'];
@@ -2271,22 +2351,25 @@ function ensureCfDraft(o, entity) {
   if (!o.draftSettings.customFields[entity]) o.draftSettings.customFields[entity] = JSON.parse(JSON.stringify(customFieldsFor(entity)));
   return o.draftSettings.customFields[entity];
 }
-function ensureInspDraft(o, catId) {
+function ensureInspDraft(o, key) {   // key = an inspFamilyKey (family or ungrouped categoryId)
   o.draftSettings = o.draftSettings || {};
   o.draftSettings.inspections = o.draftSettings.inspections || {};
-  if (!o.draftSettings.inspections[catId]) { const cur = inspectionCfg(catId); o.draftSettings.inspections[catId] = cur ? JSON.parse(JSON.stringify(cur)) : { required: false, items: [] }; }
-  return o.draftSettings.inspections[catId];
+  if (!o.draftSettings.inspections[key]) { const cur = inspCfgByKey(key); o.draftSettings.inspections[key] = cur ? JSON.parse(JSON.stringify(cur)) : { required: false, items: [] }; }
+  return o.draftSettings.inspections[key];
 }
-function draftInspCfg(o, catId) {
-  return (o.draftSettings && o.draftSettings.inspections && o.draftSettings.inspections[catId]) || inspectionCfg(catId) || { required: false, items: [] };
+function draftInspCfg(o, key) {
+  return (o.draftSettings && o.draftSettings.inspections && o.draftSettings.inspections[key]) || inspCfgByKey(key) || { required: false, items: [] };
 }
 function settingsInspectionsPane(o) {
   const cats = DATA.categories || [];
-  const catId = o.inspCat || (cats[0] && cats[0].categoryId) || '';
-  o.inspCat = catId;
-  const pick = cats.map((c) => { const cfg = draftInspCfg(o, c.categoryId); const tag = (cfg.items && cfg.items.length) ? (cfg.required ? ' ●' : ' ○') : ''; return `<button class="set-pick js-insp-cat${c.categoryId === catId ? ' on' : ''}" data-cat="${esc(c.categoryId)}">${esc(c.name)}${tag}</button>`; }).join('');
-  const cfg = draftInspCfg(o, catId);
-  const cat = IDX.category.get(catId);
+  const fams = []; const seen = new Set();
+  cats.forEach((c) => { const k = inspFamilyKey(c); if (!seen.has(k)) { seen.add(k); fams.push(k); } });
+  const famKey = (o.inspFam && seen.has(o.inspFam)) ? o.inspFam : (fams[0] || '');
+  o.inspFam = famKey;
+  const pick = fams.map((k) => { const c = draftInspCfg(o, k); const tag = (c.items && c.items.length) ? (c.required ? ' ●' : ' ○') : ''; return `<button class="set-pick js-insp-cat${k === famKey ? ' on' : ''}" data-cat="${esc(k)}">${esc(inspFamilyLabel(k))}${tag}</button>`; }).join('');
+  const cfg = draftInspCfg(o, famKey);
+  const famLabel = inspFamilyLabel(famKey);
+  const memberCount = cats.filter((c) => inspFamilyKey(c) === famKey).length;
   const items = cfg.items || [];
   const inspDraft = o.inspDraft && typeof o.inspDraft === 'object' ? o.inspDraft : { label: '', type: 'toggle', required: false, options: [] };
   const rows = items.length ? items.map((it) => {
@@ -2303,7 +2386,7 @@ function settingsInspectionsPane(o) {
     } else desc = t;
     return `<div class="rule-row">
       <div class="rule-main"><span class="rule-label">${esc(it.label)}</span><span class="rule-desc">${desc}</span></div>
-      <button class="so-reset js-insp-remove" data-cat="${esc(catId)}" data-id="${esc(it.id)}" data-tip="Remove item">${I.x}</button>
+      <button class="so-reset js-insp-remove" data-cat="${esc(famKey)}" data-id="${esc(it.id)}" data-tip="Remove item">${I.x}</button>
     </div>`;
   }).join('') : '<p class="set-note">No checklist items yet — add the things to inspect below.</p>';
   const optWell = inspDraft.type === 'select' ? `<div class="insp-opt-well">
@@ -2311,9 +2394,10 @@ function settingsInspectionsPane(o) {
     <div style="display:flex;align-items:center;gap:8px;margin-top:6px"><input class="co-in js-insp-opt-label" placeholder="New option (e.g. Bald)" value="${esc(inspDraft.optLabel || '')}" autocomplete="off" />${addBtn('Option', { js: 'js-insp-opt-add', line: true })}</div>
   </div>` : '';
   return `
-    <div class="set-pane-head"><h4>Inspections</h4><p>Build a checklist per category. When a category's checklist is <strong>Required</strong>, starting an inspection on one of its units opens a full-screen checklist that must be completed — any Toggle Fail or flagged Dropdown selection trips the existing failed-inspection work order.</p></div>
+    <div class="set-pane-head"><h4>Inspections</h4><p>Build a checklist per equipment type. When a type's checklist is <strong>Required</strong>, starting an inspection on one of its units opens a full-screen checklist that must be completed — any Toggle Fail or flagged Dropdown selection trips the existing failed-inspection work order.</p></div>
     <div class="set-picker">${pick}</div>
-    <div class="rule-row" style="margin-bottom:10px"><div class="rule-main"><span class="rule-label">Require a checklist for ${esc(cat ? cat.name : 'this category')}</span><span class="rule-desc">On = +Inspection takes over the sheet until every item is checked.</span></div>${segCtl([{ label: 'Off', js: 'js-insp-req', data: { cat: catId, v: '0' }, on: cfg.required ? null : 'gray' }, { label: 'Required', js: 'js-insp-req', data: { cat: catId, v: '1' }, on: cfg.required ? 'red' : null }])}</div>
+    ${memberCount > 1 ? `<p class="set-note">Shared by all ${memberCount} ${esc(famLabel)} categories — edit once, applies to every one.</p>` : ''}
+    <div class="rule-row" style="margin-bottom:10px"><div class="rule-main"><span class="rule-label">Require a checklist for ${esc(famLabel)}</span><span class="rule-desc">On = +Inspection takes over the sheet until every item is checked.</span></div>${segCtl([{ label: 'Off', js: 'js-insp-req', data: { cat: famKey, v: '0' }, on: cfg.required ? null : 'gray' }, { label: 'Required', js: 'js-insp-req', data: { cat: famKey, v: '1' }, on: cfg.required ? 'red' : null }])}</div>
     <div class="rule-list">${rows}</div>
     <div class="cf-add">
       <input class="co-in js-insp-label" placeholder="New checklist item (e.g. Hydraulics — no leaks)" value="${esc(inspDraft.label || '')}" autocomplete="off" />
@@ -7037,7 +7121,7 @@ function syncBackGuard() {
 function renderOverlay() {
   syncBackGuard();
   const root = $('#overlay-root');
-  if (_ovLastKind) { const _pb = root.querySelector('.popup-body'); if (_pb) _ovScroll[_ovLastKind] = _pb.scrollTop; }
+  if (_ovLastKind) { const _pb = root.querySelector('.set-pane') || root.querySelector('.popup-body'); if (_pb) _ovScroll[_ovLastKind] = _pb.scrollTop; }   // .set-pane is the settings scroller; .popup-body for the rest
   destroyCardElement();        // any re-render/overlay-switch tears down a mounted Stripe element
   root.innerHTML = '';
   if (!state.overlay) { _ovLastKind = null; return; }
@@ -7046,7 +7130,7 @@ function renderOverlay() {
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeOverlay(); });
   if (buildPopupEl(o, overlay) === false) { state.overlay = null; return; }
   root.appendChild(overlay);
-  { const _nb = overlay.querySelector('.popup-body'); if (_nb && _ovScroll[o.kind]) _nb.scrollTop = _ovScroll[o.kind]; }   // restore scroll on a same-overlay re-render (sign/selfie no longer jump to top)
+  { const _nb = overlay.querySelector('.set-pane') || overlay.querySelector('.popup-body'); if (_nb && _ovScroll[o.kind]) _nb.scrollTop = _ovScroll[o.kind]; }   // restore scroll on a same-overlay re-render (settings pane / sign / selfie no longer jump to top)
   _ovLastKind = o.kind;
   if (o.kind === 'partform') document.querySelector('.overlay .js-pf2-desc')?.focus();   // Jac: Part/Task field focused by default
   if (o.kind === 'newCustomer') setupSignaturePad();
@@ -7492,7 +7576,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     // The card rail IS the header (no title). Account tab + a tab per card (signed dot) + a +Card add.
     const railTabs = `<div class="ag-tabs" role="tablist">
       <button type="button" class="ag-tab js-nc-tab${tab === 'account' ? ' on' : ''}" data-tab="account">Account</button>
-      ${cards.map((k) => `<button type="button" class="ag-tab js-nc-tab${tab === k.id ? ' on' : ''}" data-tab="${esc(k.id)}"><span class="ag-dot ${cardAuthorized(custRec, k) ? 'ok' : 'bad'}"></span>${esc(brandName(k.brand))} ••${esc(k.last4)}</button>`).join('')}
+      ${cards.map((k) => `<button type="button" class="ag-tab js-nc-tab${tab === k.id ? ' on' : ''}" data-tab="${esc(k.id)}"><span class="ag-dot ${{ complete: 'ok', 'in-progress': 'mid', stale: 'bad' }[cardCaptureState(custRec, k)]}"></span>${esc(brandName(k.brand))} ••${esc(k.last4)}</button>`).join('')}
       ${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: o.editId || '' } })}
     </div>`;
     const headRail = `${railTabs}<span class="spacer"></span>${isEdit ? `<button class="iconbtn iconbtn-bare js-nc-qr" data-tip="Open on phone">${I.qr}</button>` : ''}`;
@@ -7537,8 +7621,9 @@ function buildPopupEl(o, overlay, opts = {}) {
       } else {
         const key = requiredAgreementKey(custRec); const ag = AGREEMENTS[key];
         body = `
-          <div class="ag-meta">${esc(meta)}<span class="ag-metasep"></span>${badge(st === 'stale' ? 'Re-sign' : 'Unsigned', 'red')}</div>
-          <div class="ag-gate"><span class="lead">${st === 'stale' ? 'Account type changed — re-sign required.' : 'Sign to allow On-Rent &amp; delivery.'}</span><span class="sub">Save to authorize · card can still be charged.</span></div>
+          <div class="ag-meta">${esc(meta)}<span class="ag-metasep"></span>${badge(st === 'stale' ? 'Re-sign' : 'In progress', st === 'stale' ? 'yellow' : 'gray')}</div>
+          ${capProgress([{ label: 'Card', done: true }, { label: 'Selfie', done: cardHasSelfie(k) }, { label: 'Signature', done: cardHasSignature(custRec, k) }])}
+          <div class="ag-gate"><span class="sub">${st === 'stale' ? 'Account type changed — re-sign the agreement below.' : 'On-Rent &amp; delivery unlock when complete; the card can still be charged now.'}</span></div>
           ${agCaptureBlock(o, ag, k.id)}`;
       }
     }
@@ -8527,12 +8612,12 @@ function captureAgSelfie() {
   const W = 340, cv = document.createElement('canvas'); cv.width = W; cv.height = Math.round(v.videoHeight * (W / v.videoWidth));
   const ctx = cv.getContext('2d'); ctx.translate(cv.width, 0); ctx.scale(-1, 1);   // mirror to match the live (selfie) preview
   ctx.drawImage(v, 0, 0, cv.width, cv.height);
-  const o = state.overlay; if (o && o.kind === 'newCustomer') { o.signDraft = o.signDraft || {}; o.signDraft.selfie = cv.toDataURL('image/jpeg', 0.6); }
+  const o = state.overlay; if (o && o.kind === 'newCustomer') captureSelfie(o, cv.toDataURL('image/jpeg', 0.6));   // auto-saves onto the card (or held pre-card) + may finalize
   stopAgCam(); renderOverlay();
 }
 /* Pop the signature pad out into its OWN movable OS window (window.open) so it can be
    dragged to the customer-facing touchscreen on another monitor — "escape the browser".
-   Strokes stream back here via postMessage and land on the main pad + o.signDraft.sigData,
+   Strokes stream back here via postMessage and auto-save onto the card (captureSignature),
    so the operator's normal Save/Sign commits them — no separate Done step in the popout.
    Any pointer/digitizer device draws on it (finger, stylus, or a USB/Bluetooth pen pad the
    OS exposes as a pointer); pen pressure varies the line width. */
@@ -8540,7 +8625,7 @@ let _sigWin = null, _sigMsgWired = false;
 function onSigMessage(e) {
   if (e.origin !== location.origin) return;   // same-origin only
   const d = e.data || {}; if (d.type !== 'rw-signature' || typeof d.dataURL !== 'string') return;
-  const o = state.overlay; if (o) { o.signDraft = o.signDraft || {}; o.signDraft.sigData = d.dataURL; }   // persist across re-renders
+  const o = state.overlay; if (o) { captureSignature(o, d.dataURL); scheduleFinalizeSign(o); }   // auto-save the draft; finalize once the pen rests (if it completes the card)
   const cv = document.querySelector('.overlay .nc-sigpad'); if (!cv) return;
   const ctx = cv.getContext('2d'), img = new Image();
   img.onload = () => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.drawImage(img, 0, 0, cv.width, cv.height); cv.dataset.drawn = '1'; };
@@ -8591,11 +8676,12 @@ function setupSignaturePad() {
     ctx.strokeStyle = (getComputedStyle(document.documentElement).getPropertyValue('--accent') || '#ff7a1a').trim();   // orange ink (Jac)
     ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     // re-apply a signature already captured (2nd-screen popout, or before this re-render) so taking a selfie etc. can't wipe it
-    if (o && o.signDraft && o.signDraft.sigData) { const img = new Image(); img.onload = () => { ctx.drawImage(img, 0, 0, cv.width, cv.height); cv.dataset.drawn = '1'; }; img.src = o.signDraft.sigData; }
+    const _ctx = captureCtx(o); const cur = _ctx.k ? ((cardDraftSig(_ctx.k) || {}).signature || '') : ((_ctx.c && _ctx.c.pendingCapture && _ctx.c.pendingCapture.signature) || '');   // re-apply the card's saved draft signature (re-render / 2nd-screen / re-open)
+    if (cur) { const img = new Image(); img.onload = () => { ctx.drawImage(img, 0, 0, cv.width, cv.height); cv.dataset.drawn = '1'; }; img.src = cur; }
     let drawing = false, last = null;
     const pos = (e) => { const b = cv.getBoundingClientRect(); return { x: (e.clientX - b.left) * (cv.width / b.width), y: (e.clientY - b.top) * (cv.height / b.height) }; };
-    const stash = () => { if (drawing) { drawing = false; if (o) { o.signDraft = o.signDraft || {}; o.signDraft.sigData = cv.toDataURL('image/jpeg', 0.8); } } };
-    cv.addEventListener('pointerdown', (e) => { e.preventDefault(); drawing = true; last = pos(e); cv.dataset.drawn = '1'; cv.setPointerCapture(e.pointerId); });
+    const stash = () => { if (drawing) { drawing = false; captureSignature(o, cv.toDataURL('image/jpeg', 0.8)); scheduleFinalizeSign(o); } };   // auto-save the draft; finalize once the pen rests
+    cv.addEventListener('pointerdown', (e) => { e.preventDefault(); drawing = true; last = pos(e); cv.dataset.drawn = '1'; clearTimeout(_signFinalizeT); cv.setPointerCapture(e.pointerId); });
     cv.addEventListener('pointermove', (e) => { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineWidth = (e.pointerType === 'pen' && e.pressure > 0) ? (1.4 + e.pressure * 2.6) : 2.4; ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; });
     cv.addEventListener('pointerup', stash);
     cv.addEventListener('pointerleave', stash);
@@ -9765,14 +9851,14 @@ function onClick(e) {
   if (closest('.js-cf-add')) { e.stopPropagation(); const o = state.overlay; if (!o) return; const lblEl = document.querySelector('.settings-popup .js-cf-label'); const label = (o.cfDraft && o.cfDraft.label || (lblEl ? lblEl.value : '')).trim(); if (!label) { if (lblEl) { lblEl.focus(); } toast('Give the field a label first.'); return; } const fields = ensureCfDraft(o, o.cfEntity || 'customers'); fields.push({ id: cfSlug(label), label, type: (o.cfDraft && o.cfDraft.type) || 'text', required: !!(o.cfDraft && o.cfDraft.required) }); o.cfDraft = { label: '', type: 'text', required: false }; renderOverlay(); return; }
   if (closest('.js-cf-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-cf-remove'); if (o) { const fields = ensureCfDraft(o, b.dataset.ent); const i = fields.findIndex((f) => f.id === b.dataset.id); if (i >= 0) fields.splice(i, 1); renderOverlay(); } return; }
   // Inspections tab
-  if (closest('.js-insp-cat')) { e.stopPropagation(); const o = state.overlay; if (o) { o.inspCat = closest('.js-insp-cat').dataset.cat; renderOverlay(); } return; }
+  if (closest('.js-insp-cat')) { e.stopPropagation(); const o = state.overlay; if (o) { o.inspFam = closest('.js-insp-cat').dataset.cat; renderOverlay(); } return; }
   if (closest('.js-insp-req')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-req'); if (o) { ensureInspDraft(o, b.dataset.cat).required = b.dataset.v === '1'; renderOverlay(); } return; }
   if (closest('.js-insp-type')) { e.stopPropagation(); const o=state.overlay; if(o){ o.inspDraft={...(o.inspDraft||{label:'',required:false,options:[]}), type: closest('.js-insp-type').dataset.type}; if(o.inspDraft.type!=='select'){} renderOverlay(); } return; }
   if (closest('.js-insp-itemreq')) { e.stopPropagation(); const o=state.overlay; if(o){ o.inspDraft={...(o.inspDraft||{}), required: closest('.js-insp-itemreq').dataset.v==='1'}; renderOverlay(); } return; }
   if (closest('.js-insp-opt-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const inp=document.querySelector('.settings-popup .js-insp-opt-label'); const lbl=((o.inspDraft&&o.inspDraft.optLabel)|| (inp?inp.value:'')).trim(); if(!lbl){ if(inp)inp.focus(); toast('Type an option first.'); return; } o.inspDraft.options=o.inspDraft.options||[]; o.inspDraft.options.push({label:lbl, fail:false}); o.inspDraft.optLabel=''; renderOverlay(); return; }
   if (closest('.js-insp-opt-remove')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-opt-remove'); if(o&&o.inspDraft&&o.inspDraft.options){ o.inspDraft.options.splice(Number(b.dataset.i),1); renderOverlay(); } return; }
   if (closest('.js-insp-opt-fail')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-opt-fail'); if(o&&o.inspDraft&&o.inspDraft.options){ const op=o.inspDraft.options[Number(b.dataset.i)]; if(op) op.fail = b.dataset.v==='1'; renderOverlay(); } return; }
-  if (closest('.js-insp-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const d=o.inspDraft||{label:'',type:'toggle',required:false,options:[]}; const el2=document.querySelector('.settings-popup .js-insp-label'); const label=((d.label!=null?d.label:(el2?el2.value:''))||'').trim(); if(!label){ if(el2)el2.focus(); toast('Type a checklist item first.'); return; } const type=d.type||'toggle'; if(type==='select' && !((d.options||[]).length)){ toast('Add at least one dropdown option.'); return; } const cfg=ensureInspDraft(o, o.inspCat); cfg.items=cfg.items||[]; const item={ id:'ck_'+(label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')||'item')+'_'+Math.random().toString(36).slice(2,5), label, type }; if(type!=='toggle') item.required=!!d.required; if(type==='select') item.options=(d.options||[]).map((op)=>({label:op.label, fail:!!op.fail})); cfg.items.push(item); o.inspDraft={label:'',type:'toggle',required:false,options:[]}; renderOverlay(); return; }
+  if (closest('.js-insp-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const d=o.inspDraft||{label:'',type:'toggle',required:false,options:[]}; const el2=document.querySelector('.settings-popup .js-insp-label'); const label=((d.label!=null?d.label:(el2?el2.value:''))||'').trim(); if(!label){ if(el2)el2.focus(); toast('Type a checklist item first.'); return; } const type=d.type||'toggle'; if(type==='select' && !((d.options||[]).length)){ toast('Add at least one dropdown option.'); return; } const cfg=ensureInspDraft(o, o.inspFam); cfg.items=cfg.items||[]; const item={ id:'ck_'+(label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')||'item')+'_'+Math.random().toString(36).slice(2,5), label, type }; if(type!=='toggle') item.required=!!d.required; if(type==='select') item.options=(d.options||[]).map((op)=>({label:op.label, fail:!!op.fail})); cfg.items.push(item); o.inspDraft={label:'',type:'toggle',required:false,options:[]}; renderOverlay(); return; }
   if (closest('.js-insp-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-remove'); if (o) { const cfg = ensureInspDraft(o, b.dataset.cat); cfg.items = (cfg.items || []).filter((it) => it.id !== b.dataset.id); renderOverlay(); } return; }
   if (closest('.js-nc-save')) { e.stopPropagation(); return saveNewCustomer(); }
   if (closest('.js-nc-acct')) { const b = closest('.js-nc-acct'); e.stopPropagation(); ncSyncInputs(); state.overlay.draft.accountType = b.dataset.val; renderOverlay(); return; }
@@ -9780,19 +9866,20 @@ function onClick(e) {
   // §7.1b card-bound agreements: tab rail + per-card signing
   if (closest('.js-nc-tab')) { e.stopPropagation(); ncSyncInputs(); state.overlay.tab = closest('.js-nc-tab').dataset.tab; state.overlay.signRead = null; renderOverlay(); return; }
   if (closest('.js-ncsign-read')) { e.stopPropagation(); const id = closest('.js-ncsign-read').dataset.card; state.overlay.signRead = (state.overlay.signRead === id) ? null : id; renderOverlay(); return; }
-  if (closest('.js-ncsign-holdclear')) {   // discard the held draft to re-sign
+  if (closest('.js-ncsign-holdclear')) {   // discard the held pre-card captures to start over
     e.stopPropagation(); const o = state.overlay; const c = IDX.customer.get(o.editId || '');
-    if (c) { c.pendingSigning = null; reindex('customers', c); }
-    o.signDraft = null; o.signRead = null; renderOverlay(); render(); return;
+    if (c) { c.pendingCapture = null; c.pendingSigning = null; reindex('customers', c); }
+    o.signRead = null; renderOverlay(); render(); return;
   }
   if (closest('.js-ncsign-pdf')) { e.stopPropagation(); const b = closest('.js-ncsign-pdf'); return openSignedPdf(state.overlay.editId, b.dataset.card, b.dataset.sig); }
   if (closest('.js-nc-selfie-clear')) { e.stopPropagation(); ncSyncInputs(); state.overlay.draft.selfie = ''; renderOverlay(); return; }
-  if (closest('.js-nc-sig-clearpad')) { e.stopPropagation(); const o = state.overlay; if (o && o.signDraft) o.signDraft.sigData = null; const cv = document.querySelector('.overlay .nc-sigpad'); if (cv) { const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); cv.dataset.drawn = ''; } return; }
+  if (closest('.js-nc-sig-clearpad')) { e.stopPropagation(); const o = state.overlay; if (o) clearCaptureSignature(o); const cv = document.querySelector('.overlay .nc-sigpad'); if (cv) { const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); cv.dataset.drawn = ''; } return; }
   if (closest('.js-sign-popout')) { e.preventDefault(); e.stopPropagation(); openSignatureWindow(closest('.js-sign-popout').dataset.title); return; }
   if (closest('.js-ag-selfie')) {   // selfie tile: one-tap snap off the live feed; Retake clears it; no camera → native picker
     const o = state.overlay; if (!o) return;
     const tile = closest('.js-ag-selfie');
-    if (o.signDraft && o.signDraft.selfie) { e.preventDefault(); e.stopPropagation(); o.signDraft.selfie = null; renderOverlay(); return; }   // Retake → clear + restart camera
+    const _x = captureCtx(o); const hasSelfie = _x.k ? cardHasSelfie(_x.k) : !!(_x.c && _x.c.pendingCapture && _x.c.pendingCapture.selfie);
+    if (hasSelfie) { e.preventDefault(); e.stopPropagation(); clearCaptureSelfie(o); renderOverlay(); return; }   // Retake → clear + restart camera
     if (tile.classList.contains('live')) { e.preventDefault(); e.stopPropagation(); captureAgSelfie(); return; }   // live feed → grab the frame in a single tap
     return;   // no camera/permission → let the <label> open the OS file/camera picker (fallback)
   }
@@ -11160,11 +11247,11 @@ function onChange(e) {
     reader.readAsDataURL(file);
     return;
   }
-  // §7.1b per-card signing selfie — stashed on o.signDraft until Save freezes it onto the card.
+  // §7.1c per-card selfie — auto-saves onto the card (or held pre-card) the moment it's captured.
   if (e.target.classList.contains('js-ncsign-selfie')) {
     const file = e.target.files && e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => { downscaleImage(reader.result, 340, 0.5, (out) => { if (!out) { toast('Could not read that image.'); return; } const o = state.overlay; if (o && o.kind === 'newCustomer') { o.signDraft = o.signDraft || {}; o.signDraft.selfie = out; renderOverlay(); } }); };
+    reader.onload = () => { downscaleImage(reader.result, 340, 0.5, (out) => { if (!out) { toast('Could not read that image.'); return; } const o = state.overlay; if (o && o.kind === 'newCustomer') { captureSelfie(o, out); renderOverlay(); } }); };
     reader.readAsDataURL(file);
     return;
   }
@@ -11675,24 +11762,23 @@ async function saveCardFlow(btn) {
     c.stripeId = r.stripeId || c.stripeId;
     if (!Array.isArray(c.cards)) c.cards = [];
     const firstCard = customerCards(c).length === 0;
-    const sd = o.signDraft, liveCap = !!(sd && sd.selfie && sd.sigData);   // selfie + signature captured in this panel → sign on save
-    const held = !!(c.pendingSigning && c.pendingSigning.signature);       // or an account-level agreement already on hand
     const newCardId = 'CARD-' + (state.seq++);
-    // §7.1b a card lands UNSIGNED — it can be charged, but the account can't go
-    // On Rent / log deliveries until this card is signed for the account type.
+    // §7.1c a card lands IN PROGRESS — chargeable immediately, but the account can't go On Rent /
+    // log deliveries until the card is COMPLETE (card + selfie + signature). Any selfie/signature
+    // captured in this panel were held on c.pendingCapture and now saddle onto the new card.
     const newCard = { id: newCardId, stripePmId: setupIntent.payment_method, brand: s.card.brand, last4: s.card.last4,
       expMonth: s.card.expMonth, expYear: s.card.expYear, nickname: o.nickname || '', notes: '', isDefault: firstCard, status: 'active',
-      agreements: [] };
+      selfie: '', driveSelfieUrl: '', draftSignature: null, agreements: [] };
     c.cards.push(newCard);
     c.cardBrand = s.card.brand; c.cardLast4 = s.card.last4; c.cardExpMonth = s.card.expMonth; c.cardExpYear = s.card.expYear;   // legacy mirror (default card)
-    if (liveCap) { signCardAgreement(c, newCard, sd.sigData, sd.selfie); o.signDraft = null; }   // Save IS the commit — sign the card now
-    else if (held) attachHeldSigning(c, newCard);   // else a held agreement saddles onto the new card
-    const authd = liveCap || held;
-    reindex('customers', c); logAction(c, `Card added — ${brandName(s.card.brand)} ••••${s.card.last4}${authd ? '' : ' (unsigned)'}`);
+    saddlePendingCapture(c, newCard);                                                            // held selfie/signature → this card, then finalize if all three are present
+    if (!cardComplete(c, newCard) && c.pendingSigning && c.pendingSigning.signature) attachHeldSigning(c, newCard);   // legacy held packet (pre-#7.1c) back-compat
+    const authd = cardComplete(c, newCard);
+    reindex('customers', c); logAction(c, `Card added — ${brandName(s.card.brand)} ••••${s.card.last4}${authd ? '' : ' (in progress)'}`);
     destroyCardElement();
     // "authorized" here = the customer authorized FUTURE charges (card-on-file mandate) — NOT a payment.
     // Say so plainly so a saved card is never mistaken for money collected (#false-charge incident).
-    toast(authd ? 'Card saved on file — agreement signed ✓ (no charge taken)' : 'Card saved on file — sign to authorize future charges');
+    toast(authd ? 'Card saved on file — agreement complete ✓ (no charge taken)' : 'Card saved on file — finish selfie + signature to authorize (no charge taken)');
     // Land on the new card's SIGNING tab no matter how Add-card was opened.
     if (sub) { o.cardSub = false; o.tab = newCardId; renderOverlay(); }   // §14 panel beside the form → switch its tab
     else if (o.returnTo === 'payment' && o.invoiceId) openPayInvoice(o.invoiceId);
@@ -13423,7 +13509,8 @@ function exposeTestApi() {
       latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails,
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, rentalRuleBlock, dueForCustomer, footerHidden, customFieldsFor, checklistFor, checklistRequired, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, setRole: (r) => { currentRole = r || ''; render(); }, __state: state };
+      companyRevenueGoal, companyName, companyTagline, rentalRuleBlock, dueForCustomer, footerHidden, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, setRole: (r) => { currentRole = r || ''; render(); },
+      openCustomerForm, renderOverlay, render, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature, __state: state };   // UI drivers for headless screenshot/e2e tests
   } catch (e) { /* no window (non-browser) */ }
 }
 
