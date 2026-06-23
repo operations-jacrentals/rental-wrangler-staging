@@ -52,8 +52,9 @@ try {
 
     // 3) per-unit status derivation off the shared window (date-robust via TODAY_ISO)
     const today = T.TODAY_ISO;
-    ok(T.unitStatus({ startDate: today }, { status: 'Reserved' }) === 'Today', 'Reserved + today window → Today');
+    ok(T.unitStatus({ startDate: today }, { status: 'Reserved' }) === 'Reserved', 'Reserved + today window stays Reserved (Today/Tomorrow retired → flags)');
     ok(T.unitStatus({ startDate: '2099-01-01' }, { status: 'Reserved' }) === 'Reserved', 'Reserved + far window stays Reserved');
+    ok(T.unitStatus({ startDate: '2000-01-01' }, { status: 'Reserved' }) === 'No Show', 'Reserved + passed window → No Show (derivation kept)');
     ok(T.unitStatus({}, { status: 'On Rent' }) === 'On Rent', 'stored On Rent passes through');
 
     // 4) rentalStatusDisplay — uniform single status vs the mix label
@@ -264,6 +265,20 @@ try {
     ok(wrDiff.upserts.customers && wrDiff.upserts.customers.length >= 2, 'imported customers are QUEUED for the diff-sync (persist, not just in-memory)');
     ok(wrDiff.upserts.units && wrDiff.upserts.units.some((u) => u.id === 'U003'), 'the applied unit note is queued for persistence too');
     T.DATA.customers.length = custBefore; u3.notes = noteBefore;   // restore
+
+    // #227 — a bare "+New Rental" click must NOT leave an empty Quote in the Sheet. The
+    // mock draft is held out of the §18b sync until it earns real content (a unit, a
+    // customer, a window) — so abandoning it leaves zero backend junk — yet a Quote WITH
+    // content still persists and survives (Wave 2). Baseline first so the draft is "new".
+    window.JT.snapshotSaved();
+    const q227 = { rentalId: 'R-NEW227x', customerId: null, unitId: null, categoryId: null, rentalName: 'New Quote', startDate: '', endDate: '', startTime: '', status: 'Quote', transportType: 'Self', deliveryAddress: '', po: '', invoiceId: null, startHours: null, returnHours: null, notes: '', mock: true };
+    T.DATA.rentals.push(q227); T.IDX.rental.set(q227.rentalId, q227);
+    const d227a = window.JT.computeChanges();
+    ok(!(d227a.upserts.rentals || []).some((u) => u.id === 'R-NEW227x'), '#227: a content-free mock Quote is held OUT of the sync (a bare +New click leaves no backend junk)');
+    q227.customerId = 'C0009';   // now it has real content → it must persist (Quotes survive)
+    const d227b = window.JT.computeChanges();
+    ok((d227b.upserts.rentals || []).some((u) => u.id === 'R-NEW227x'), '#227: once the Quote earns content (a customer) it DOES sync — content-bearing Quotes survive');
+    const qi227 = T.DATA.rentals.findIndex((r) => r.rentalId === 'R-NEW227x'); if (qi227 >= 0) T.DATA.rentals.splice(qi227, 1); T.IDX.rental.delete('R-NEW227x'); window.JT.snapshotSaved();   // restore baseline
 
     // #152 a big import reply can be TRUNCATED by the model's output limit (no closing ```);
     // parseWranglerAction must salvage the complete rows so the preview still opens.
