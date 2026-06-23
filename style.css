@@ -384,8 +384,6 @@ input { font-family: inherit; }
 /* Give the scroll content clearance below the floating bottom-right FAB cluster so the
    History / notes don't sit under the notification + inbox buttons. */
 .is-phone .card-body { padding-bottom: 10px; }   /* FABs are folded into the footer Tools menu now, so no big clearance needed */
-/* phone inverts the layout — the totals strip is a card HEADER now (border + shadow flip down) */
-.is-phone .list-totals { border-top: none; border-bottom: 1px solid var(--accent-line); box-shadow: 0 5px 11px -7px rgba(0,0,0,.45); }
 /* Card tabs = a SEGMENTED NAV BAR (one container, flat segments) — now sit INSIDE
    the card at its top, centered, so the card's height/glow includes the toggles. */
 .col-tabs { display: inline-flex; gap: 3px; flex: 0 0 auto; align-self: center; max-width: calc(100% - 16px); overflow: hidden;
@@ -1558,6 +1556,7 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .co-fld { display: flex; flex-direction: column; gap: 3px; }
 .co-in { height: 34px; padding: 0 11px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--line); color: var(--txt); font-size: 13.5px; font-weight: 600; }
 .co-in:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+.co-in-area { height: auto; min-height: 168px; padding: 10px 11px; line-height: 1.5; font-weight: 500; font-family: 'Geist', system-ui, sans-serif; resize: vertical; white-space: pre-wrap; }
 .co-goal-wrap { display: flex; align-items: center; gap: 0; background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding-left: 11px; }
 .co-goal-wrap:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
 .co-goal-$ { font-family: 'Saira Condensed', system-ui, sans-serif; font-weight: 800; color: var(--txt-3); font-size: 15px; }
@@ -1643,7 +1642,11 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .gv-barcol { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; min-width: 0; }
 .gv-bar-n { font-size: 10px; color: var(--txt-3); font-weight: 700; height: 14px; }
 .gv-bar-track { flex: 1; width: 70%; display: flex; align-items: flex-end; }
-.gv-bar-fill { width: 100%; min-height: 2px; border-radius: 4px 4px 0 0; }
+.gv-bar-fill { position: relative; width: 100%; min-height: 2px; border-radius: 4px 4px 0 0; }
+/* §13.4 Revenue-by-Status: a red cap on the bar = the uncollected (unpaid + refunded) share */
+.gv-bar-red { position: absolute; top: 0; left: 0; right: 0; min-height: 2px; background: var(--red); border-radius: 4px 4px 0 0; }
+.gv-bars .gv-barcol.on .gv-bar-red { background: var(--red); }   /* stay red even when the bar is the active filter (orange) */
+.gv-revbars .gv-bar-n { color: var(--txt); font-weight: 700; }
 .gv-bar-x { font-size: 10px; color: var(--txt-3); margin-top: 5px; text-transform: uppercase; letter-spacing: .4px; }
 .gv-units-scroll { max-height: 240px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
 .gv-soon { padding: 52px 24px; text-align: center; color: var(--txt-2); }
@@ -1661,6 +1664,14 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .gv-dots { display: flex; gap: 4px; }
 .gv-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
 .gv-dots i.on { background: var(--accent); }
+/* §13.4 timeline pill — scopes the time-based graphs to a recent window; active window stamped on it */
+.gv-win { display: inline-flex; align-items: center; gap: 3px; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--txt-2); font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; font-size: 10px; line-height: 1.7; cursor: pointer; }
+.gv-win svg { width: 11px; height: 11px; }
+.gv-win:hover { color: var(--txt); border-color: var(--accent-line); }
+.gv-win:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gv-win.gv-win-on { color: var(--accent); border-color: var(--accent); }
+.gv-win-static { cursor: default; color: var(--txt-3); }
+.gv-win-static:hover { color: var(--txt-3); border-color: var(--line); }
 .gv-chev { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--txt-2); cursor: pointer; }
 .gv-chev:hover { color: var(--txt); border-color: var(--accent-line); }
 .gv-chev:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -1718,21 +1729,6 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
   border-radius: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--txt-2); }
 .bv-btn:hover { color: var(--accent); border-color: var(--accent-line); background: var(--panel-2); }
 .bv-btn svg { width: 16px; height: 16px; }
-/* the value totals, frozen as a real Card Footer below the scrolling body */
-.list-totals { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 9px 12px;
-  background: var(--card-head); border-top: 1px solid var(--accent-line); box-shadow: 0 -5px 11px -7px rgba(0,0,0,.45); }
-/* R4 (Jac 2026-06-12): footer chips wear the DERIVED-pill treatment — no
-   background, no border, no icon; colored ink + underline on hover/active. */
-.tot-chip { font-size: 11px; font-weight: 700; padding: 2px 2px; background: none; color: var(--txt-2);
-  border: none; white-space: nowrap; }
-.tot-chip.c-green { color: var(--green); } .tot-chip.c-red { color: var(--red); } .tot-chip.c-yellow { color: var(--yellow); }
-.tot-chip.c-blue { color: var(--blue); } .tot-chip.c-purple { color: var(--purple); } .tot-chip.c-orange { color: var(--orange); }
-.tot-chip.c-navy { color: var(--navy); } .tot-chip.c-pink { color: var(--pink); } .tot-chip.c-brown { color: var(--brown); }
-/* badge-value chips are clickable → filter the list to that value */
-button.tot-chip { cursor: pointer; font-family: inherit; }
-button.tot-chip:hover { text-decoration: underline; text-underline-offset: 3px; }
-button.tot-chip.on { text-decoration: underline; text-underline-offset: 3px; filter: brightness(1.18); }
-
 /* §13.2 — Board View spreadsheet popup */
 .bv-popup { width: 92vw; height: 86vh; max-width: 1400px; }
 .bv-head { gap: 10px; }
@@ -2366,7 +2362,7 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 /* ── RENTAL DETAIL v2 — header · calendar · unit rows · footer (rd-*, rdcal-*) ── */
 .rd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .rd-head-l { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
-.rd-head-r { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.rd-head-r { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex-shrink: 0; }
 .rd-blocker { margin-bottom: 6px; }
 /* numbered-date window-track calendar */
 .rdcal { background: var(--panel-2); border-radius: 10px; overflow: hidden; cursor: pointer; margin-top: 2px; user-select: none; }
@@ -2654,7 +2650,7 @@ body { font-variant-numeric: tabular-nums; }
 .card[data-card="rentals"] .list .empty { grid-column: 1 / -1; }   /* +New Rental + empty states span both columns (and self-size, no tall track) */
 .row[data-card="rentals"] { padding: 0; display: flex; flex-direction: column; height: 172px; }
 .row[data-card="rentals"] .row-content { padding: 0; height: 100%; display: flex; flex-direction: column; }
-.rcc { flex: 1; display: flex; flex-direction: column; gap: 5px; padding: 8px 10px 7px; border-left: 3px solid var(--rcc-hl, var(--line)); overflow: hidden; }
+.rcc { flex: 1; display: flex; flex-direction: column; gap: 5px; padding: 8px 10px 7px; border: 2px solid var(--rcc-hl, var(--line)); border-radius: 11px; overflow: hidden; }
 /* HEADER — row 1: unit names (LEFT, colored by inspection) + status pill pinned RIGHT;
    row 2: customer + balance (Jac 2026-06-23) */
 .rcc-head { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
@@ -2693,8 +2689,8 @@ body { font-variant-numeric: tabular-nums; }
 .rcc-day.is-end .rcc-bar { right: 50%; border-radius: 0 2px 2px 0; }
 .rcc-day.is-past .rcc-dot { background: var(--line); opacity: 1; }
 .rcc-day.is-win .rcc-dot { background: var(--rcc-hl, var(--green)); opacity: .7; }
-/* today = orange RING (not fill) so the dot doesn't compete with start/end markers */
-.rcc-day.is-today .rcc-dot { width: 15px; height: 15px; background: transparent; border: 2px solid var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); opacity: 1; }
+/* today = blue RING (not fill) so the dot doesn't compete with start/end markers */
+.rcc-day.is-today .rcc-dot { width: 15px; height: 15px; background: transparent; border: 2px solid var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); opacity: 1; }
 /* start/end: enlarged for legibility — bigger dot, bigger icon */
 .rcc-day.is-start .rcc-dot, .rcc-day.is-end .rcc-dot { width: 24px; height: 24px; background: var(--rcc-hl, var(--green)); color: var(--card); opacity: 1; }
 .rcc-day.is-start .rcc-dot svg, .rcc-day.is-end .rcc-dot svg { width: 15px; height: 15px; }
@@ -2725,7 +2721,7 @@ body { font-variant-numeric: tabular-nums; }
    Equal-width pill slots so all rows share the same column rhythm. ── */
 .row[data-card="units"] { padding: 0; }
 .row[data-card="units"] .row-content { padding: 0; }
-.ur { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px 8px 8px; border-left: 3px solid var(--ur-hl, var(--line)); }
+.ur { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px 8px 8px; border-right: 3px solid var(--ur-hl, var(--line)); }
 .ur-cat { flex: 0 0 auto; width: 22px; height: 22px; color: var(--txt-2); display: flex; align-items: center; justify-content: center; }
 .ur-cat svg { width: 19px; height: 19px; display: block; }
 .ur-id { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 1px 8px; justify-content: flex-end; }
@@ -2736,10 +2732,11 @@ body { font-variant-numeric: tabular-nums; }
    producing unequal widths. A definite width makes 1fr = exactly half. */
 .ur-pills { flex: 0 0 196px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .ur-pill-slot { display: flex; align-items: center; justify-content: center; }
-.ur-pill-slot .pill { width: 100%; text-align: center; justify-content: center; }
+.ur-pill-slot .pill { width: 100%; text-align: center; justify-content: center; overflow: hidden; }
+.ur-pill-slot .pill .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 @container (max-width: 340px) {
   .ur-id { flex-direction: column; align-items: flex-start; gap: 1px; }
-  .ur-pills { grid-template-columns: 1fr; min-width: 90px; }
+  .ur-pills { grid-template-columns: 1fr; flex-basis: 90px; }
 }
 /* ── CATEGORY ROW (catr): [status badges LEFT] · [name/rate RIGHT] — mirrors units swap. ── */
 .catr { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px 8px 10px; }
@@ -2748,22 +2745,13 @@ body { font-variant-numeric: tabular-nums; }
 .catr-sub { font-size: 11.5px; color: var(--txt-2); white-space: nowrap; }
 
 /* ── CUSTOMER ROW (cr-statuses): account-type + funnel, equal-width, right-pinned. ── */
-.cr-statuses { flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-left: auto; min-width: 160px; }
+.cr-statuses { flex: 0 0 160px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-left: auto; }
 .cr-pill-slot { display: flex; align-items: center; justify-content: center; }
-.cr-pill-slot .pill { width: 100%; text-align: center; justify-content: center; }
+.cr-pill-slot .pill { width: 100%; text-align: center; justify-content: center; overflow: hidden; }
+.cr-pill-slot .pill .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 @container (max-width: 340px) {
-  .cr-statuses { grid-template-columns: 1fr; min-width: 80px; }
+  .cr-statuses { grid-template-columns: 1fr; flex-basis: 80px; }
 }
-
-/* ── FOOTER SECTIONS: labeled chip groups separated by a rule (units/rentals/customers). ── */
-.list-totals.sectioned { gap: 0; padding: 6px 0; }
-.tot-sec { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 3px 12px; border-right: 1px solid var(--line); }
-.tot-sec:last-child { border-right: none; }
-.tot-label { font-size: 9px; font-weight: 700; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .9px; color: var(--txt-3); margin-right: 2px; flex: 0 0 auto; }
-
-/* rentals footer: Billing row over Rental-Status row (Jac) — kept for non-sectioned fallback */
-.list-totals.two-row { flex-direction: column; align-items: stretch; gap: 4px; }
-.list-totals.two-row .tot-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
 /* No-Preview Mode (Jac 2026-06-12): every eye — row chips + the toolbar — runs RED */
 .rbtn.js-roweye.off, .iconbtn.js-previews.off { color: var(--red); opacity: 1; }

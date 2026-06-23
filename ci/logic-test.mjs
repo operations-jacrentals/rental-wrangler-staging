@@ -509,7 +509,7 @@ try {
     st.settings.rentalRules = { id: 'required' };
     ok(/ID/i.test(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') || '') && T.rentalRuleBlock({}, { name: 'X', idNumber: 'LA-12345' }, 'On Rent') === null, 'ID Required: blocks without an ID #, allows with one');
     st.settings.rentalRules = { terms: 'required' };
-    ok(/terms/i.test(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') || '') && T.rentalRuleBlock({}, { name: 'X', netDays: 0 }, 'On Rent') === null, 'Payment-terms Required: blocks until Net days entered (0/COD counts)');
+    ok(T.rentalRuleBlock({}, { name: 'X' }, 'On Rent') === null && T.rentalRuleBlock({}, { name: 'X', netDays: 0 }, 'On Rent') === null && /terms/i.test(T.rentalRuleBlock({}, { name: 'X', netDays: 'abc' }, 'On Rent') || ''), 'Payment-terms Required: blank Net days counts as COD (passes), 0 passes, only a non-numeric value blocks');
     st.settings.rentalRules = savedRules;   // restore
 
     // 23) Net-days terms → invoice due date, capped by the system max (Settings → Company)
@@ -522,14 +522,6 @@ try {
     tc.netDays = 999; const dueCap = T.dueForCustomer(tc.customerId); ok(dueCap === due30b, `customer Net 999 is CAPPED at the system max of 30 (${dueCap})`);
     st.settings.company = { maxNetDays: 60 }; const dueCap60 = T.dueForCustomer(tc.customerId); ok(dueCap60 > due30b, 'raising the system max to 60 lets the same Net 999 customer go further out');
     tc.netDays = savedNd; st.settings.company = savedCo2;   // restore
-
-    // 24) Layout & Footers — per-card footer visibility (default shown = zero change)
-    const savedLayout = st.settings.layout;
-    st.settings.layout = undefined;
-    ok(T.footerHidden('rentals') === false, 'no layout config → footers shown (default)');
-    st.settings.layout = { footers: { rentals: 'off' } };
-    ok(T.footerHidden('rentals') === true && T.footerHidden('units') === false, 'a card footer can be hidden without affecting others');
-    st.settings.layout = savedLayout;   // restore
 
     // 25) Custom Fields — admin-defined fields per entity (default none = forms unchanged)
     const savedCF = st.settings.customFields;
@@ -569,7 +561,6 @@ try {
     ok(T.pageDefaultSlice('statuses').key === 'status' && T.pageDefaultSlice('kpis').key === 'kpis', 'each tab resets only its own settings slice');
     const cfReset = T.pageDefaultSlice('fields').value;
     ok(Array.isArray(cfReset.customers) && cfReset.customers.length === 0 && Array.isArray(cfReset.units), 'Reset page (Custom Fields) empties every entity, not just the active one');
-    ok(JSON.stringify(T.pageDefaultSlice('layout').value) === JSON.stringify({ footers: {} }), 'Reset page (Layout) restores all footers shown');
     ok(T.pageDefaultSlice('logins') === null && T.pageDefaultSlice('notifications') === null, 'tabs with no settings slice (Logins/planned) have no Reset page');
 
     // 29) §5.4d DATE SEARCH — overlap (rentals), point-in-range (dated cards), invoice
