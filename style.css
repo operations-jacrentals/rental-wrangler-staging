@@ -126,7 +126,7 @@ input { font-family: inherit; }
 
 /* KPI rings (§5.2/§11) — Apple-style concentric progress rings, each colored by
    its own value band; number + role label below. */
-.kpis { display: flex; align-items: center; gap: 14px; }
+.kpis { display: flex; align-items: center; gap: 14px; position: relative; }   /* position: anchor for the Coming-2026 plate */
 .kpi-ring {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   padding: 4px 6px 0; border-radius: 11px; border: 1px solid transparent; min-width: 64px;
@@ -152,6 +152,49 @@ input { font-family: inherit; }
 .big-ring .ring-fill.ring-glow { filter: drop-shadow(0 0 2.4px var(--green)) drop-shadow(0 0 5.2px var(--green)); }
 .kpi-ring .ring-label { font-size: 10px; color: var(--txt-3); font-weight: 600; text-transform: uppercase; letter-spacing: .3px; }
 .kpi-ring .ring-pct { font-size: 28px; font-weight: 700; fill: var(--txt); }   /* big popup ring only */
+
+/* ── COMING 2026 — floats free over the blurred rings (Jac 2026-06-23) ──────────
+   No card backing: just the stamped "COMING 2026" floating over the dimmed gauges,
+   with a light gleam that sweeps across the letters once every 15s. Boldness lives
+   in the gleam + the caution-yellow year; everything else quiet. No orange (reserved).
+   The whole rings area is the (invisible) tap target → opens the roadmap. */
+.coming-plate {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; background: none; padding: 0; cursor: pointer; font-family: 'Saira Condensed', sans-serif;
+}
+.coming-plate:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--chip-radius); }
+.cp-stamp { position: relative; overflow: hidden; line-height: 1;
+  font-size: 18px; font-weight: 800; letter-spacing: 2.5px; text-transform: uppercase;
+  color: var(--txt); text-shadow: 0 1px 6px rgba(0,0,0,.55); transition: filter .15s; }
+.cp-stamp b { color: var(--yellow); font-weight: 800; }
+.coming-plate:hover .cp-stamp { filter: brightness(1.15); }
+/* the gleam — a bright diagonal glint sweeps across the letters once per 15s cycle */
+.cp-stamp::after {
+  content: ''; position: absolute; inset: -2px; pointer-events: none; mix-blend-mode: screen;
+  background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,.6) 50%, transparent 62%);
+  transform: translateX(-140%); animation: cpGleam 15s ease-in-out infinite;
+}
+@keyframes cpGleam { 0%, 90% { transform: translateX(-140%); } 97%, 100% { transform: translateX(140%); } }
+.is-phone .cp-stamp { font-size: 13px; letter-spacing: 1.4px; }
+@media (prefers-reduced-motion: reduce) { .cp-stamp::after { display: none; } }
+
+/* ── COMING 2026 roadmap popup — the docket + the whole territory ── */
+.rm-popup { width: 460px; max-width: 94vw; }
+.rm-intro { margin: 0 2px 12px; font-size: 12.5px; line-height: 1.45; color: var(--txt-2); }
+.rm-list { display: flex; flex-direction: column; }
+.rm-row { display: grid; grid-template-columns: 80px 1fr auto; align-items: center; gap: 10px;
+  padding: 7px 2px; border-bottom: 1px solid var(--line-soft); }
+.rm-row:last-child { border-bottom: 0; }
+.rm-badge { display: flex; }
+.rm-name { font-size: 13px; font-weight: 600; color: var(--txt); }
+.rm-area { font-family: 'Saira Condensed', sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--txt-3); white-space: nowrap; }
+.rm-stitch { margin: 15px 0; border-top: 1.5px dashed var(--tan, #c2925a); opacity: .6; }   /* saddle-stitch — the ranch seasoning */
+.rm-terr-h { margin-bottom: 9px; text-align: center; font-family: 'Saira Condensed', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--txt-3); }
+.rm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rm-chip { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2);
+  font-family: 'Saira Condensed', sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--txt-2); }
+.rm-foot { margin: 14px 2px 0; font-size: 11.5px; line-height: 1.4; color: var(--txt-3); }
 
 /* tab strip — ONE row, scrolls horizontally if many; sits above the toolbar */
 .tabstrip { display: flex; gap: 6px; overflow-x: auto; max-width: 100%; padding-bottom: 0; }
@@ -279,19 +322,28 @@ input { font-family: inherit; }
 /* the card's search/sort row, relocated here — a FULL-WIDTH band (edge to edge) */
 .mdock-searchslot:empty { display: none; }
 .is-phone .mdock-searchslot .listbar { position: static; margin: 0; padding: 8px; gap: 8px;
-  background: var(--bg-2); border-bottom: 1px solid var(--line); box-shadow: 0 5px 11px -7px rgba(0,0,0,.45); }
-.is-phone .mdock-searchslot .mini-searchwrap { min-height: 44px; }   /* match the graph/sort buttons so the row is one height */
-.is-phone .mdock-searchslot .mini-search { height: 44px; }
+  background: none; border: none; box-shadow: none; }   /* no wrapper band — search/graph/sort chips float on the dock (Jac 2026-06-23) */
+/* search row — graph · search · sort all share ONE height via row-stretch (Jac 2026-06-23) */
+.is-phone .mdock-searchslot .listbar { align-items: stretch; }
+.is-phone .mdock-searchslot .mini-searchwrap { min-height: 48px; padding-top: 0; padding-bottom: 0; }
+.is-phone .mdock-searchslot .mini-search { height: auto; min-height: 0; }
+.is-phone .mdock-searchslot .bv-btn { min-height: 48px; height: auto; }
+.is-phone .mdock-searchslot .sort { height: auto; min-height: 48px; }
+.is-phone .mdock-searchslot .sort .dir { height: auto; }
 /* the card-toggle BAR: every card as an icon; the selected one expands to icon + label */
-.mdock-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
+.mdock-row { display: flex; align-items: center; gap: 8px; padding: 8px; }   /* unified dock padding to 8 (Jac 2026-06-23) */
 .mcard-bar { display: flex; align-items: center; gap: 3px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 3px; box-shadow: var(--chip-shadow); }
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 3px; box-shadow: var(--chip-shadow); }   /* segmented card-toggle container — Jac wanted it back (2026-06-23) */
 .mcard-bar::-webkit-scrollbar { display: none; }
 .mcard-tog { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-height: 44px; min-width: 44px; justify-content: center;
   padding: 0 9px; border: none; background: none; cursor: pointer; border-radius: 9px; color: var(--txt-2); transition: background .12s, color .12s; }
 .mcard-tog .mct-ico { display: inline-flex; } .mcard-tog .mct-ico svg { width: 19px; height: 19px; }
 .mcard-tog .mct-lbl { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 800; font-size: 13px; white-space: nowrap; }
 .mcard-tog.on { background: var(--accent); color: var(--on-orange, #1a1205); }   /* selected = ignition orange + dark ink */
+/* Fill the bar (Jac 2026-06-24): the icon toggles share the leftover width evenly so
+   there's no dead space, while the selected (labelled) toggle keeps its natural size. */
+.mcard-bar .mcard-tog { flex: 1 1 0; }
+.mcard-bar .mcard-tog.on { flex: 0 0 auto; }
 .mcard-tog:not(.on):active { background: rgba(255,255,255,.06); }
 .mdock-act { flex: 0 0 auto; position: relative; }
 /* ── §M2 Mobile drag — the chat drop-zone is the BOTTOM EDGE (full width) on phones,
@@ -314,10 +366,28 @@ input { font-family: inherit; }
 .is-phone .iconbtn { min-height: 44px; }
 .is-phone .bv-btn { min-width: 44px; min-height: 44px; }                         /* per-card graph toggle (was 32) */
 .is-phone .coltab { min-height: 44px; }                                         /* card view tabs (was 30) */
+.is-phone .tab { min-height: 40px; }                                            /* §M2 open-record item tabs are draggable handles — give them a touch grab target */
 .is-phone .popup-head .x { width: 40px; height: 40px; }                         /* sheet close ✕ (was 30) */
 .is-phone .mdot { width: 38px; height: 22px; }                                  /* column indicator dots (column also changes by toggle tap / footer swipe) */
 .is-phone .chat-tag .x { position: relative; }                                  /* tag remove ✕ keeps its 14px look… */
 .is-phone .chat-tag .x::before { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 40px; height: 40px; }   /* …but a 40px hit box */
+/* §M-touch — the hover-reveal tab close ✕ has no touch alternative, so force it visible
+   on phones (a phone has no :hover). The card-header / row hover TOOLS are deliberately
+   HIDDEN on touch instead (PR #316) — their actions have touch paths (double-tap anchor,
+   long-press menu, back chevron) — so they are not revealed here. */
+.is-phone .close-x.hoveronly { opacity: 1; }
+/* §M-touch — kill the browser's accidental double-tap-to-ZOOM on phones. It fires on any
+   surface still at touch-action:auto (card bodies, the open detail/standard view, text,
+   pills) and hijacked the double-tap-to-ANCHOR gesture, "zooming WAY in" instead. Setting
+   manipulation at the document level disables double-tap-zoom everywhere while KEEPING
+   intentional pinch-zoom + native scroll. Rows/grid/dock keep their explicit pan-y, so the
+   long-press drag + the column/Back-Fwd swipe engine are untouched (single tap still opens,
+   double tap still anchors — now without the browser stealing it). */
+body.is-phone { touch-action: manipulation; }
+/* §M-touch — iOS Safari auto-zooms when you FOCUS an input whose font-size is < 16px,
+   independent of the viewport scale lock. Force every phone input to 16px so tapping a
+   field (card search, line-item fields, chat compose, login) never zooms the screen. */
+.is-phone input, .is-phone textarea, .is-phone select { font-size: 16px !important; }
 /* ── §M3 — overlays & the winpicker become bottom SHEETS on phones: full-width,
    pinned to the bottom edge, rounded top, slide up. Popups keep their ✕ and the
    backdrop closes on tap; the winpicker gets its own tap-to-close backdrop + Esc. ── */
@@ -339,7 +409,7 @@ input { font-family: inherit; }
 @media (prefers-reduced-motion: reduce) { .is-phone .popup, .is-phone .winpicker { animation: none; } }
 /* ── §M4 — phone header: logo + ALL FIVE KPI rings share the TOP row (rings shrunk to
    fit), and the global search wraps to its own full-width row underneath. ── */
-.is-phone .header { flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 10px 10px 0; }
+.is-phone .header { flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 12px 0; }   /* unified to the 8/12 rhythm (Jac 2026-06-23) */
 .is-phone .logo { width: 58px; height: 58px; order: 1; }
 .is-phone .kpis { order: 1; flex: 1 1 auto; min-width: 0; display: flex; justify-content: space-around; gap: 2px; }   /* logo + rings share a row, below the tool bar */
 .is-phone .kpi-ring { min-width: 0; flex: 0 1 auto; padding: 1px 0 0; }
@@ -408,8 +478,8 @@ input { font-family: inherit; }
 .coltab .ct-n { font-size: 11px; font-weight: 700; color: var(--txt-3); background: var(--bg-2); padding: 1px 8px; border-radius: 999px; }
 .coltab.on .ct-n { color: var(--on-orange); background: rgba(0,0,0,.16); }
 /* red "needs work" alert on a Shop tab (pending inspections / open WOs / overdue service) */
-.coltab.alert:not(.on) { color: var(--txt); background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--red); }   /* rule 1: red border + red icon + light ink + dark bg */
-.coltab.alert:not(.on) .ct-ico { color: var(--red); }
+.coltab.alert:not(.on) { color: var(--txt); background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--red), 0 0 5px color-mix(in srgb, var(--red) 30%, transparent); }   /* rule 1: red border + red icon + light ink + dark bg */
+.coltab.alert:not(.on) .ct-ico { color: var(--red); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--red) 55%, transparent)); }
 .coltab.alert .ct-n { color: var(--txt); background: transparent; }
 /* prominent orange action button — mirrors the Select-rental-window button */
 /* R5b (the real one) at CTA size: empty-search "+New X" + the +New Rental row use the
@@ -563,7 +633,7 @@ select.lf-in { appearance: none; cursor: pointer; }
 .disp-addr { color: var(--blue); text-decoration: underline; cursor: pointer; }
 .disp-deadline { flex: 0 0 auto; font-size: 10.5px; font-weight: 700; color: var(--txt-3); text-transform: uppercase; letter-spacing: .4px; }
 .disp-deadline.today { color: var(--accent); }
-.disp-deadline.over { color: var(--red); }
+.disp-deadline.over { color: var(--red); -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); }
 .disp-home { padding: 4px 11px; }
 .disp-home .disp-unit { font-size: 12px; color: var(--txt-2); font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; }
 .disp-home .disp-sub { font-size: 10.5px; }
@@ -724,6 +794,12 @@ select.lf-in { appearance: none; cursor: pointer; }
   height: 14px; margin-bottom: -14px;
   background: linear-gradient(var(--card), transparent); pointer-events: none;
 }
+/* The fade is ONLY for standard view (content dissolving under the floating title
+   chip). In list view the listbar is lifted out of .card-body (desktop) or docked
+   (mobile), so nothing opaque sits above the fade and its 14px gradient clips the
+   first row's top on every card. Kill it there. (Jac 2026-06-23 — fixes the
+   top-row-cutoff regression introduced with the #219 fade.) */
+.card[data-view="list"] .card-body::before { display: none; }
 
 /* list-view search/sort bar (§12 in-card Sort) — floating chips, no hard line */
 .listbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 7px; padding: 6px 10px; background: linear-gradient(var(--card) 70%, transparent); }
@@ -761,6 +837,9 @@ select.lf-in { appearance: none; cursor: pointer; }
 /* §5.5 Views menu: section headers + a per-view delete ✕ */
 .dropdown-menu .dd-sec { font-family: 'Saira Condensed', system-ui, sans-serif; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.1px; color: var(--txt-3); padding: 8px 10px 3px; }
 .dropdown-menu .dd-item.js-applyview.on .tick { margin-left: 0; }
+/* §313 — Close-all confirm popover: the two action pills sit on one calm row */
+.dropdown-menu .dd-confirm { display: flex; gap: 8px; padding: 6px 10px 8px; }
+.closeall-slot { flex-shrink: 0; display: inline-flex; align-items: center; }
 .dropdown-menu .dd-item .x { margin-left: auto; opacity: .45; font-size: 12px; padding: 0 2px; }
 .dropdown-menu .dd-item .x:hover { opacity: 1; color: var(--red); }
 /* ── Gate TIMELINE dropdown (the four ordered status gates) — steel panel + vertical
@@ -772,6 +851,10 @@ select.lf-in { appearance: none; cursor: pointer; }
 .gt-row { position: relative; display: flex; align-items: center; gap: 11px; width: 100%; min-height: 40px; padding: 0 4px; text-align: left; background: none; border: 0; cursor: pointer; color: var(--txt-2); }
 .gt-row:hover { background: rgba(255,255,255,.04); border-radius: 8px; }
 .gt-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 8px; }
+/* F3 — a locked (auto-set, non-clickable) stage row: no hover/pointer, slightly dimmed.
+   Membership's terminal 'Signed' is reached by signing the agreement, not by tapping. */
+.gt-row.gt-lock { cursor: default; opacity: .82; }
+.gt-row.gt-lock:hover { background: none; }
 .gt-line { position: absolute; left: 17px; top: 50%; height: 100%; width: 2px; }
 .gt-line.solid { background: #2f6b3e; }
 .gt-line.grad { background: linear-gradient(180deg, #2f6b3e, var(--accent)); }
@@ -831,6 +914,10 @@ select.lf-in { appearance: none; cursor: pointer; }
 /* both row buttons share ONE floating chip (like the card-header chip), stacked + vertically centered */
 .row .r-actions { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); z-index: 2; display: flex; flex-direction: column; gap: 2px; padding: 3px; border-radius: var(--chip-radius); background: var(--panel); border: 1px solid var(--line); box-shadow: var(--chip-shadow); opacity: 0; transition: opacity .12s; }
 .row:hover .r-actions { opacity: 1; }                                                              /* §0.1 buttons on hover only */
+/* Hover row tools can't be reached without a real hover — hide on touch/phone so they
+   don't sit dead on a row (Jac 2026-06-23). Eye → toolbar previews toggle · + → Ctrl+click. */
+.is-phone .row .r-actions { display: none; }
+@media (hover: none) and (pointer: coarse) { .row .r-actions { display: none; } }
 .rbtn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 8px; background: none; border: none; color: var(--txt-2); }
 .rbtn:hover { background: var(--panel-2); color: var(--accent); }
 .rbtn svg { width: 14px; height: 14px; }
@@ -1168,7 +1255,7 @@ select.lf-in { appearance: none; cursor: pointer; }
 /* request lifecycle state (Needs your OK / Needs your answer / Building) */
 .req-head .spacer { flex: 1 1 auto; }
 .req-state { height: 20px; font-size: 9.5px; letter-spacing: .3px; flex: 0 0 auto; align-self: center; }
-.req-card.req-needs { border-color: var(--red); box-shadow: 0 0 0 1px rgba(255, 66, 66, .25); }
+.req-card.req-needs { border-color: var(--red); box-shadow: 0 0 0 1px color-mix(in srgb, var(--red) 50%, transparent), 0 0 7px color-mix(in srgb, var(--red) 30%, transparent); }
 
 /* §18e/f the round bell + Requests inbox — now ride the right of the bottom comms band
    (.bb-utils); the old floating fab-stack + its reserved right lane are retired. */
@@ -1202,14 +1289,14 @@ select.lf-in { appearance: none; cursor: pointer; }
 .crail-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* registry dot follows the team thread's flag color */
 .crail-tab.c-green .crail-dot { background: var(--green); } .crail-tab.c-yellow .crail-dot { background: var(--yellow); }
-.crail-tab.c-red .crail-dot { background: var(--red); } .crail-tab.c-blue .crail-dot { background: var(--blue); }
+.crail-tab.c-red .crail-dot { background: var(--red); box-shadow: 0 0 4px color-mix(in srgb, var(--red) 50%, transparent); } .crail-tab.c-blue .crail-dot { background: var(--blue); }
 .crail-tab.c-purple .crail-dot { background: var(--purple); } .crail-tab.c-gray .crail-dot { background: var(--txt-3); }
 /* Actionable request tabs read via a STEADY tinted edge + colored dot — needs-answer
    (red) · needs-your-OK (yellow). NO perpetual glow: a wall of pulsing tabs was a
    strobe; motion is reserved for the one transient attnFlash beat elsewhere. */
 .crail-needs .crail-dot { background: var(--red); }
 .crail-ok .crail-dot { background: var(--yellow); }
-.crail-tab.crail-needs:not(.is-active) { border-color: color-mix(in srgb, var(--red) 55%, var(--line)); }
+.crail-tab.crail-needs:not(.is-active) { border-color: var(--red); box-shadow: 0 0 5px color-mix(in srgb, var(--red) 30%, transparent); }
 .crail-tab.crail-ok:not(.is-active) { border-color: color-mix(in srgb, var(--yellow) 50%, var(--line)); }
 .crail-tab.is-unseen { border-color: var(--accent-line); }
 .crail-tab.is-unseen .crail-dot { box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -1367,6 +1454,37 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .winpicker .wp-day.range-end { background: var(--accent); color: #fff; border-radius: 0 7px 7px 0; }
 .winpicker .wp-day.range-start.range-end { border-radius: 7px; }
 .winpicker .wp-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
+/* §inline (Jac 2026-06-25) — the rental-window calendar lives INLINE in the rental detail
+   (popup retired): strip the float chrome so it reads as part of the section, fill the width. */
+.rdcal-edit { position: relative; width: 100%; }
+.rdcal-edit .winpicker { border: none; box-shadow: none; background: transparent; padding: 0; border-radius: 0; width: 100%; }
+.rdcal-edit .wp-time { margin-bottom: 7px; padding-bottom: 7px; }
+.rdcal-edit .wp-day { height: 34px; }
+.is-phone .rdcal-edit .wp-day { height: 40px; }
+/* the fragile-rental "Confirm new window" panel — INLINE below the calendar, above the foot
+   (hovering popup retired Jac 2026-06-26): a bordered plate carrying the money preview. The
+   calendar stays fully editable behind it — no dim, no pointer-block, no floating overlay. */
+.wp-confirm { width: 100%; margin-top: 10px;
+  background: linear-gradient(180deg, var(--panel), var(--panel-2)); border: 1px solid var(--accent); border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--accent-line); padding: 10px 11px; }
+@media (prefers-reduced-motion: no-preference) { .wp-confirm { animation: plateIn .15s ease-out; } }
+.wp-confirm-h { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700; font-size: 11px; color: var(--txt); margin-bottom: 6px; }
+.wp-confirm .wp-ext { margin-top: 0; padding-top: 0; border-top: none; }
+.wp-confirm-foot { display: flex; gap: 7px; justify-content: flex-end; margin-top: 9px; }
+/* §ext — extension preview plate: shown when a lengthened fragile-rental window adds a
+   charge. A worn saddle-stitch (tan) top divider + a stamped kicker set it apart as the
+   "rebill" readout; the new balance owed reads in the app's danger-red balance color. */
+.winpicker .wp-ext { margin-top: 9px; padding-top: 9px; border-top: 1px dashed color-mix(in srgb, var(--tan, #c2925a) 60%, transparent); display: flex; flex-direction: column; gap: 3px; }
+.winpicker .wp-ext-cap { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
+.winpicker .wp-ext-kick { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.3px; font-weight: 700; font-size: 10px; color: var(--tan, #c2925a); }
+.winpicker .wp-ext-days { font-size: 11px; font-weight: 700; color: var(--txt-2); }
+.winpicker .wp-ext-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--txt-2); }
+.winpicker .wp-ext-row b { color: var(--txt); font-weight: 700; }
+.winpicker .wp-ext-row.wp-ext-bal { margin-top: 2px; padding-top: 4px; border-top: 1px solid var(--line-soft); font-size: 12.5px; }
+.winpicker .wp-ext-row.wp-ext-bal b { color: var(--red); }
+.winpicker .wp-ext-basis { font-size: 10px; color: var(--txt-3); margin-top: 3px; font-style: italic; }
+.winpicker .wp-ext.wp-ext-down .wp-ext-kick { color: var(--green); }   /* a reduction is good news */
+.winpicker .wp-ext.wp-ext-down .wp-ext-row:first-of-type b { color: var(--green); }
 /* §5.4d — DATE SEARCH picker: reuses the winpicker shell; a stamped kicker + a live
    selection readout sit above the grid. The date chips it pins carry a tan saddle-
    stitch underline so they read as editable (click re-opens the picker). */
@@ -1406,6 +1524,13 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .popup { background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius); box-shadow: var(--shadow), 0 0 0 2px var(--accent-line), 0 0 32px -6px rgba(255,122,26,.5); max-width: 92vw; max-height: 86vh; overflow: hidden; display: flex; flex-direction: column; }
 .popup { position: relative; }   /* anchor the hazard cap + corner rivets (the plate signature) */
 .popup-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+/* §popup-drag — grab the stamped head to slide the popup aside (desktop; wired in app.js).
+   Controls inside the head keep the pointer cursor; phone sheets aren't draggable. */
+.overlay .popup-head { cursor: grab; touch-action: none; }
+.overlay .popup-head button, .overlay .popup-head a, .overlay .popup-head input, .overlay .popup-head select, .overlay .popup-head label { cursor: pointer; }
+.overlay .popup.is-dragging { cursor: grabbing; user-select: none; }
+.overlay .popup.is-dragging .popup-head { cursor: grabbing; }
+.is-phone .overlay .popup-head { cursor: default; touch-action: auto; }
 .popup-head h3 { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 800; font-size: 16px; color: var(--txt); line-height: 1.05; }
 .popup-head .x { margin-left: auto; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; color: var(--txt-2); }
 .popup-head .x:hover { background: var(--panel-2); color: var(--txt); }
@@ -1472,6 +1597,19 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .set-pane-head p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--txt-2); max-width: 52ch; }
 .set-pane-head em { font-style: normal; font-family: ui-monospace, monospace; color: var(--txt); }
 .set-note { font-size: 10.5px; color: var(--txt-3); margin: 4px 0 0; }
+/* Membership pricing group — saddle-stitch divider (ranch seasoning) sets it apart;
+   dollar fields grid two-up to keep the Company pane compact. */
+.co-memprice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-top: 14px; padding-top: 12px; border-top: 1.5px dashed var(--tan, #c2925a); }
+.co-memprice > .kpi-cap { grid-column: 1 / -1; letter-spacing: 2px; }
+/* F7 — membership economics: derived stat rows under a saddle-stitch divider (ranch seasoning). */
+.mem-econ { width: 100%; margin-top: 8px; padding-top: 8px; border-top: 1.5px dashed var(--tan, #c2925a); display: flex; flex-direction: column; gap: 2px; }
+/* F5 — membership enrollment dialog: label + control rows, then a stamped charge tote. */
+.me-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.me-row > .kpi-cap { color: var(--txt-2); letter-spacing: 1.4px; }
+.me-tote { margin-top: 12px; padding: 11px 13px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--chip-radius, 12px); display: flex; flex-direction: column; gap: 4px; }
+.me-line { display: flex; align-items: baseline; justify-content: space-between; font-size: 13px; color: var(--txt-2); }
+.me-line.me-total { margin-top: 5px; padding-top: 7px; border-top: 1.5px dashed var(--tan, #c2925a); font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1.5px; color: var(--txt); }
+.me-line.me-total b { color: var(--accent); font-size: 16px; }
 .set-err { align-self: center; color: var(--red); font-size: 12px; font-weight: 600; margin-right: 4px; }
 /* Roles & Logins — passwords masked by default; this toggles reveal (stamped, not a native control). */
 .set-reveal-row { display: flex; justify-content: flex-end; margin: -2px 0 8px; }
@@ -1582,6 +1720,8 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .rule-soon-tag { flex: 0 0 auto; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; font-size: 9px; font-weight: 700; color: var(--tan, #c2925a); border: 1px dashed var(--tan, #c2925a); border-radius: 999px; padding: 2px 8px; }
 .cf-req { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; font-size: 8.5px; font-weight: 700; color: var(--red); border: 1px solid var(--red); border-radius: 999px; padding: 0 6px; margin-left: 6px; vertical-align: 1px; }
 .cf-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+/* Inline edit-item panel — attached under the row being edited, not a bottom add-row */
+.cf-edit { margin: 6px 0 10px; padding: 10px; border-top: none; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 9px; }
 .cf-add .js-cf-label { flex: 1 1 200px; min-width: 0; }
 .cf-add .seg { flex: 0 0 auto; }
 .cf-add .js-cf-add { flex: 0 0 auto; }
@@ -1594,6 +1734,22 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .ck-row .co-in { max-width: 180px; flex: 0 0 auto; }
 .ck-row .datefield { flex: 0 0 auto; }
 .ck-row .insp-photo { flex: 0 0 auto; min-height: 64px; width: 120px; margin-bottom: 0; }
+/* Per-item photo evidence strip under a checklist item (Jac 2026-06-26) */
+.ck-evrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 12px 2px 12px; }
+.ck-evadd { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px dashed var(--accent-line); border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
+.ck-evadd svg { width: 15px; height: 15px; }
+.ck-evrow.req .ck-evadd { border-color: var(--yellow, #f5c542); color: var(--yellow, #f5c542); background: rgba(245, 197, 66, .08); }
+.ck-evthumb { position: relative; width: 44px; height: 44px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); flex: 0 0 auto; }
+.ck-evthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ck-evrm { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; background: var(--red, #ff4242); color: #fff; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.ck-evrm svg { width: 11px; height: 11px; }
+/* Unit-level walkaround capture band at the top of the takeover */
+.ck-walk { display: flex; flex-direction: column; gap: 7px; padding: 9px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
+.ck-walk.req { border-color: var(--yellow, #f5c542); }
+.ck-walk-lbl { display: inline-flex; align-items: center; gap: 6px; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.5px; font-size: 12px; font-weight: 700; color: var(--muted, #9aa3ad); }
+.ck-walk-lbl svg { width: 15px; height: 15px; }
+.ck-walk .ck-evrow { padding: 0; }
+.ck-walk .ck-evthumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* Dropdown options well in the Inspections builder add-row */
 .insp-opt-well { width: 100%; border-left: 3px solid var(--line); background: var(--bg-2); border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; margin-top: 2px; }
 .insp-opt-row { display: flex; align-items: center; gap: 8px; }
@@ -1630,7 +1786,7 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .gv-lead-n { color: var(--txt-3); font-weight: 700; font-size: 11px; }
 .gv-lead-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gv-lead-mech { font-size: 11px; color: var(--txt-3); }
-.gv-lead-c { font-weight: 800; color: var(--red); }
+.gv-lead-c { font-weight: 800; color: var(--red); -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); }
 .gv-pie { display: flex; flex-direction: column; align-items: center; }
 .gv-pie svg { display: block; }
 .gv-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 10px; justify-content: center; }
@@ -1644,10 +1800,19 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .gv-bar-track { flex: 1; width: 70%; display: flex; align-items: flex-end; }
 .gv-bar-fill { position: relative; width: 100%; min-height: 2px; border-radius: 4px 4px 0 0; }
 /* §13.4 Revenue-by-Status: a red cap on the bar = the uncollected (unpaid + refunded) share */
-.gv-bar-red { position: absolute; top: 0; left: 0; right: 0; min-height: 2px; background: var(--red); border-radius: 4px 4px 0 0; }
+.gv-bar-red { position: absolute; top: 0; left: 0; right: 0; min-height: 2px; background: var(--red); border-radius: 4px 4px 0 0; box-shadow: 0 0 8px color-mix(in srgb, var(--red) 45%, transparent); }
 .gv-bars .gv-barcol.on .gv-bar-red { background: var(--red); }   /* stay red even when the bar is the active filter (orange) */
 .gv-revbars .gv-bar-n { color: var(--txt); font-weight: 700; }
 .gv-bar-x { font-size: 10px; color: var(--txt-3); margin-top: 5px; text-transform: uppercase; letter-spacing: .4px; }
+/* Shop front-page STACKED bars: each bar's fill is a column of clickable segments
+   (Services = overdue/due, Work Orders = woPhase journey). Registry colors per segment;
+   a 1.5px gap shows the track behind them as a clean separator. */
+.gv-stackbars .gv-bar-stack { width: 100%; display: flex; flex-direction: column-reverse; gap: 1.5px; border-radius: 4px 4px 0 0; overflow: hidden; }
+.gv-bar-seg { width: 100%; min-height: 4px; border: none; padding: 0; cursor: pointer; transition: filter .12s; }
+.gv-bar-seg:hover { filter: brightness(1.15); }
+.gv-stackbars .gv-bar-seg.on { background: var(--accent) !important; }
+.gv-bar-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .gv-bar-seg { transition: none; } .gv-bar-seg:hover { filter: none; } }
 .gv-units-scroll { max-height: 240px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
 .gv-soon { padding: 52px 24px; text-align: center; color: var(--txt-2); }
 .gv-soon-ic { display: inline-flex; width: 40px; height: 40px; color: var(--accent); opacity: .7; }
@@ -1701,7 +1866,7 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .gv-lead-list .gv-lead-row:hover { background: var(--panel); }
 .gv-lead-list .gv-lead-row.on { background: var(--accent-soft); }
 .gv-lead-list .gv-lead-row.on .gv-lead-name { color: var(--accent); }
-.gv-lead-list .gv-lead-row .gv-lead-c { color: var(--txt-2); }
+.gv-lead-list .gv-lead-row .gv-lead-c { color: var(--txt-2); -webkit-text-fill-color: var(--txt-2); text-shadow: none; }
 .gv-lead-list .gv-lead-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* clickable number tiles */
 .gv-numrow { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1796,6 +1961,16 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .set-row .set-input { flex: 1; height: 32px; padding: 0 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); color: var(--txt); font-size: 13px; }
 .set-row .set-input:focus { outline: none; border-color: var(--accent-line); }
 .set-row.set-admin { margin-top: 10px; padding-top: 12px; border-top: 1px dashed var(--line); }
+/* Role cards — one panel per login: label + password + remove, with a tier picker beneath. */
+.set-rolecard { padding: 9px 10px 10px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); margin-bottom: 8px; }
+.set-rolecard .set-row { margin-bottom: 0; }
+.set-rolehead .set-rolelabel { flex: 0 0 38%; font-weight: 700; }
+.set-lock { display: inline-flex; align-items: center; color: var(--txt-3); flex: 0 0 auto; }
+.set-lock svg { width: 14px; height: 14px; }
+.set-tierrow { display: flex; align-items: center; gap: 9px; margin-top: 9px; }
+.set-tiercap { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.2px; font-size: 9.5px; font-weight: 700; color: var(--txt-3); flex: 0 0 auto; }
+.set-tierrow .seg.set-tierseg { margin-left: 0; flex: 1 1 auto; }
+.set-tierrow .seg.set-tierseg button { flex: 1 1 0; justify-content: center; padding: 0 7px; font-size: 10px; }
 /* New Customer onboarding form */
 .nc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px 12px; }
 .nc-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -1866,17 +2041,17 @@ select.nc-in { cursor: pointer; }
 .ag-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .ag-dot.ok { background: var(--green); }
 .ag-dot.mid { background: var(--yellow); box-shadow: 0 0 0 3px var(--yellow-bg); }   /* §7.1c in-progress */
-.ag-dot.bad { background: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
+.ag-dot.bad { background: var(--red); box-shadow: 0 0 0 3px var(--red-bg), 0 0 6px color-mix(in srgb, var(--red) 40%, transparent); }
 /* short status banner — a thin red hazard rail, calm body */
 .ag-banner { position: relative; padding: 9px 13px 9px 20px; border-radius: 10px; margin: 2px 0 16px; font-size: 12.5px; font-weight: 600; }
-.ag-banner.bad { background: var(--red-bg); border: 1px solid var(--accent-line); border-color: rgba(255,66,66,.34); color: var(--red); }
+.ag-banner.bad { background: var(--red-bg); border: 1px solid var(--accent-line); border-color: var(--red); color: var(--red); -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); box-shadow: 0 0 6px color-mix(in srgb, var(--red) 25%, transparent); }
 .ag-banner.bad::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 8px; border-radius: 10px 0 0 10px;
   background: repeating-linear-gradient(135deg, var(--red) 0 7px, #14181d 7px 14px); }
 /* per-card meta line + states */
 .ag-meta { display: flex; align-items: center; gap: 9px; margin: 2px 0 14px; font-size: 12.5px; color: var(--txt-2); }
 .ag-metasep { margin-left: auto; }
 .ag-gate { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0 0 15px; font-size: 12.5px; }
-.ag-gate .lead { color: var(--red); font-weight: 600; }
+.ag-gate .lead { color: var(--red); font-weight: 600; -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); }
 .ag-gate .sub { color: var(--txt-3); }
 .ag-readref { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 13px; border-radius: 10px;
   background: var(--panel); border: 1px solid var(--line); margin: 0 0 14px; font-size: 13px; color: var(--txt-2); }
@@ -2257,7 +2432,7 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .flag:hover { text-decoration: underline; }
 .flag.c-green { background: none; color: var(--green); border: none; }
 .flag.c-yellow { background: none; color: var(--yellow); border: none; }
-.flag.c-red { background: none; color: var(--red); border: none; }
+.flag.c-red { background: none; color: var(--red); border: none; -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); }
 .flag.c-blue { background: none; color: var(--blue); border: none; }
 .flag.c-purple { background: none; color: var(--purple); border: none; }
 .flag.c-gray { background: none; color: var(--gray); border: none; }
@@ -2267,8 +2442,8 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 .section.sec-green > h4 { color: var(--green); }
 .section.sec-yellow { border-color: color-mix(in srgb, var(--yellow) 45%, transparent); }
 .section.sec-yellow > h4 { color: var(--yellow); }
-.section.sec-red { border-color: color-mix(in srgb, var(--red) 80%, transparent); }
-.section.sec-red > h4 { color: var(--red); }
+.section.sec-red { border-color: var(--red); box-shadow: 0 0 8px color-mix(in srgb, var(--red) 30%, transparent); }
+.section.sec-red > h4 { color: var(--red); -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); }
 
 /* NOTES = heading-only line, no panel box, no label (filled→top, empty→bottom) */
 .nsec { display: flex; align-items: center; gap: 9px; padding: 1px 2px; }
@@ -2362,29 +2537,9 @@ body.rw-inspect .c-titlecard:hover { outline: 2px solid #18b6ff; outline-offset:
 /* ── RENTAL DETAIL v2 — header · calendar · unit rows · footer (rd-*, rdcal-*) ── */
 .rd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .rd-head-l { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
-.rd-head-r { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex-shrink: 0; }
+.rd-head-r { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex-shrink: 0; margin-left: auto; }   /* stay right-aligned even when the header wraps on a narrow card (Jac 2026-06-24) */
 .rd-blocker { margin-bottom: 6px; }
 /* numbered-date window-track calendar */
-.rdcal { background: var(--panel-2); border-radius: 10px; overflow: hidden; cursor: pointer; margin-top: 2px; user-select: none; }
-.rdcal:hover { filter: brightness(1.04); }
-.rdcal-dow { display: grid; grid-template-columns: repeat(7, 1fr); padding: 5px 4px 2px; }
-.rdcal-dow span { text-align: center; font-size: 8px; font-weight: 700; color: var(--txt-3); text-transform: uppercase; font-family: 'Saira Condensed', system-ui, sans-serif; }
-.rdcal-body { display: grid; grid-template-columns: repeat(7, 1fr); column-gap: 0; padding: 0 4px 6px; }
-.rdcal-day { position: relative; height: 34px; }
-.rdcal-bar { position: absolute; z-index: 1; top: 50%; transform: translateY(-50%); left: 0; right: 0; height: 3px; }
-.rdcal-day.elapsed .rdcal-bar { background: var(--rdcal-hl); }
-.rdcal-day.fut .rdcal-bar { background: var(--rdcal-hl); opacity: .3; }
-.rdcal-day.is-start .rdcal-bar { left: 50%; border-radius: 2px 0 0 2px; }
-.rdcal-day.is-end .rdcal-bar { right: 50%; border-radius: 0 2px 2px 0; }
-.rdcal-n { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; font-size: 11px; font-weight: 600; color: var(--txt-2); line-height: 1.2; border-radius: 3px; padding: 0 2px; white-space: nowrap; }
-.rdcal-t { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); z-index: 3; font-size: 7px; font-weight: 700; color: var(--txt-2); font-family: 'Saira Condensed', system-ui, sans-serif; white-space: nowrap; letter-spacing: .2px; }
-.rdcal-ico { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); z-index: 2; width: 10px; height: 10px; color: var(--rdcal-hl, var(--green)); display: flex; align-items: center; justify-content: center; }
-.rdcal-ico svg { width: 100%; height: 100%; display: block; }
-.rdcal-day.is-past .rdcal-n { opacity: .35; }
-.rdcal-day.is-win .rdcal-n { color: var(--txt); }
-.rdcal-day.is-today .rdcal-n { color: var(--accent); font-weight: 800; }
-.rdcal-day.is-start .rdcal-n { background: var(--rdcal-hl, var(--green)); color: var(--card); font-weight: 800; }
-.rdcal-day.is-end .rdcal-n { outline: 1.5px solid var(--rdcal-hl, var(--green)); color: var(--rdcal-hl, var(--green)); font-weight: 800; border-radius: 50%; }
 /* unit rows beneath calendar */
 .rd-units { margin-top: 6px; }
 .rd-unit-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -2706,6 +2861,16 @@ body { font-variant-numeric: tabular-nums; }
 .cr { display: flex; align-items: center; gap: 8px; min-width: 0; justify-content: flex-start; }
 .cr-id { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .cr-name { flex: 0 1 auto; min-width: 0; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ec-red: official flagging-red text treatment — --red halo bleeds into 65%-red+white fill, no hard seam. */
+.cr-name.ec-red,
+.rcc-uname.ec-red,
+.ur-name.ec-red,
+.catr-name.ec-red,
+.rcc-bal.overdue,
+.cr-pay.over,
+.pill.c-red .t { color: var(--red); -webkit-text-fill-color: color-mix(in srgb, var(--red) 65%, white); text-shadow: 0 0 3px var(--red), 0 0 7px color-mix(in srgb, var(--red) 60%, transparent); }
+/* ec-red border glow on red status pills */
+.pill.c-red { border-color: color-mix(in srgb, var(--red) 55%, transparent); box-shadow: 0 0 4px color-mix(in srgb, var(--red) 25%, transparent); }
 .cr-sub { flex: 0 1 auto; min-width: 0; font-size: 11.5px; color: var(--txt-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cr-pay { flex: 0 0 auto; font-size: 13px; font-weight: 700; font-style: italic; white-space: nowrap; }
 .cr-pay.spend { color: var(--green); }
@@ -2738,11 +2903,41 @@ body { font-variant-numeric: tabular-nums; }
   .ur-id { flex-direction: column; align-items: flex-start; gap: 1px; }
   .ur-pills { grid-template-columns: 1fr; flex-basis: 90px; }
 }
-/* ── CATEGORY ROW (catr): [status badges LEFT] · [name/rate RIGHT] — mirrors units swap. ── */
-.catr { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px 8px 10px; }
-.catr-pills { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 80px; }
-.catr-id { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.catr-sub { font-size: 11.5px; color: var(--txt-2); white-space: nowrap; }
+/* ── CATEGORY MINI-CARD (catr) — Jac 2026-06-25: the category as a vertical unit
+   data-plate. The Categories .list lays these out as a grid — 3-across when the
+   column is wide, folding to 2 (then 1) as it narrows (auto-fill / minmax). Each
+   plate's full border carries the rentable-health color (--catr-hl), exactly like
+   the rentals mini-card's --rcc-hl. Layout: [icon · stamped NAME] / [Avail · rentable
+   tally, two equal pill slots] / [1-Day · 7-Day · 4-Week stacked rate card]. ── */
+.card[data-card="categories"] .list { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); grid-auto-rows: min-content; }
+.card[data-card="categories"] .list .newrow,
+.card[data-card="categories"] .list .empty-new,
+.card[data-card="categories"] .list .empty,
+.card[data-card="categories"] .list .showmore { grid-column: 1 / -1; }   /* +New, empty states & Show-more span every column */
+.row[data-card="categories"] { padding: 0; }
+.row[data-card="categories"] .row-content { padding: 0; height: 100%; }
+.catr { height: 100%; display: flex; flex-direction: column; gap: 7px; padding: 8px 9px; border: 2px solid var(--catr-hl, var(--line)); border-radius: 11px; overflow: hidden; }
+.catr-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.catr-cat { flex: 0 0 auto; width: 18px; height: 18px; color: var(--txt-2); display: flex; align-items: center; justify-content: center; }
+.catr-cat svg { width: 17px; height: 17px; display: block; }
+.catr-name { flex: 1 1 auto; min-width: 0; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; font-size: 13px; line-height: 1.1; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.catr-pills { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.catr-slot { display: flex; align-items: center; justify-content: center; }
+.catr-slot .pill { width: 100%; text-align: center; justify-content: center; overflow: hidden; }
+.catr-slot .pill .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* the Availability slot is a shortcut into the Units card — give it a clear hit
+   affordance (the whole slot is the click target, not just the pill). */
+.catr-slot.js-cat-avail { cursor: pointer; }
+.catr-slot.js-cat-avail .pill { transition: box-shadow .12s, border-color .12s; }
+.catr-slot.js-cat-avail:hover .pill { border-color: var(--accent-line); box-shadow: 0 0 0 1px var(--accent-line); }
+.catr-slot.js-cat-avail:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
+/* the rate card: a stamped period label on the left, the money value on the right,
+   set off by a single saddle-stitch seam from the status pills above. */
+.catr-rates { margin-top: auto; display: flex; flex-direction: column; gap: 2px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.catr-rate { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.catr-rk { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .8px; font-weight: 600; font-size: 10px; color: var(--txt-3); }
+.catr-rv { font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+.catr-rv.none { color: var(--txt-3); font-weight: 600; }
 
 /* ── CUSTOMER ROW (cr-statuses): account-type + funnel, equal-width, right-pinned. ── */
 .cr-statuses { flex: 0 0 160px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-left: auto; }
@@ -2762,6 +2957,29 @@ body { font-variant-numeric: tabular-nums; }
 .drag-ghost { position: fixed; left: 0; top: 0; z-index: 9500; display: flex; align-items: center; gap: 7px; max-width: 240px; padding: 7px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--accent); box-shadow: 0 0 0 2px var(--accent-line), 0 14px 34px -10px rgba(0,0,0,.65); color: var(--accent); font-size: 12.5px; font-weight: 700; pointer-events: none; will-change: transform; }
 .drag-ghost svg { width: 14px; height: 14px; flex: 0 0 auto; }
 .drag-ghost .dg-t { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* §M2 ZIP ZONES (phone) — edge rails of valid drop-target cards during a drag. Steel
+   data-plate tabs with a per-card hazard stripe (the ONLY colour — a transient drag
+   overlay, so the one-orange rule holds for persistent UI). Drag onto one to jump to
+   that card's column; hot = armed, about to zip. Mirrors the cancel-arc language. */
+#zip-zones { position: fixed; inset: 0; pointer-events: none; }
+.zz-rail { position: fixed; top: 0; bottom: 0; display: flex; flex-direction: column; justify-content: center; gap: 12px; padding: 8px 0; }
+.zz-rail-left { left: 0; align-items: flex-start; padding-left: env(safe-area-inset-left); }
+.zz-rail-right { right: 0; align-items: flex-end; padding-right: env(safe-area-inset-right); }
+.zip-zone { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  width: 78px; min-height: 92px; padding: 12px 8px; color: var(--txt-2);
+  background: linear-gradient(180deg, #1b2129, #0c0e11); border: 1px solid var(--line); box-shadow: 0 14px 34px -12px #000; }
+.zip-left  { border-left: 0; border-radius: 0 15px 15px 0; animation: zipInL .18s cubic-bezier(.2,.7,.2,1); }
+.zip-right { border-right: 0; border-radius: 15px 0 0 15px; animation: zipInR .18s cubic-bezier(.2,.7,.2,1); }
+.zip-zone::before { content: ''; position: absolute; top: 0; bottom: 0; width: 7px;   /* hi-vis hazard stripe in the card's hue */
+  background: repeating-linear-gradient(135deg, var(--zip-hue, var(--accent)) 0 13px, #14181d 13px 26px); }
+.zip-left::before  { right: 0; } .zip-right::before { left: 0; }
+.zip-zone .zz-ico { display: inline-flex; color: var(--zip-hue, var(--accent)); } .zip-zone .zz-ico svg { width: 22px; height: 22px; }
+.zip-zone .zz-lbl { font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 800; font-size: 11px; line-height: 1.05; text-align: center; }
+.zip-zone.hot { color: var(--zip-hue, var(--accent)); border-color: var(--zip-hue, var(--accent));
+  box-shadow: 0 14px 44px -12px #000, inset 0 0 34px -10px var(--zip-hue, var(--accent)); }
+@keyframes zipInL { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes zipInR { from { transform: translateX(100%); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .zip-zone { animation: none; } }
 /* THE CANCEL ARC — "the abort bay" (frontend-design pass, Jac 2026-06-13).
    A heavy steel half-ellipse rising from the bottom: drop the dragged chip in
    here to ABORT the link. Idle = steel bay with a caution HAZARD-STRIPE lip (the

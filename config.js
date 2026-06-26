@@ -140,6 +140,7 @@ const RAW_STATUS = {
     'Not A No!':         { label: 'Not A No!',         color: 'purple' },
     'Payment Discussed': { label: 'Payment Discussed', color: 'orange' },
     'Paid':              { label: 'Paid',              color: 'green'  },
+    'Signed':            { label: 'Signed',            color: 'green'  },   // membership terminal — auto-set by signing the agreement (F3), never manual
   },
   gpsStatus: {
     'Reporting':     { label: 'Reporting',     color: 'green'  },
@@ -270,6 +271,7 @@ export const FLAG_META = {
     { id: 'action-required',   label: 'Action Required',   severity: 'yellow' },
     { id: 'check-in',          label: 'Due for Check-In',  severity: 'yellow' },
     { id: 'card-expiring',     label: 'Card Expiring',     severity: 'yellow' },
+    { id: 'no-card-reserved',  label: 'No Card',           severity: 'yellow' },
   ],
 };
 /** Severity rank for sorting/highest-wins. Higher = more severe. */
@@ -309,6 +311,41 @@ export const ROLES = [
   { id: 'sales', label: 'Sales', color: 'navy',
     kpis: ['Revenue Goal', 'Active Customer Rate', 'Pipeline'] },
 ];
+
+/* ── Permission tiers (role-system redesign 2026-06-26) ───────────────────────
+ * Roles are customizable (add/remove/rename in Settings → Roles & Logins), so
+ * permissions can no longer key off role NAMES. Instead every role — built-in or
+ * custom — carries one TIER, and all gates compare tiers. A strict superset
+ * ladder: each tier includes every power below it. `rank` is the comparison key.
+ *   staff   — operational only (units/shop/rentals/inspections)
+ *   money   — + see pricing/margin, take payments, invoices
+ *   manager — + approve requests, override blocks
+ *   admin   — + Settings, category/pricing edits, migrations
+ *   developer — + dev tools (Design Lint / Inspector / Rulebook)
+ * Spec: docs/superpowers/specs/2026-06-26-role-system-redesign-design.md */
+export const ROLE_TIERS = [
+  { id: 'staff',     rank: 1, label: 'Staff' },
+  { id: 'money',     rank: 2, label: 'Money' },
+  { id: 'manager',   rank: 3, label: 'Manager' },
+  { id: 'admin',     rank: 4, label: 'Admin' },
+  { id: 'developer', rank: 5, label: 'Developer' },
+];
+/* tierRank('admin') -> 4; unknown/blank -> 0 (no privilege). */
+export const tierRank = (tierId) => {
+  const t = ROLE_TIERS.find((x) => x.id === String(tierId || '').trim().toLowerCase());
+  return t ? t.rank : 0;
+};
+/* Default tier per SHIPPED role id — the fallback when a backend predates
+ * `settings.roleMeta`. Keyed by lowercased role id. */
+export const BUILTIN_ROLE_TIERS = {
+  mechanic: 'staff', mtech: 'staff', driver: 'staff',
+  office: 'money', sales: 'money',
+  manager: 'manager', admin: 'admin', developer: 'developer',
+  // Backward-compat bridge: the legacy "Owner" login keeps its admin-ceiling
+  // powers until it's explicitly converted to Manager (runtime, via Settings),
+  // so the rollout never strips an in-use login mid-flight.
+  owner: 'admin',
+};
 
 /* ── Card registry (SPEC §5.5 grid order + §0.4 back-office boards) ──────── */
 // 6-card grid (3×2): Work Orders + Service Orders + Inspections are merged into
@@ -351,7 +388,7 @@ export const COLUMNS = [
   { id: 'right',  default: 'customers', members: ['customers', 'invoices'] },
 ];
 export const COLUMN_OF = {
-  units: 'left', categories: 'left', inspections: 'left', serviceOrders: 'left', workOrders: 'left',
+  units: 'left', categories: 'left', inspections: 'left', serviceOrders: 'left', workOrders: 'left', shop: 'left',
   rentals: 'middle', invoices: 'right', customers: 'right',
 };
 

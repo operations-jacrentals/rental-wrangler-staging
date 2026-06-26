@@ -548,6 +548,39 @@ try {
     ok(T.checklistRequired(aUnit) === false && T.checklistFor(aUnit) !== null, 'a defined-but-not-required checklist is available but does not take over');
     st.settings.inspections = savedInsp;   // restore
 
+    // 26b) Fail-condition model (Jac 2026-06-26) — per-type fail predicate + all-required gate
+    const F = T.inspItemFails, U = T.inspItemUnanswered;
+    // toggle: legacy (no it.fail) still fails on 'Fail'; inverted fails on 'Pass'
+    ok(F({ type: 'toggle' }, 'Fail') === true && F({ type: 'toggle' }, 'Pass') === false, 'toggle (legacy, no fail cfg) → fails on Fail, passes on Pass');
+    ok(F({ type: 'toggle', fail: { failWhen: 'pass' } }, 'Pass') === true && F({ type: 'toggle', fail: { failWhen: 'pass' } }, 'Fail') === false, 'toggle inverted → Pass trips the fail');
+    // a bare item (no type) reads as toggle — the 21 default families are unaffected
+    ok(F({}, 'Fail') === true && F({}, 'Pass') === false, 'typeless item reads as toggle (default families unchanged)');
+    // number: above / below / outside / inside
+    ok(F({ type: 'number', fail: { op: 'above', a: 100 } }, '120') === true && F({ type: 'number', fail: { op: 'above', a: 100 } }, '80') === false, 'number above → fails when value > a');
+    ok(F({ type: 'number', fail: { op: 'below', a: 30 } }, '20') === true && F({ type: 'number', fail: { op: 'below', a: 30 } }, '40') === false, 'number below → fails when value < a');
+    ok(F({ type: 'number', fail: { op: 'outside', a: 10, b: 20 } }, '25') === true && F({ type: 'number', fail: { op: 'outside', a: 10, b: 20 } }, '15') === false, 'number outside → fails when value outside [a,b]');
+    ok(F({ type: 'number', fail: { op: 'inside', a: 10, b: 20 } }, '15') === true && F({ type: 'number', fail: { op: 'inside', a: 10, b: 20 } }, '25') === false, 'number inside → fails when value inside [a,b]');
+    ok(F({ type: 'number', fail: { op: 'above', a: 100 } }, '') === false && F({ type: 'number', fail: { op: 'none' } }, '5') === false, 'number → blank or op:none never fails');
+    // date: before / after a ref (today by default)
+    ok(F({ type: 'date', fail: { op: 'before', ref: '2026-06-26' } }, '2026-06-01') === true && F({ type: 'date', fail: { op: 'before', ref: '2026-06-26' } }, '2026-07-01') === false, 'date before → fails when date < ref (expiry)');
+    ok(F({ type: 'date', fail: { op: 'after', ref: '2026-06-26' } }, '2026-07-01') === true, 'date after → fails when date > ref');
+    // text: empty / contains
+    ok(F({ type: 'text', fail: { op: 'empty' } }, '') === true && F({ type: 'text', fail: { op: 'empty' } }, 'ok') === false, 'text empty → fails when blank');
+    ok(F({ type: 'text', fail: { op: 'contains', value: 'crack' } }, 'hairline CRACK seen') === true && F({ type: 'text', fail: { op: 'none' } }, 'x') === false, 'text contains → case-insensitive match; op:none never fails');
+    // select: per-option fail (unchanged)
+    ok(F({ type: 'select', options: [{ label: 'Bald', fail: true }, { label: 'OK' }] }, 'Bald') === true && F({ type: 'select', options: [{ label: 'Bald', fail: true }, { label: 'OK' }] }, 'OK') === false, 'select → fails when chosen option flagged fail');
+    // all-required gate — every type must be answered (the Optional path is gone)
+    ok(U({ type: 'toggle' }, '') === true && U({ type: 'toggle' }, 'Pass') === false, 'gate: toggle must be picked');
+    ok(U({ type: 'number' }, '') === true && U({ type: 'number' }, '5') === false, 'gate: number must be filled (no more optional)');
+    ok(U({ type: 'file' }, '') === true && U({ type: 'file' }, 'data:...') === false, 'gate: file must be attached');
+    ok(U({ type: 'text', required: false }, '') === true, 'gate: legacy required:false is ignored — all fields required now');
+    // evidence gate — failphoto requires a photo only when the item currently fails
+    const EM = T.inspEvidenceMissing;
+    ok(EM({ type: 'toggle', evidence: 'failphoto' }, 'Fail', []) === true && EM({ type: 'toggle', evidence: 'failphoto' }, 'Fail', [{ url: 'x' }]) === false, 'evidence: failphoto blocks a Fail with no photo, clears once attached');
+    ok(EM({ type: 'toggle', evidence: 'failphoto' }, 'Pass', []) === false, 'evidence: failphoto does NOT block a passing item');
+    ok(EM({ type: 'number', evidence: 'failphoto', fail: { op: 'below', a: 30 } }, '20', []) === true, 'evidence: failphoto keys off the generalized fail (number below trips it)');
+    ok(EM({ type: 'toggle', evidence: 'always' }, 'Pass', []) === true && EM({ type: 'toggle', evidence: 'optional' }, 'Fail', []) === false && EM({ type: 'toggle' }, 'Fail', []) === false, 'evidence: always needs a photo regardless; optional/none never block');
+
     // 27) Reversibility — a corrupt customization must self-heal, never brick the app
     const savedAll = st.settings;
     st.settings = { status: { rentalStatus: 'this-is-not-an-object-it-is-garbage' } };   // malformed
@@ -589,6 +622,352 @@ try {
     const dNeg = [{ col: '__date', value: '2026-06-05', neg: true }];
     ok(T.rowMatches('rentals', rA, '', dNeg) === false && T.rowMatches('rentals', rB, '', dNeg) === true, 'date: a NEGATED date filter excludes the match and keeps the rest');
     ok(T.rowMatches('units', aUnit2, '', dNeg) === true, 'date: a NEGATED date filter is STILL a no-op on date-less cards (never excluded)');
+
+    // 30) RENTAL EXTENSIONS — re-price the lengthened window, bill only the delta as additive
+    //     'extension' line(s); positive only; composes across repeats; never touches paid lines.
+    {
+      const priceFor = (catId, s, e) => { const p = T.rentalPrice({ categoryId: catId, startDate: s, endDate: e, customerId: 'C0009' }); return p ? p.price : 0; };
+      const S0 = '2099-06-01', E0 = '2099-06-06', E1 = '2099-06-13', E2 = '2099-06-20';   // 5d → 12d → 19d
+      // pick two Active units whose category actually PRICES (and prices higher for a longer window)
+      const priced = af.filter((u) => priceFor(u.categoryId, S0, E1) > priceFor(u.categoryId, S0, E0) && priceFor(u.categoryId, S0, E0) > 0);
+      const exU = priced[0], exV = priced[1];
+      ok(!!exU && !!exV, 'two priced Active units available for the extension fixture');
+      const rX = { rentalId: 'R-EXTTEST', customerId: 'C0009', unitId: exU.unitId, categoryId: exU.categoryId, startDate: S0, endDate: E0, startTime: '', status: 'On Rent', transportType: 'Self', deliveryAddress: '', transportMiles: null, invoiceId: null, units: [mk(exU), mk(exV)].map((u) => ({ ...u, transportType: 'Self', transportMiles: null })), notes: '', actions: [], mock: true };
+      T.DATA.rentals.push(rX); T.IDX.rental.set('R-EXTTEST', rX);
+      const invX = { invoiceId: 'I-EXTTEST', customerId: 'C0009', rentalIds: ['R-EXTTEST'], date: T.TODAY_ISO, dueDate: T.TODAY_ISO, po: '', amountPaid: 0, lineItems: [], mock: true };
+      T.rentalLineItems(rX).forEach((li) => invX.lineItems.push(li));
+      invX.covOf = 'R-EXTTEST'; invX.covStart = S0; invX.covEnd = E0;   // §28cap chunk bounds (≤28-day window)
+      T.DATA.invoices.push(invX); T.IDX.invoice.set('I-EXTTEST', invX); rX.invoiceId = 'I-EXTTEST';
+      const extLines = () => invX.lineItems.filter((l) => l.kind === 'extension');
+      const billedUnit = (uId) => invX.lineItems.filter((l) => l.unitId === uId && (l.kind === 'rental' || l.kind === 'extension')).reduce((a, l) => a + (+l.amount || 0), 0);
+
+      // preview is pure (no mutation) and matches the real per-unit price delta
+      const expDeltaU = Math.round((priceFor(exU.categoryId, S0, E1) - priceFor(exU.categoryId, S0, E0)) * 100) / 100;
+      const expDeltaV = Math.round((priceFor(exV.categoryId, S0, E1) - priceFor(exV.categoryId, S0, E0)) * 100) / 100;
+      const pv = T.extensionPreview(rX, S0, E1);
+      const linesBeforePv = invX.lineItems.length;
+      ok(pv && Math.abs(pv.subtotalDelta - (expDeltaU + expDeltaV)) < 0.01, `extensionPreview delta = Σ per-unit re-price (${pv ? pv.subtotalDelta : 'null'})`);
+      ok(invX.lineItems.length === linesBeforePv, 'extensionPreview is PURE — adds no line items');
+      ok(pv && Math.abs(pv.taxDelta - Math.round(pv.subtotalDelta * 0.1075 * 100) / 100) < 0.01, 'extensionPreview taxes the delta at 10.75%');
+
+      // commit the 5→12 extension → one extension line per unit, equal to the re-price delta
+      rX.endDate = E1; const e1 = T.billExtension(rX, E0);
+      ok(e1 && e1.count === 2 && Math.abs(e1.subtotalDelta - (expDeltaU + expDeltaV)) < 0.01, `billExtension 5→12 adds 2 lines (+$${e1 ? e1.subtotalDelta : '?'})`);
+      ok(Math.abs(billedUnit(exU.unitId) - priceFor(exU.categoryId, S0, E1)) < 0.01, 'after extension, unit total billed == full re-priced window (no double-count)');
+
+      // second extension 12→19 composes: diffs against rental + the first extension line
+      rX.endDate = E2; const e2 = T.billExtension(rX, E1);
+      ok(e2 && Math.abs(billedUnit(exU.unitId) - priceFor(exU.categoryId, S0, E2)) < 0.01, 'repeat extension 12→19 composes — billed == full 19-day window, no double-count');
+      ok(extLines().length === 0 && Math.abs(billedUnit(exV.unitId) - priceFor(exV.categoryId, S0, E2)) < 0.01, 'retro RE-PRICES the rental line in place (no extension-line pileup) — both units track cheapest(window)');
+
+      // shorten → NO auto-credit (refund-first); positive-delta-only guard
+      const linesBeforeShorten = invX.lineItems.length;
+      rX.endDate = E0; const e3 = T.billExtension(rX, E2);
+      ok(e3 === null && invX.lineItems.length === linesBeforeShorten, 'shortening the window bills nothing (no auto-credit — refund stays manual)');
+      rX.endDate = E2;   // restore to 19 days
+
+      // allocation stability: a payment allocated to the original rental line survives a new extension line
+      const rl0 = invX.lineItems.find((l) => l.kind === 'rental' && l.unitId === exU.unitId);
+      invX.amountPaid = rl0.amount; invX.allocations = { [T.lineKey(rl0)]: rl0.amount };   // pay the original line exactly
+      const paidBefore = T.itemPaid(invX, rl0);
+      rX.endDate = '2099-06-25'; T.billExtension(rX, E2);   // 19 → 24 days, stays within this invoice (≤28, still open)
+      ok(T.itemPaid(invX, rl0) === paidBefore, 'paid original rental line keeps its allocation after an extension line is appended (lid-stable)');
+
+      // locked active invoice → extension SPILLS to a new invoice (never edits the sealed one)
+      invX.locked = true; const invXLines = invX.lineItems.length;
+      rX.endDate = '2099-07-20'; const eLock = T.billExtension(rX, '2099-06-25');
+      ok(eLock && eLock.newInvoices >= 1 && invX.lineItems.length === invXLines, 'locked active invoice → extension spills to a NEW invoice (sealed one untouched)');
+      invX.locked = false;
+
+      // cleanup (sweep the whole series — the locked spill opened extra invoices)
+      T.rentalInvoices(rX).forEach((iv) => { const i = T.DATA.invoices.findIndex((o) => o.invoiceId === iv.invoiceId); if (i >= 0) T.DATA.invoices.splice(i, 1); T.IDX.invoice.delete(iv.invoiceId); });
+      const riX = T.DATA.rentals.findIndex((o) => o.rentalId === 'R-EXTTEST'); if (riX >= 0) T.DATA.rentals.splice(riX, 1); T.IDX.rental.delete('R-EXTTEST');
+
+      // 31) RETROACTIVE RENTAL PRICING setting (default ON) — OFF bills the extension as a
+      //     fresh rental of just the added days; ON blends the whole window (≤ OFF total).
+      const stx = T.__state; const savedCoRetro = stx.settings.company;
+      ok(T.retroPricingOn() === true, 'retroPricingOn() defaults to ON (no setting)');
+      stx.settings.company = { ...(stx.settings.company || {}), retroactivePricing: false };
+      ok(T.retroPricingOn() === false, 'retroPricingOn() reflects the OFF setting');
+      const rY = { rentalId: 'R-EXTOFF', customerId: 'C0009', unitId: exU.unitId, categoryId: exU.categoryId, startDate: S0, endDate: E0, startTime: '', status: 'On Rent', transportType: 'Self', deliveryAddress: '', transportMiles: null, invoiceId: null, units: [{ ...mk(exU), transportType: 'Self', transportMiles: null }], notes: '', actions: [], mock: true };
+      T.DATA.rentals.push(rY); T.IDX.rental.set('R-EXTOFF', rY);
+      const invY = { invoiceId: 'I-EXTOFF', customerId: 'C0009', rentalIds: ['R-EXTOFF'], date: T.TODAY_ISO, dueDate: T.TODAY_ISO, po: '', amountPaid: 0, lineItems: [], mock: true };
+      T.rentalLineItems(rY).forEach((li) => invY.lineItems.push(li));
+      T.DATA.invoices.push(invY); T.IDX.invoice.set('I-EXTOFF', invY); rY.invoiceId = 'I-EXTOFF';
+      const baseLineY = invY.lineItems.find((l) => l.kind === 'rental' && l.unitId === exU.unitId).amount;
+      rY.endDate = E1; const off1 = T.billExtension(rY, E0);
+      const standaloneSeg = priceFor(exU.categoryId, E0, E1);     // E0→E1 priced as its own rental
+      ok(off1 && off1.retro === false && Math.abs(off1.subtotalDelta - standaloneSeg) < 0.01, `OFF: extension billed as standalone added days ($${standaloneSeg}), not the blended delta`);
+      ok(invY.lineItems.find((l) => l.kind === 'rental' && l.unitId === exU.unitId).amount === baseLineY, 'OFF: the original rental line is frozen (unchanged)');
+      // invariant — for the SAME extension, blending the whole window (ON) is never MORE than standalone (OFF)
+      const Emid8 = '2099-06-09';   // S0 +8 days
+      ok(priceFor(exU.categoryId, S0, Emid8) <= priceFor(exU.categoryId, S0, E0) + priceFor(exU.categoryId, E0, Emid8) + 0.005, 'retroactive ON total ≤ OFF total for the same extension (blend never costs more)');
+      stx.settings.company = savedCoRetro;   // restore default
+      [['R-EXTOFF', T.DATA.rentals, 'rentalId'], ['I-EXTOFF', T.DATA.invoices, 'invoiceId']].forEach(([id, arr, k]) => { const i = arr.findIndex((o) => o[k] === id); if (i >= 0) arr.splice(i, 1); });
+      T.IDX.rental.delete('R-EXTOFF'); T.IDX.invoice.delete('I-EXTOFF');
+    }
+
+    // 32) §28cap MULTI-INVOICE SERIES — long rentals split into ≤28-day invoices; same total;
+    //     extend past 28 days OR a closed invoice → a continuation invoice (never reopen settled).
+    {
+      const pf = (catId, s, e) => { const p = T.rentalPrice({ categoryId: catId, startDate: s, endDate: e, customerId: 'C0009' }); return p ? p.price : 0; };
+      const af2 = T.DATA.units.filter((u) => u.fleetStatus === 'Active');
+      const cu = af2.find((u) => pf(u.categoryId, '2099-09-01', '2099-09-29') > 0) || af2[0];
+      const mkU = (u) => ({ unitId: u.unitId, status: 'On Rent', transportType: 'Self', deliveryAddress: '', recoveryAddress: '', transportMiles: null, startCapture: null, endCapture: null, fcCapture: null });
+      const mkRental = (id, start, end) => { const r = { rentalId: id, customerId: 'C0009', unitId: cu.unitId, categoryId: cu.categoryId, startDate: start, endDate: end, startTime: '', status: 'On Rent', transportType: 'Self', deliveryAddress: '', transportMiles: null, invoiceId: null, units: [mkU(cu)], notes: '', actions: [], mock: true }; T.DATA.rentals.push(r); T.IDX.rental.set(id, r); return r; };
+      // ≤28 days → exactly ONE invoice (common path unchanged)
+      const rS = mkRental('R-CAP1', '2099-09-01', '2099-09-15');
+      T.createInvoiceForRental('R-CAP1');
+      ok(T.rentalInvoices(rS).length === 1, '≤28-day rental → exactly one invoice (common path unchanged)');
+      // 40-day rental → series of 2 (28 + 12), contiguous chunks, continuation links back
+      const rL = mkRental('R-CAP2', '2099-10-01', '2099-11-10');
+      T.createInvoiceForRental('R-CAP2');
+      const series = T.rentalInvoices(rL);
+      ok(series.length === 2, `40-day rental → 2-invoice series (got ${series.length})`);
+      ok(series[0].covStart === '2099-10-01' && series[0].covEnd === '2099-10-29' && series[1].covStart === '2099-10-29', 'chunks cover contiguous ≤28-day windows');
+      ok(series[1].contOf === series[0].invoiceId, 'continuation invoice points back to the first (contOf)');
+      const seriesSub = series.reduce((a, iv) => a + T.invoiceTotals(iv).subtotal, 0);
+      ok(Math.abs(seriesSub - pf(cu.categoryId, '2099-10-01', '2099-11-10')) < 0.01, 'split bills the SAME total as one blended bill (28-day cap is organizational only)');
+      // extend past 28 days → spills into a 2nd invoice; series total stays cheapest(full)
+      const rE = mkRental('R-CAP3', '2099-12-01', '2099-12-20');
+      T.createInvoiceForRental('R-CAP3');
+      ok(T.rentalInvoices(rE).length === 1, 'a 19-day rental starts as one invoice');
+      // preview reflects the SIGNED retro delta — incl. a reduction when extending unlocks a cheaper rate
+      const pvDown = T.extensionPreview(rE, '2099-12-01', '2099-12-29');
+      ok(pvDown && Math.abs(pvDown.subtotalDelta - (pf(cu.categoryId, '2099-12-01', '2099-12-29') - pf(cu.categoryId, '2099-12-01', '2099-12-20'))) < 0.01, 'preview shows the signed retro delta (a credit when extending into the cheaper 4-Week rate)');
+      rE.endDate = '2100-01-05'; T.billExtension(rE, '2099-12-20');   // 19 → 35 days
+      ok(T.rentalInvoices(rE).length === 2, 'extending 19→35 days spills into a 2nd invoice (28-day cap)');
+      const eTot = T.rentalInvoices(rE).reduce((a, iv) => a + T.invoiceTotals(iv).subtotal, 0), e35 = pf(cu.categoryId, '2099-12-01', '2100-01-05');
+      ok(Math.abs(eTot - e35) < 0.01, `after the spill, series total == cheapest(35 days) — incl. retro down-reblend at the 28-day mark (${eTot} vs ${e35})`);
+      // closed (paid in full) active invoice + extend → NEW invoice; settled one untouched
+      const rC = mkRental('R-CAP4', '2100-02-01', '2100-02-08');
+      T.createInvoiceForRental('R-CAP4');
+      const inv0 = T.rentalInvoices(rC)[0];
+      inv0.amountPaid = T.invoiceTotals(inv0).total;   // pay in full → CLOSED
+      ok(T.invoiceTotals(inv0).balance <= 0, 'first invoice paid in full (closed)');
+      const inv0Lines = inv0.lineItems.length;
+      rC.endDate = '2100-02-15'; T.billExtension(rC, '2100-02-08');   // still <28 days, but prior is closed
+      ok(T.rentalInvoices(rC).length === 2, 'extending a CLOSED invoice opens a new one (never reopens the settled invoice)');
+      ok(inv0.lineItems.length === inv0Lines && T.invoiceTotals(inv0).balance <= 0, 'the paid invoice stays settled — no lines added, still $0 balance');
+      // cleanup
+      ['R-CAP1', 'R-CAP2', 'R-CAP3', 'R-CAP4'].forEach((rid) => {
+        const rr = T.IDX.rental.get(rid);
+        if (rr) T.rentalInvoices(rr).forEach((iv) => { const i = T.DATA.invoices.findIndex((o) => o.invoiceId === iv.invoiceId); if (i >= 0) T.DATA.invoices.splice(i, 1); T.IDX.invoice.delete(iv.invoiceId); });
+        const ri = T.DATA.rentals.findIndex((o) => o.rentalId === rid); if (ri >= 0) T.DATA.rentals.splice(ri, 1); T.IDX.rental.delete(rid);
+      });
+    }
+
+    // 32b) EXTENSION PREVIEW == ACTUAL POSTING (regression for the reported bug — the inline
+    //      confirm panel's "Added charge" must equal EXACTLY what Bill Extension posts, even when
+    //      the invoice is PAID (spills the added segment to a continuation invoice) or its prior
+    //      charge is a MANUAL line, not an auto rental line. The old preview blindly did
+    //      `price(full window) − matched-billed`, which overstated both cases.)
+    {
+      const pf = (catId, s, e) => { const p = T.rentalPrice({ categoryId: catId, startDate: s, endDate: e, customerId: 'C0009' }); return p ? p.price : 0; };
+      const SB = '2099-07-31', S0 = '2099-08-01', E0 = '2099-08-03', E1 = '2099-08-04';   // base 2-day window [S0,E0]; SB = start −1, E1 = end +1
+      const af3 = T.DATA.units.filter((u) => u.fleetStatus === 'Active');
+      const cu = af3.find((u) => pf(u.categoryId, S0, E1) > pf(u.categoryId, S0, E0) && pf(u.categoryId, S0, E0) > 0) || af3[0];
+      const seriesSub = (r) => T.rentalInvoices(r).reduce((a, iv) => a + iv.lineItems.filter((l) => l.kind === 'rental' || l.kind === 'extension').reduce((s, l) => s + (+l.amount || 0), 0), 0);
+      // ns/ne = the staged new window; default = back extension. Asserts the inline preview equals
+      // the real series delta billExtension posts, for an extension at EITHER end (or both).
+      const scenario = (label, paid, matched, ns, ne) => {
+        ns = ns || S0; ne = ne || E1;
+        const rid = 'R-PVEQ', iid = 'I-PVEQ';
+        const r = { rentalId: rid, customerId: 'C0009', unitId: cu.unitId, categoryId: cu.categoryId, startDate: S0, endDate: E0, startTime: '', status: 'On Rent', transportType: 'Self', deliveryAddress: '', transportMiles: null, invoiceId: iid, units: [{ unitId: cu.unitId, transportType: 'Self', transportMiles: null }], notes: '', actions: [], mock: true };
+        T.DATA.rentals.push(r); T.IDX.rental.set(rid, r);
+        const inv = { invoiceId: iid, customerId: 'C0009', rentalIds: [rid], date: T.TODAY_ISO, dueDate: T.TODAY_ISO, po: '', amountPaid: 0, lineItems: [], covOf: rid, covStart: S0, covEnd: E0, mock: true };
+        if (matched) T.rentalLineItems(r).forEach((li) => inv.lineItems.push(li));
+        else inv.lineItems.push({ kind: 'item', ref: rid, unitId: cu.unitId, lid: 'L-MAN', label: `${T.IDX.unit.get(cu.unitId)?.name || 'Unit'} · 1-Day×1`, amount: pf(cu.categoryId, S0, E0), qty: 1 });
+        T.DATA.invoices.push(inv); T.IDX.invoice.set(iid, inv);
+        if (paid) { inv.amountPaid = T.invoiceTotals(inv).total; const l0 = inv.lineItems[0]; inv.allocations = { [T.lineKey(l0)]: l0.amount }; }
+        const pv = T.extensionPreview(r, ns, ne);
+        const before = seriesSub(r);
+        r.startDate = ns; r.endDate = ne; T.billExtension(r, E0, S0);
+        const actual = Math.round((seriesSub(r) - before) * 100) / 100;
+        ok(pv && Math.abs(pv.subtotalDelta - actual) < 0.01, `preview == actual posting — ${label} (preview ${pv ? pv.subtotalDelta : 'null'} vs billed ${actual})`);
+        T.rentalInvoices(r).forEach((iv) => { const i = T.DATA.invoices.findIndex((o) => o.invoiceId === iv.invoiceId); if (i >= 0) T.DATA.invoices.splice(i, 1); T.IDX.invoice.delete(iv.invoiceId); });
+        const ri = T.DATA.rentals.findIndex((o) => o.rentalId === rid); if (ri >= 0) T.DATA.rentals.splice(ri, 1); T.IDX.rental.delete(rid);
+        return pv ? pv.subtotalDelta : null;
+      };
+      // BACK extension (end +1) — the #358 fix
+      scenario('back · unpaid · auto line', false, true, S0, E1);
+      scenario('back · PAID · auto line', true, true, S0, E1);
+      const pvManual = scenario('back · PAID · manual ×1 line (orig bug)', true, false, S0, E1);
+      ok(pvManual != null && Math.abs(pvManual - pf(cu.categoryId, E0, E1)) < 0.01, `back+paid+manual: added charge = the added segment ($${pf(cu.categoryId, E0, E1)}), not the full window ($${pf(cu.categoryId, S0, E1)})`);
+      // FRONT extension (start −1) — the reported "go BACK a day" case: paid invoice spills the added FRONT day
+      scenario('front · unpaid · auto line', false, true, SB, E0);
+      const pvFront = scenario('front · PAID · auto line (start back a day)', true, true, SB, E0);
+      ok(pvFront != null && Math.abs(pvFront - pf(cu.categoryId, SB, S0)) < 0.01, `front+paid: added charge = the added FRONT segment ($${pf(cu.categoryId, SB, S0)}) — start back a day bills the added day`);
+      // COMBINED front+back in one save — composes correctly (a single open chunk re-prices to the full window)
+      scenario('combined front+back · unpaid · auto line', false, true, SB, E1);
+      scenario('combined front+back · PAID · auto line', true, true, SB, E1);
+      // MOVE (slide the window, same length) — NOT an extension: one end grows but a prior day is
+      // DROPPED, so it must bill NOTHING (a reschedule, not an extension — re-price/refund is manual).
+      const SP1 = '2099-08-02';   // S0 + 1
+      const pvMoveFwd = scenario('MOVE forward · PAID (drop front day, add back day)', true, true, SP1, E1);
+      ok(Math.abs(pvMoveFwd || 0) < 0.01, `move forward bills nothing — a same-length slide is not an extension (got ${pvMoveFwd})`);
+      const pvMoveBack = scenario('MOVE backward · PAID (drop back day, add front day)', true, true, SB, SP1);
+      ok(Math.abs(pvMoveBack || 0) < 0.01, `move backward bills nothing — not an extension (got ${pvMoveBack})`);
+      scenario('MOVE forward · unpaid', false, true, SP1, E1);
+    }
+    // === F1 — membership fee math (spec §2): no proration; protection = 15% of BASE only; 10.75% tax ===
+    {
+      const PR = { monthlyBase: 299, annualBase: 2691, monthlyTransport: 500, annualTransport: 4500, protectionPct: 15, protectionCapMonthly: 2000 };
+      const mf = (plan, t, p) => T.membershipFee({ plan, addOns: { transport: t, protection: p } }, PR);
+      const mBoth = mf('Monthly', true, true);
+      ok(mBoth.base === 299 && mBoth.transport === 500 && mBoth.protection === 44.85 && mBoth.subtotal === 843.85 && mBoth.tax === 90.71 && mBoth.total === 934.56, `membership: Monthly both add-ons → 843.85 + tax = 934.56 (got ${mBoth.subtotal}/${mBoth.total})`);
+      ok(mBoth.protection === 44.85, `membership: protection is 15% of BASE only ($299→$44.85), NOT base+transport (got ${mBoth.protection})`);
+      const mBase = mf('Monthly', false, false);
+      ok(mBase.subtotal === 299 && mBase.transport === 0 && mBase.protection === 0 && mBase.total === 331.14, `membership: Monthly base-only → 299 + tax = 331.14 (got ${mBase.total})`);
+      const mTrans = mf('Monthly', true, false);
+      ok(mTrans.subtotal === 799 && mTrans.protection === 0, `membership: Monthly transport-only → subtotal 799, no protection (got ${mTrans.subtotal}/${mTrans.protection})`);
+      const aBoth = mf('Yearly', true, true);
+      ok(aBoth.base === 2691 && aBoth.transport === 4500 && aBoth.protection === 403.65 && aBoth.subtotal === 7594.65 && aBoth.total === 8411.07, `membership: Annual both add-ons → 7594.65 + tax = 8411.07 (got ${aBoth.subtotal}/${aBoth.total})`);
+      const aBase = mf('Yearly', false, false);
+      ok(aBase.subtotal === 2691 && aBase.total === 2980.28, `membership: Annual base-only → 2691 + tax = 2980.28 (got ${aBase.total})`);
+      const pr = T.membershipPricing();
+      ok(['monthlyBase', 'annualBase', 'monthlyTransport', 'annualTransport', 'protectionPct', 'protectionCapMonthly'].every((k) => typeof pr[k] === 'number' && isFinite(pr[k]) && pr[k] >= 0), 'membership: membershipPricing() returns six numeric fields (defaults applied when unset)');
+    }
+
+    // === F2 — membership status engine + Active pricing/entitlement gate (spec §3, §10.4) ===
+    {
+      const ms = T.membershipStatus, iam = T.isActiveMember;
+      const future = '2099-01-01', past = '2000-01-01';
+      ok(ms({ accountType: 'Non-Business' }) === 'None' && iam({ accountType: 'Non-Business' }) === false, 'status: non-member → None, not active');
+      ok(ms({ accountType: 'Member Incomplete' }) === 'Incomplete' && iam({ accountType: 'Member Incomplete' }) === false, 'status: Member Incomplete → Incomplete, NOT active (no member rate)');
+      ok(ms({ accountType: 'Business Member' }) === 'Active', 'status: legacy member (no subscription fields) → grandfathered Active');
+      ok(iam({ accountType: 'Business Member', paidUntil: future }) === true, 'status: paid-through-future → Active (member rate applies)');
+      ok(ms({ accountType: 'Business Member', paidUntil: past, graceUntil: future }) === 'Past Due' && iam({ accountType: 'Business Member', paidUntil: past, graceUntil: future }) === true, 'status: lapsed but in 7-day grace → Past Due, KEEPS member rate');
+      ok(ms({ accountType: 'Business Member', paidUntil: past, graceUntil: past }) === 'Lapsed' && iam({ accountType: 'Business Member', paidUntil: past, graceUntil: past }) === false, 'status: grace expired → Lapsed, member rate REVOKED');
+      ok(ms({ accountType: 'Business Member', prepaid: true, paidUntil: past }) === 'Active', 'status: prepaid-to-term member → Active even past paidUntil');
+      // gate flows through real pricing: an Incomplete member pays RETAIL, an Active member pays the member rate
+      const cat = T.DATA.categories.find((k) => k.memberDaily > 0);
+      const r = { rentalId: 'R-MEMGATE', customerId: 'C-MEMGATE', categoryId: cat.categoryId, unitId: null, startDate: '2026-06-01', endDate: '2026-06-04' };
+      const cust = { customerId: 'C-MEMGATE', accountType: 'Business Member', paidUntil: future };
+      T.IDX.customer.set('C-MEMGATE', cust); T.IDX.rental.set('R-MEMGATE', r);
+      const active = T.rentalPrice(r)?.price;
+      cust.accountType = 'Member Incomplete';
+      const incomplete = T.rentalPrice(r)?.price;
+      T.IDX.customer.delete('C-MEMGATE'); T.IDX.rental.delete('R-MEMGATE');
+      ok(active != null && incomplete != null && active < incomplete && active === 3 * cat.memberDaily, `gate: Active member pays member rate (${active}) < Incomplete pays retail (${incomplete})`);
+    }
+
+    // === F3 — membership funnel 'Signed' is agreement-driven, never manual (spec §3.1) ===
+    {
+      const c = { customerId: 'C-SIGN', accountType: 'Business Member', membershipStage: 'Contacted', activityLog: [] };
+      T.IDX.customer.set('C-SIGN', c);
+      T.markMembershipSigned(c, 'rental');
+      ok(c.membershipStage === 'Contacted', 'funnel: signing the RENTAL agreement does NOT touch the membership funnel');
+      T.markMembershipSigned(c, 'membership');
+      ok(c.membershipStage === 'Signed', 'funnel: signing the MEMBERSHIP agreement auto-advances the funnel to Signed');
+      // manual set of the terminal is refused for membership, but allowed for used-sales ('Paid')
+      c.membershipStage = 'Contacted';
+      T.setFunnelStage('C-SIGN', 'membership', 'Signed');
+      ok(c.membershipStage === 'Contacted', 'funnel: Signed cannot be set manually on the membership funnel');
+      T.setFunnelStage('C-SIGN', 'membership', 'Payment Discussed');
+      ok(c.membershipStage === 'Payment Discussed', 'funnel: a non-terminal membership stage IS settable manually');
+      T.setFunnelStage('C-SIGN', 'usedSales', 'Paid');
+      ok(c.usedSalesStage === 'Paid', 'funnel: used-sales keeps Paid as a normal manual terminal');
+      T.IDX.customer.delete('C-SIGN');
+    }
+
+    // === F4a — Rental Protection account surcharge (spec §2.1): 15% of the rental equipment subtotal, off by default ===
+    {
+      const cat = T.DATA.categories.find((k) => k.rate1Day > 0);
+      const r = { rentalId: 'R-PROT', customerId: 'C-PROT', categoryId: cat.categoryId, units: [{ unitId: 'U-PROT' }], status: 'Reserved', startDate: '2099-06-01', endDate: '2099-06-02' };
+      const u = { unitId: 'U-PROT', categoryId: cat.categoryId, name: 'Prot Unit' };
+      const cust = { customerId: 'C-PROT', accountType: 'Non-Business', rentalProtection: false };
+      T.IDX.customer.set('C-PROT', cust); T.IDX.unit.set('U-PROT', u); T.IDX.rental.set('R-PROT', r);
+      const sub = T.rentalLineItems(r).reduce((a, li) => a + li.amount, 0);
+      ok(T.rentalProtectionAmount(r) === 0, 'protection: OFF account → $0 protection on the rental');
+      cust.rentalProtection = true;
+      const amt = T.rentalProtectionAmount(r);
+      ok(amt === Math.round(sub * T.rentalProtectionRate() * 100) / 100 && amt > 0, `protection: ON → ${T.rentalProtectionRate() * 100}% of equipment subtotal ${sub} = ${amt}`);
+      T.IDX.customer.delete('C-PROT'); T.IDX.unit.delete('U-PROT'); T.IDX.rental.delete('R-PROT');
+    }
+
+    // === F4b — Rental Protection invoice LINE: built at creation, lid-preserving reprice, taxable ===
+    {
+      const r2c = (n) => Math.round(n * 100) / 100;
+      const cat = T.DATA.categories.find((k) => k.rate1Day > 0);
+      const cust = { customerId: 'C-PL', accountType: 'Non-Business', rentalProtection: true };
+      const u1 = { unitId: 'U-PL', categoryId: cat.categoryId, name: 'PL1' };
+      const u2 = { unitId: 'U-PL2', categoryId: cat.categoryId, name: 'PL2' };
+      const r = { rentalId: 'R-PL', customerId: 'C-PL', status: 'Reserved', startDate: '2099-06-01', endDate: '2099-06-03', units: [{ unitId: 'U-PL' }], invoiceId: 'I-PL' };
+      const inv = { invoiceId: 'I-PL', customerId: 'C-PL', amountPaid: 0, lineItems: [] };
+      T.IDX.customer.set('C-PL', cust); T.IDX.unit.set('U-PL', u1); T.IDX.unit.set('U-PL2', u2); T.IDX.rental.set('R-PL', r); T.IDX.invoice.set('I-PL', inv);
+      // build at creation: rental lines + protection line
+      T.rentalLineItems(r).forEach((li) => inv.lineItems.push(li));
+      T.protectionLineItems(r).forEach((li) => inv.lineItems.push(li));
+      const rentalSub = inv.lineItems.filter((l) => l.kind === 'rental').reduce((a, l) => a + l.amount, 0);
+      const pl = inv.lineItems.find((l) => l.kind === 'protection');
+      ok(pl && pl.amount === r2c(rentalSub * T.rentalProtectionRate()) && pl.amount > 0, `protection line: built at creation = 15% of rental subtotal ${rentalSub} → ${pl && pl.amount}`);
+      ok(r2c(T.invoiceTotals(inv).subtotal) === r2c(rentalSub + pl.amount), 'protection line: included in the invoice subtotal');
+      ok(r2c(T.invoiceTotals(inv).tax) === r2c((rentalSub + pl.amount) * 0.1075), 'protection line: taxed like the rest (taxable)');
+      // turn protection OFF + resync → unpaid line dropped
+      cust.rentalProtection = false; T.syncProtectionLine(r);
+      ok(!inv.lineItems.some((l) => l.kind === 'protection'), 'protection line: dropped when the account toggles protection off');
+      // back ON + resync → re-added; then add a unit → reprices UP, lid preserved
+      cust.rentalProtection = true; T.syncProtectionLine(r);
+      const plOn = inv.lineItems.find((l) => l.kind === 'protection'); const lid1 = plOn.lid; const amtOn = plOn.amount;   // snapshot the NUMBER (reprice mutates the line in place)
+      r.units.push({ unitId: 'U-PL2' });
+      T.rentalLineItems(r).filter((li) => li.unitId === 'U-PL2').forEach((li) => inv.lineItems.push(li));   // add the new unit's rental line (grows the base)
+      T.syncProtectionLine(r);
+      const plUp = inv.lineItems.find((l) => l.kind === 'protection');
+      ok(plUp && plUp.lid === lid1 && plUp.amount > amtOn, `protection line: reprices UP when a unit is added (${amtOn}→${plUp.amount}), lid preserved`);
+      T.IDX.customer.delete('C-PL'); T.IDX.unit.delete('U-PL'); T.IDX.unit.delete('U-PL2'); T.IDX.rental.delete('R-PL'); T.IDX.invoice.delete('I-PL');
+    }
+
+    // === F7 — membership economics (spec §7): member rev vs retail counterfactual, derived discount/net ===
+    {
+      const cat = T.DATA.categories.find((k) => k.memberDaily > 0 && k.rate1Day > k.memberDaily);
+      const u = { unitId: 'U-EC', categoryId: cat.categoryId, name: 'EC' };
+      const cust = { customerId: 'C-EC', accountType: 'Business Member', paidUntil: '2099-01-01', paidFees: 1200 };
+      const r = { rentalId: 'R-EC', customerId: 'C-EC', status: 'Reserved', startDate: '2099-06-01', endDate: '2099-06-04', units: [{ unitId: 'U-EC' }] };
+      T.IDX.customer.set('C-EC', cust); T.IDX.unit.set('U-EC', u); T.IDX.rental.set('R-EC', r); T.DATA.rentals.push(r);
+      const e = T.membershipEconomics(cust);
+      const days = 3;
+      ok(e.memberRev === days * cat.memberDaily, `economics: member-rate revenue = ${days}×${cat.memberDaily} = ${e.memberRev}`);
+      ok(e.retailRev > e.memberRev, `economics: retail counterfactual ${e.retailRev} > member ${e.memberRev}`);
+      ok(e.discount === Math.round((e.retailRev - e.memberRev) * 100) / 100 && e.discount > 0, `economics: member discount = retail − member = ${e.discount}`);
+      ok(e.feeRevenue === 1200, 'economics: fee revenue falls back to paidFees when no membership invoices exist');
+      ok(e.net === Math.round((e.feeRevenue - e.discount) * 100) / 100, `economics: net program contribution = fees − discount = ${e.net}`);
+      const idx = T.DATA.rentals.indexOf(r); if (idx >= 0) T.DATA.rentals.splice(idx, 1);
+      T.IDX.customer.delete('C-EC'); T.IDX.unit.delete('U-EC'); T.IDX.rental.delete('R-EC');
+    }
+
+    // === F5 — cancel → Cancellation Invoice → reactivate-to-prepaid (spec §4); demo charge ===
+    {
+      ok(T.addMonthsISO('2026-06-25', 1) === '2026-07-25' && T.addMonthsISO('2026-06-25', 12) === '2027-06-25', 'enroll: addMonthsISO advances Paid-Until / commitment by the cadence');
+      const c = { customerId: 'C-CX', accountType: 'Business Member', company: 'Acme', paidCadence: 'Monthly', commitmentStart: '2099-01-01', commitmentEnd: '2099-12-01', paidUntil: '2099-07-01', addOns: { transport: false, protection: false }, cards: [{ id: 'K1', status: 'active', isDefault: true, stripePmId: 'pm_x', brand: 'visa', last4: '4242', expMonth: 12, expYear: 2099 }], activityLog: [] };
+      T.IDX.customer.set('C-CX', c);
+      ok(T.isActiveMember(c) === true, 'cancel: starts as an Active member');
+      await T.membershipCancel('C-CX');
+      const cxl = T.membershipCancellationInvoice(c);
+      ok(cxl && cxl.membershipCancellation && T.invoiceTotals(cxl).balance > 0, 'cancel: Monthly mid-commitment drops a Cancellation Invoice for the remaining term');
+      ok(T.membershipStatus(c) === 'Lapsed' && T.isActiveMember(c) === false, 'cancel: reverts to Lapsed → retail pricing (rentalProtection untouched)');
+      await T.membershipReactivate('C-CX');
+      ok(T.membershipStatus(c) === 'Active' && c.prepaid === true && c.paidUntil === c.commitmentEnd, 'reactivate: paying the Cancellation Invoice in full reopens the membership PREPAID through the term');
+      ok(T.invoiceTotals(cxl).balance <= 0.005, 'reactivate: the Cancellation Invoice reads paid in full');
+      T.IDX.customer.delete('C-CX');
+      const ci = T.DATA.invoices.indexOf(cxl); if (ci >= 0) T.DATA.invoices.splice(ci, 1); T.IDX.invoice.delete(cxl.invoiceId);
+    }
+
+    // === F5 — enrollment happy path (demo charge): card on file → Active + paid membership invoice ===
+    {
+      const c = { customerId: 'C-EN', accountType: 'Non-Business', company: '', membershipStage: 'Signed', cards: [{ id: 'K1', status: 'active', isDefault: true, stripePmId: 'pm_y', brand: 'visa', last4: '4242', expMonth: 12, expYear: 2099 }], activityLog: [] };
+      T.IDX.customer.set('C-EN', c);
+      T.openMembershipEnroll('C-EN');
+      T.__state.overlay.plan = 'Monthly'; T.__state.overlay.addOns = { transport: true, protection: true };
+      await T.membershipEnrollCommit();
+      ok(T.membershipStatus(c) === 'Active' && /Member/.test(c.accountType) && c.accountType !== 'Member Incomplete', 'enroll: a cleared charge flips the account to an Active member');
+      const inv = T.DATA.invoices.find((i) => i.membership && i.customerId === 'C-EN');
+      ok(inv && T.invoiceTotals(inv).balance <= 0.005, 'enroll: a PAID membership invoice is created');
+      ok(c.unlimitedTransport === true && c.rentalProtection === true && c.paidCadence === 'Monthly' && c.commitmentEnd, 'enroll: add-ons + cadence + 12-mo commitment set on the account');
+      T.IDX.customer.delete('C-EN');
+      if (inv) { const ix = T.DATA.invoices.indexOf(inv); if (ix >= 0) T.DATA.invoices.splice(ix, 1); T.IDX.invoice.delete(inv.invoiceId); }
+      T.__state.overlay = null;
+    }
 
     return out;
   });

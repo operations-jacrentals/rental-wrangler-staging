@@ -19,7 +19,7 @@ import * as CFG from './config.js';
 import { AGREEMENTS, AGREEMENT_VERSIONS, AGREEMENT_CURRENT } from './agreements.js';
 import { ico, I, CARD_ICON, RING_ICON, CATEGORY_ICON } from './icons.js';
 import {
-  getStatus, STATUS, ROLES, GRID_CARDS, BACKOFFICE_BOARDS, SORT_FIELDS,
+  getStatus, STATUS, ROLES, ROLE_TIERS, tierRank, BUILTIN_ROLE_TIERS, GRID_CARDS, BACKOFFICE_BOARDS, SORT_FIELDS,
   SHOP_TYPES, SHOP_SEGMENTS, COLUMNS, COLUMN_OF,
   legacyTransportPrice, computeTransportPrice, isFueledType, legsForType, YARD_ORIGIN, GOOGLE_MAPS_KEY,
   fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, invoiceShort, TRANSPORT_MAP,
@@ -27,7 +27,7 @@ import {
 } from './config.js';
 
 /* ════════════════════════════════════════════════════════════════════════
-   §0.7 GLITCH CAPTURE — a small ring buffer of recent JS errors, so when you
+   APP-01 · §0.7 GLITCH CAPTURE — a small ring buffer of recent JS errors, so when you
    hand a glitch to Mr. Wrangler the repro packet carries what actually broke
    (the single most useful clue for the auto-fixer). Installed first thing so it
    catches boot-time errors too. Kept tiny + best-effort — never throws itself.
@@ -60,7 +60,7 @@ function wranglerIssueUrl(title, body, label = 'wrangler-fix') {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §1 UTILITIES & FORMATTING — $, el, esc, money, num, dates
+   APP-02 · §1 UTILITIES & FORMATTING — $, el, esc, money, num, dates
    ════════════════════════════════════════════════════════════════════════ */
 const $  = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
@@ -76,7 +76,7 @@ const dayDiff = (a, b) => Math.round((b - a) / 86400000);
 const SINGULAR = { customers: 'customer', rentals: 'rental', units: 'unit', invoices: 'invoice', categories: 'category', workOrders: 'workOrder', inspections: 'inspection', serviceOrders: 'unit' };
 
 /* ════════════════════════════════════════════════════════════════════════
-   §2 INDEXES & SEARCH — built once on load (SPEC §3: never scan per keystroke)
+   APP-03 · §2 INDEXES & SEARCH — built once on load (SPEC §3: never scan per keystroke)
    ════════════════════════════════════════════════════════════════════════ */
 const IDX = {};
 /* Split a legacy single "name" (optionally "First Last (Company)") into parts.
@@ -165,6 +165,7 @@ function migrateCustomers() {
       if (c.membershipStage === 'Inbound Lead') c.membershipStage = 'N/A';
       c.funnelNAApplied = true; migrationDirty = true;
     }
+    if (c.membershipStage === 'Paid') { c.membershipStage = 'Signed'; migrationDirty = true; }   // F3 — membership terminal relabeled Paid→Signed (auto-set by signing)
   });
 }
 /* ── §20 multi-unit rentals — "a Rental is an EVENT" ──
@@ -203,7 +204,6 @@ function rentalUnits(r) {
   return (r && r.unitId) ? [legacyUnitEntry(r)] : [];
 }
 const rentalUnitIds = (r) => rentalUnits(r).map((u) => u.unitId).filter(Boolean);
-const primaryUnit = (r) => (r && r.unitId) || (rentalUnits(r)[0] || {}).unitId || null;
 const rentalHasUnit = (r, unitId) => rentalUnitIds(r).includes(unitId);
 /* §20 the units[] entry for a unitId (or the PRIMARY when unitId is falsy), else null.
    ONE source for "this unit's entry" — replaces ~9 inlined (r.units||[]).find copies. */
@@ -395,6 +395,7 @@ function attachHeldSigning(c, k) {
     accountType: p.accountType || '', signedAt: p.signedAt || TODAY_ISO, signerName: p.signerName || c.name || fullName(c),
     signature: p.signature, selfie: p.selfie || '', acct: Object.assign({}, p.acct || acctSnapshot(c, k), { last4: k.last4 }), driveSignatureUrl: '', driveSelfieUrl: '', driveFolderId: '' };
   k.agreements.push(sig);
+  markMembershipSigned(c, sig.key);   // F3 — membership signing advances the funnel to 'Signed'
   c.pendingSigning = null;
   reindex('customers', c);
   logAction(c, `Held ${p.title || 'agreement'} attached to ${brandName(k.brand)} ••${k.last4}`);
@@ -405,6 +406,13 @@ function attachHeldSigning(c, k) {
    registry, never stored inline) with the signature + selfie. Re-signing (new card /
    account-type change) appends; it never edits a prior record. The images are then
    offloaded to Drive (graceful: stay inline until the backend handler exists). */
+// F3: signing the MEMBERSHIP agreement auto-advances the membership funnel to 'Signed'
+// (the terminal stage; never set by hand). The rental agreement does not touch the funnel.
+function markMembershipSigned(c, key) {
+  if (key !== 'membership' || !c || c.membershipStage === 'Signed') return;
+  c.membershipStage = 'Signed';
+  logAction(c, 'Membership agreement signed → Signed');
+}
 function signCardAgreement(c, k, signature, selfie) {
   if (!c || !k || !signature) return;
   const key = requiredAgreementKey(c); const ag = AGREEMENTS[key] || AGREEMENTS.rental;
@@ -413,6 +421,7 @@ function signCardAgreement(c, k, signature, selfie) {
     accountType: c.accountType || '', signedAt: TODAY_ISO, signerName: c.name || fullName(c),
     signature, selfie: selfie || '', acct: acctSnapshot(c, k), driveSignatureUrl: '', driveSelfieUrl: '', driveFolderId: '' };
   k.agreements.push(sig);
+  markMembershipSigned(c, key);   // F3 — membership signing advances the funnel to 'Signed'
   reindex('customers', c);
   logAction(c, `${ag.title} signed on ${brandName(k.brand)} ••${k.last4}`);
   archiveAgreementMedia(c, k, sig);   // offload images to Drive when the backend supports it
@@ -436,15 +445,6 @@ function acctSnapshot(c, k) {
   return { name: (c && (c.name || fullName(c))) || '', company: (c && c.company) || '', phone: (c && c.phone) || '',
     email: (c && c.email) || '', industry: (c && c.industry) || '', accountType: (c && c.accountType) || '',
     requiresPO: !!(c && c.requiresPO), last4: (k && k.last4) || '' };
-}
-/* Hold a captured signing on the account (no card yet) — saddles onto the first card added.
-   Set by Save now that there's no separate "Sign & Hold" button. */
-function holdSigning(c, signature, selfie) {
-  if (!c || !signature) return;
-  const key = requiredAgreementKey(c); const ag = AGREEMENTS[key] || AGREEMENTS.rental;
-  c.pendingSigning = { key, version: AGREEMENT_CURRENT[key] || '', title: ag.title, accountType: c.accountType || '',
-    signedAt: TODAY_ISO, signerName: c.name || fullName(c), signature, selfie: selfie || '', acct: acctSnapshot(c, null) };
-  reindex('customers', c); logAction(c, `${ag.title} signed & held (no card yet)`);
 }
 /* §7.1c independent capture — each piece (card · selfie · signature) AUTO-SAVES the moment
    it's captured, in any order, and the card finalizes (one completion date) once all three
@@ -590,9 +590,7 @@ function removeCard(custId, cardId) {
 }
 /* ── §14b multi-ACH helpers (parallel to the multi-card helpers above) ── */
 const customerBanks = (c) => (c && Array.isArray(c.achAccounts)) ? c.achAccounts.filter((k) => k.status !== 'removed') : [];
-const defaultBank = (c) => { const ks = customerBanks(c); return ks.find((k) => k.isDefault) || ks[0] || null; };
 const verifiedBanks = (c) => customerBanks(c).filter((k) => k.verified);
-const hasChargeableBank = (c) => verifiedBanks(c).length > 0;
 const bankTypeLabel = (t) => (t === 'savings' ? 'Savings' : 'Checking');
 const bankOneLabel = (k) => k ? `${k.bankName || 'Bank'} ••${k.last4} · ${bankTypeLabel(k.accountType)}${k.verified ? '' : ' · unverified'}` : '';
 function setBankDefault(custId, bankId) {   // app-level default among banks (NOT Stripe's single default PM — that stays the card's, for auto-charge)
@@ -642,7 +640,7 @@ function cardTabBody(c) {
     </div>`;
   }).join('') : '<span class="muted" style="font-size:12px">No cards on file.</span>';
   return `<div class="cards-list">${rows}</div>
-    <div style="margin-top:10px">${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: c.customerId } })}</div>`;
+    ${canMoney() ? `<div style="margin-top:10px">${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: c.customerId } })}</div>` : ''}`;
 }
 function achTabBody(c) {
   const banks = customerBanks(c);
@@ -735,7 +733,7 @@ function reindexRentalLinks() {
   DATA.units.forEach((u) => IDX.search.set('units:' + u.unitId, searchBlob('units', u)));
   DATA.categories.forEach((c) => IDX.search.set('categories:' + c.categoryId, searchBlob('categories', c)));
 }
-const idOf   = (card, rec) => rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId', expenses: 'expenseId', files: 'fileId' }[card]];
+const idOf   = (card, rec) => rec && rec[{ customers: 'customerId', rentals: 'rentalId', categories: 'categoryId', units: 'unitId', invoices: 'invoiceId', workOrders: 'woId', inspections: 'inspectionId', serviceOrders: 'unitId', vendors: 'vendorId', parts: 'partId', expenses: 'expenseId', files: 'fileId' }[card]];   // null-safe: a dangling ref resolves to undefined, never a render crash (matches recOf)
 const recOf  = (card, id) => ({ customers: IDX.customer, rentals: IDX.rental, categories: IDX.category, units: IDX.unit, invoices: IDX.invoice, workOrders: IDX.wo, inspections: IDX.insp, serviceOrders: IDX.unit, vendors: IDX.vendor, expenses: IDX.expense, parts: IDX.part, files: IDX.file }[card])?.get(id);
 
 /* ── §5 comprehensive search blob — ONE source of truth for what's searchable.
@@ -829,7 +827,7 @@ function searchBlob(card, rec) {
 const reindex = (card, rec) => { const id = idOf(card, rec); if (id != null) { IDX.search.set(card + ':' + id, searchBlob(card, rec)); if (card === 'vendors') IDX.vendor.set(id, rec); if (card === 'expenses') IDX.expense.set(id, rec); if (card === 'parts') IDX.part.set(id, rec); if (card === 'files') IDX.file.set(id, rec); } if (card === 'rentals' && !suppressLinkReindex) reindexRentalLinks(); saveSoon(); };
 
 /* ════════════════════════════════════════════════════════════════════════
-   §3 DERIVATIONS (SPEC §10) — money, availability, statuses, countdowns
+   APP-04 · §3 DERIVATIONS (SPEC §10) — money, availability, statuses, countdowns
    ════════════════════════════════════════════════════════════════════════ */
 const RATE_LABELS = { m: '4-Week', w: '7-Day', d: '1-Day' };
 
@@ -841,7 +839,7 @@ function rentalPrice(r) {
   if (!cat || !s || !e) return null;
   const days = Math.max(1, dayDiff(s, e));
   const cust = IDX.customer.get(r.customerId);
-  const isMember = cust && /Member/.test(cust.accountType || '') && cust.accountType !== 'Member Incomplete';
+  const isMember = isActiveMember(cust);   // §10.4 — Active/in-grace only; refused to Incomplete + lapsed
 
   if (isMember) return { price: days * cat.memberDaily, rate: `Member×${days}`, days };
   // §10 weekend rate (Jac 2026-06-07): Fri→Sun, Fri→Mon, or Sat→Mon — NOT Sat→Sun.
@@ -907,12 +905,14 @@ function transportCost({ transportType, miles, driveMin, address, fueled, unlimi
 }
 /** Transport cost + drive time for a rental (SPEC §10) — primary unit / legacy. */
 function rentalTransport(r) {
-  const unlimited = !!IDX.customer.get(r.customerId)?.unlimitedTransport;
+  const cust = IDX.customer.get(r.customerId);
+  const unlimited = !!(cust?.unlimitedTransport && isActiveMember(cust));   // §10.4 — $0 transport gated to an Active member
   return transportCost({ transportType: r.transportType, miles: r.transportMiles, driveMin: r.transportDriveMin, address: r.deliveryAddress, fueled: unitFueled(r.unitId), unlimited });
 }
 /** §20 transport cost for ONE unit (its own type + address + cached distance). */
 function unitTransport(r, eu) {
-  const unlimited = !!IDX.customer.get(r.customerId)?.unlimitedTransport;
+  const cust = IDX.customer.get(r.customerId);
+  const unlimited = !!(cust?.unlimitedTransport && isActiveMember(cust));   // §10.4 — $0 transport gated to an Active member
   return transportCost({ transportType: eu.transportType, miles: eu.transportMiles, driveMin: eu.transportDriveMin, address: eu.deliveryAddress, fueled: unitFueled(eu.unitId), unlimited });
 }
 /** §20 one invoice 'transport' line per unit that has transport (ref=rentalId,
@@ -926,6 +926,275 @@ function transportLineItems(r) {
     if (tr && tr.price) out.push({ kind: 'transport', ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `Transport · ${multi ? (IDX.unit.get(eu.unitId)?.name || '') + ' · ' : ''}${eu.transportType}`, amount: tr.price });
   });
   return out;
+}
+/* ════════════ APP-05 · RENTAL EXTENSIONS (Jac 2026-06-25) ════════════
+   Lengthening a fragile (invoiced/out) rental's window re-prices the FULL window
+   per unit and bills only the increment as additive 'extension' line(s) — never
+   re-pricing or touching the original (possibly paid) 'rental' line. Positive
+   deltas only: a shortened window is a refund decision, left manual (refund-first,
+   §7.4). Composes across repeats — each pass diffs against everything already
+   billed for the unit (rental + prior extension lines). */
+/** Retroactive Rental Pricing (admin setting, default ON — Jac 2026-06-25): ON =
+ *  an extension bills the cheapest price for ALL the days rented, with what's already
+ *  billed counting toward it (delta = full-window price − billed). OFF = the extension
+ *  is billed as a FRESH rental of just the added days (prevEnd→newEnd), originals frozen. */
+function retroPricingOn() { return ((state.settings && state.settings.company) || {}).retroactivePricing !== false; }
+/** Dollars already billed for a unit's rental TIME on an invoice (rental + extension
+ *  lines for that unit) — the baseline retroactive pricing diffs against. */
+function unitBilledRental(inv, rentalId, unitId) {
+  return (inv.lineItems || []).reduce((a, li) =>
+    a + ((li.ref === rentalId && li.unitId === unitId && (li.kind === 'rental' || li.kind === 'extension')) ? (Number(li.amount) || 0) : 0), 0);
+}
+/** The per-unit extension charge for a window change, honoring the retroactive setting.
+ *  `prevEnd` = the end date BEFORE this extension (the standalone segment's start when OFF).
+ *  Returns { amount, rate } — amount is the dollars to add (>0 means billable). */
+function unitExtensionDelta(inv, r, eu, ns, ne, prevEnd, retro) {
+  const u = IDX.unit.get(eu.unitId); if (!u) return { amount: 0, rate: '—' };
+  if (retro) {                                              // cheapest(full window) − already billed
+    const p = rentalPrice({ categoryId: u.categoryId, startDate: ns, endDate: ne, customerId: r.customerId });
+    return { amount: Math.round(((p ? p.price : 0) - unitBilledRental(inv, r.rentalId, eu.unitId)) * 100) / 100, rate: p ? p.rate : '—' };
+  }
+  // OFF — price ONLY the added segment (prevEnd → newEnd) as a fresh rental; originals frozen.
+  const p = (prevEnd && ne > prevEnd) ? rentalPrice({ categoryId: u.categoryId, startDate: prevEnd, endDate: ne, customerId: r.customerId }) : null;
+  return { amount: p ? Math.round(p.price * 100) / 100 : 0, rate: p ? p.rate : '—' };
+}
+/* ── §28cap MULTI-INVOICE SERIES (Jac 2026-06-25) — an invoice bills at most 28
+   rental-days per unit; long rentals split into a series of ≤28-day chunk invoices.
+   Because the 4-Week rate IS 28 days, the cheapest-blend optimizer already seams at
+   28-day marks, so the split bills the SAME total — it's purely organizational. ── */
+const INV_CAP_DAYS = 28;
+/** All invoices billing a rental, ordered by the day-window they cover (covStart). */
+function rentalInvoices(r) {
+  if (!r) return [];
+  return DATA.invoices.filter((i) => (i.rentalIds || []).includes(r.rentalId))
+    .sort((a, b) => { const ka = a.covStart || a.date || '', kb = b.covStart || b.date || ''; return ka < kb ? -1 : ka > kb ? 1 : 0; });
+}
+/** The latest chunk invoice — where the next extension bills if it has room + is open. */
+function rentalActiveInvoice(r) {
+  const invs = rentalInvoices(r);
+  return invs.length ? invs[invs.length - 1] : (r && r.invoiceId ? IDX.invoice.get(r.invoiceId) : null);
+}
+const invCovStart = (inv, r) => inv.covStart || (r ? r.startDate : '');
+const invCovEnd = (inv, r) => inv.covEnd || (r ? r.endDate : '');
+function invCoveredDays(inv, r) { const s = invCovStart(inv, r), e = invCovEnd(inv, r); return (parseISO(s) && parseISO(e)) ? Math.max(0, dayDiff(parseISO(s), parseISO(e))) : 0; }
+const minISO = (a, b) => (a < b ? a : b);
+const maxISO = (a, b) => (a > b ? a : b);
+/** True only for a PURE EXTENSION — the new window [ns,ne] is a strict SUPERSET of the old
+ *  [ps,pe]: no prior day dropped (ns ≤ ps AND ne ≥ pe) and at least one day added. A date MOVE
+ *  or shrink (any day dropped) is NOT an extension → no auto-billing (re-price/refund stays
+ *  manual, refund-first). Guards billExtension + its preview so sliding a window never bills. */
+const isWindowExtension = (ps, pe, ns, ne) => !!(ps && pe && ns && ne)
+  && dayDiff(parseISO(ns), parseISO(ps)) >= 0 && dayDiff(parseISO(pe), parseISO(ne)) >= 0
+  && (dayDiff(parseISO(ns), parseISO(ps)) > 0 || dayDiff(parseISO(pe), parseISO(ne)) > 0);
+/** Chunk a window into ≤28-day pieces: [{idx, start, end, days}]. */
+function invoiceChunks(startISO, endISO) {
+  const total = (parseISO(startISO) && parseISO(endISO)) ? dayDiff(parseISO(startISO), parseISO(endISO)) : 0;
+  const out = [];
+  for (let d0 = 0; d0 < total; d0 += INV_CAP_DAYS) { const d1 = Math.min(d0 + INV_CAP_DAYS, total); out.push({ idx: out.length, start: addDaysISO(startISO, d0), end: addDaysISO(startISO, d1), days: d1 - d0 }); }
+  return out.length ? out : [{ idx: 0, start: startISO, end: endISO, days: Math.max(1, total) }];
+}
+/** Dollars already billed for a unit's TIME across the WHOLE rental series. */
+function unitBilledSeries(r, unitId) { return rentalInvoices(r).reduce((a, inv) => a + unitBilledRental(inv, r.rentalId, unitId), 0); }
+/** Open a continuation invoice for [covStart,covEnd] (a fresh ≤28-day chunk). */
+function createContinuationInvoice(r, covStart, covEnd) {
+  const id = nextInvoiceId();
+  const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [r.rentalId], date: TODAY_ISO, dueDate: dueForCustomer(r.customerId), po: '', amountPaid: 0, lineItems: [], covOf: r.rentalId, covStart, covEnd, contOf: r.invoiceId, mock: true };
+  DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
+  logAction(inv, `Continuation of ${rentalUnitsLabel(r) || 'rental'} — ext of ${invoiceShort(r.invoiceId)}`);
+  logAction(r, `Continuation invoice ${invoiceShort(id)} opened (28-day cap / closed prior)`);
+  return inv;
+}
+/** Bill per-unit charges for [ns,ne] onto `inv` (kind = 'rental' fresh chunk · 'extension'
+ *  grow). prevEnd = the unit's already-billed-through end (=ns for a fresh chunk). */
+function billChunkUnits(inv, r, ns, ne, prevEnd, retro, kind, contInvId) {
+  let delta = 0, count = 0;
+  rentalUnits(r).forEach((eu) => {
+    if (unitVoided(r, eu)) return;
+    const u = IDX.unit.get(eu.unitId); if (!u) return;
+    const d = unitExtensionDelta(inv, r, eu, ns, ne, prevEnd, retro);
+    if (d.amount > 0.005) {
+      const tail = kind === 'extension' ? ` · Extension → ${fmtShortDate(ne)}` : (contInvId ? ` · Ext of ${invoiceShort(contInvId)}` : '');
+      inv.lineItems.push({ kind, ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `${u.name} · ${d.rate}${tail}`, amount: d.amount });
+      delta += d.amount; count++;
+    }
+  });
+  return { delta: Math.round(delta * 100) / 100, count };
+}
+/** Retroactive reconcile of an OPEN chunk: re-price each unit's rental line in `inv` to
+ *  cheapest(ns,ne) — UP or DOWN (the 4-Week rate can make more days cheaper). Unpaid lines
+ *  are re-priced in place (collapsing any prior extension lines into the base rental line);
+ *  a paid line can't drop (refund-first) so it only takes a positive top-up. */
+function reconcileChunkRetro(inv, r, ns, ne) {
+  let delta = 0, count = 0;
+  rentalUnits(r).forEach((eu) => {
+    if (unitVoided(r, eu)) return;
+    const u = IDX.unit.get(eu.unitId); if (!u) return;
+    const p = rentalPrice({ categoryId: u.categoryId, startDate: ns, endDate: ne, customerId: r.customerId });
+    const target = Math.round((p ? p.price : 0) * 100) / 100;
+    const mine = (inv.lineItems || []).filter((li) => (li.kind === 'rental' || li.kind === 'extension') && li.ref === r.rentalId && li.unitId === eu.unitId);
+    const paid = mine.reduce((a, li) => a + itemPaid(inv, li), 0);
+    const billed = Math.round(mine.reduce((a, li) => a + (Number(li.amount) || 0), 0) * 100) / 100;
+    if (Math.abs(target - billed) <= 0.005) return;
+    if (paid > 0.005) {   // some paid → can't re-price down; only a positive top-up (refund-first for any drop)
+      const d = Math.round((target - billed) * 100) / 100;
+      if (d > 0.005) { inv.lineItems.push({ kind: 'extension', ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `${u.name} · Extension → ${fmtShortDate(ne)} · ${p ? p.rate : '—'}`, amount: d }); delta += d; count++; }
+    } else {              // all unpaid → re-price to cheapest(window): collapse to one base rental line at target
+      const keep = mine.find((li) => li.kind === 'rental') || mine[0];
+      inv.lineItems = (inv.lineItems || []).filter((li) => !(mine.indexOf(li) >= 0 && li !== keep));
+      if (keep) { keep.amount = target; keep.kind = 'rental'; keep.label = `${u.name} · ${p ? p.rate : '—'}`; }
+      else if (target > 0.005) { inv.lineItems.push({ kind: 'rental', ref: r.rentalId, unitId: eu.unitId, lid: lineLid(), label: `${u.name} · ${p ? p.rate : '—'}`, amount: target }); }
+      delta += target - billed; count++;
+    }
+  });
+  return { delta: Math.round(delta * 100) / 100, count };
+}
+/** PURE mirror of billExtension's per-step math — the subtotal delta billExtension WOULD post
+ *  for lengthening r to [newStart, newEnd], with ZERO mutation (replays the fill→spill walk on a
+ *  local chunk model). Kept in lockstep with billExtension by logic-test (the preview MUST equal
+ *  what's actually billed). Handles BOTH ends: grow the active chunk's covEnd toward newEnd AND
+ *  the earliest chunk's covStart toward newStart (retro reconcile vs OFF standalone), spilling
+ *  ≤28-day standalone segments onto fresh continuation invoices once a chunk is closed/locked/
+ *  full. So a PAID invoice (its added segment spills), a manually-lined one, OR an extension at
+ *  the FRONT of the window no longer over/under-states the charge — the preview is the posting. */
+function previewExtensionDelta(r, prevEnd, newEnd, prevStart, newStart) {
+  if (!r || !r.invoiceId) return 0;
+  const invs = rentalInvoices(r); if (!invs.length) return 0;
+  if (!isWindowExtension(prevStart || r.startDate, prevEnd, newStart || r.startDate, newEnd)) return 0;   // a MOVE/shrink isn't an extension
+  const retro = retroPricingOn();
+  const targetEnd = newEnd, targetStart = newStart || r.startDate;
+  const units = rentalUnits(r).filter((eu) => !unitVoided(r, eu) && IDX.unit.get(eu.unitId));
+  const priceOf = (eu, s, e) => { const p = rentalPrice({ categoryId: IDX.unit.get(eu.unitId).categoryId, startDate: s, endDate: e, customerId: r.customerId }); return p ? Math.round(p.price * 100) / 100 : 0; };
+  // Local, NON-MUTATING model of each invoice chunk; we replay billExtension's fill→spill walk
+  // against it so the preview composes a front+back extension exactly as the real posting would.
+  const chunkOf = (inv) => {
+    const billed = {}, paid = {};
+    units.forEach((eu) => {
+      const mine = (inv.lineItems || []).filter((li) => (li.kind === 'rental' || li.kind === 'extension') && li.ref === r.rentalId && li.unitId === eu.unitId);
+      billed[eu.unitId] = Math.round(mine.reduce((a, li) => a + (Number(li.amount) || 0), 0) * 100) / 100;
+      paid[eu.unitId] = mine.reduce((a, li) => a + itemPaid(inv, li), 0);
+    });
+    const tot = invoiceTotals(inv);
+    return { covStart: invCovStart(inv, r), covEnd: invCovEnd(inv, r), locked: !!inv.locked, closed: tot.paid > 0 && tot.balance <= 0, billed, paid };
+  };
+  const chunks = invs.map(chunkOf);
+  let delta = 0;
+  const reconcile = (c, ns, ne) => units.forEach((eu) => {     // retro re-price chunk to cheapest(ns→ne) − billed
+    const target = priceOf(eu, ns, ne), billed = c.billed[eu.unitId] || 0, d = target - billed;
+    if (Math.abs(d) <= 0.005) return;
+    if ((c.paid[eu.unitId] || 0) > 0.005) { if (d > 0.005) { delta += d; c.billed[eu.unitId] = billed + d; } }   // paid → positive top-up only
+    else { delta += d; c.billed[eu.unitId] = target; }                                                            // unpaid → re-price in place (up or down)
+  });
+  const standalone = (c, ns, ne) => units.forEach((eu) => {    // OFF grow / spill: the added segment priced on its own
+    const amt = priceOf(eu, ns, ne); if (amt > 0.005) { delta += amt; c.billed[eu.unitId] = (c.billed[eu.unitId] || 0) + amt; }
+  });
+  const spill = (ns, ne) => { const c = { covStart: ns, covEnd: ne, locked: false, closed: false, billed: {}, paid: {} }; standalone(c, ns, ne); return c; };
+  const daysOf = (c) => Math.max(0, dayDiff(parseISO(c.covStart), parseISO(c.covEnd)));
+  let guard = 0;
+  // BACK — grow the active (latest) chunk's covEnd toward targetEnd, spilling fresh chunks.
+  let active = chunks[chunks.length - 1];
+  let coveredEnd = active.covEnd || prevEnd || r.startDate;
+  while (targetEnd && coveredEnd && dayDiff(parseISO(coveredEnd), parseISO(targetEnd)) > 0 && guard++ < 200) {
+    const room = INV_CAP_DAYS - daysOf(active);
+    if (active.locked || active.closed || room <= 0) { const ce = minISO(addDaysISO(coveredEnd, INV_CAP_DAYS), targetEnd); active = spill(coveredEnd, ce); chunks.push(active); coveredEnd = ce; }
+    else { const grow = Math.min(room, dayDiff(parseISO(coveredEnd), parseISO(targetEnd))); const nce = addDaysISO(coveredEnd, grow); retro ? reconcile(active, active.covStart, nce) : standalone(active, coveredEnd, nce); active.covEnd = nce; coveredEnd = nce; }
+  }
+  // FRONT — grow the earliest chunk's covStart toward targetStart, spilling fresh chunks.
+  let earliest = chunks[0];
+  let coveredStart = earliest.covStart || prevStart || r.startDate;
+  while (targetStart && coveredStart && dayDiff(parseISO(targetStart), parseISO(coveredStart)) > 0 && guard++ < 200) {
+    const room = INV_CAP_DAYS - daysOf(earliest);
+    if (earliest.locked || earliest.closed || room <= 0) { const cs = maxISO(addDaysISO(coveredStart, -INV_CAP_DAYS), targetStart); earliest = spill(cs, coveredStart); chunks.unshift(earliest); coveredStart = cs; }
+    else { const grow = Math.min(room, dayDiff(parseISO(targetStart), parseISO(coveredStart))); const ncs = addDaysISO(coveredStart, -grow); retro ? reconcile(earliest, ncs, earliest.covEnd) : standalone(earliest, ncs, coveredStart); earliest.covStart = ncs; coveredStart = ncs; }
+  }
+  return Math.round(delta * 100) / 100;
+}
+/** PURE preview of extending r to a staged window (no mutation) — drives the picker banner.
+ *  The added charge is EXACTLY what billExtension will post (via previewExtensionDelta), so a
+ *  paid invoice (spills the added segment to a continuation invoice) or a manually-lined one
+ *  can never overstate it. Series-aware; honors the retroactive-pricing setting. */
+function extensionPreview(r, stagedStart, stagedEnd) {
+  if (!r || !r.invoiceId) return null;
+  const invs = rentalInvoices(r); if (!invs.length) return null;
+  const ns = stagedStart || r.startDate, ne = stagedEnd || r.endDate;
+  if (!ns || !ne) return null;
+  const retro = retroPricingOn();
+  const subtotalDelta = previewExtensionDelta(r, r.endDate, ne, r.startDate, ns);
+  const cust = IDX.customer.get(r.customerId);
+  const exempt = !!(invs[0].taxExempt || cust?.salesTaxExempt);
+  const taxDelta = exempt ? 0 : Math.round(subtotalDelta * TAX_RATE * 100) / 100;
+  const curBal = invs.reduce((a, inv) => a + invoiceTotals(inv).balance, 0);
+  const prevDays = Math.max(1, dayDiff(parseISO(r.startDate), parseISO(r.endDate)));
+  const newDays = Math.max(1, dayDiff(parseISO(ns), parseISO(ne)));
+  return { subtotalDelta, taxDelta, newBalance: curBal + subtotalDelta + taxDelta, daysDelta: newDays - prevDays, prevEnd: r.endDate, newEnd: ne, newStart: ns, prevStart: r.startDate, retro };
+}
+/** Bill a lengthened window across the rental's invoice series — fill the active open
+ *  chunk toward its 28-day cap, then spill into fresh ≤28-day invoices (closed/locked
+ *  active spills immediately). Call AFTER the new dates are written; prevEnd = old end. */
+function billExtension(r, prevEnd, prevStart) {
+  if (!r || !r.invoiceId) return null;
+  // Only a PURE extension bills — a date MOVE/shrink (a prior day dropped) is not an extension.
+  if (!isWindowExtension(prevStart || r.startDate, prevEnd, r.startDate, r.endDate)) return null;
+  const retro = retroPricingOn();
+  const targetEnd = r.endDate;
+  let active = rentalActiveInvoice(r); if (!active) return null;
+  if (!active.covStart) { active.covStart = prevStart || r.startDate; active.covEnd = prevEnd || r.endDate; active.covOf = r.rentalId; }   // backfill legacy from the OLD window
+  let coveredEnd = active.covEnd || prevEnd || r.startDate;
+  const sum = { count: 0, subtotalDelta: 0, invoiceIds: [], newInvoices: 0, retro, invoiceId: r.invoiceId };
+  let guard = 0;
+  // BACK extension — days added AFTER the active chunk's covEnd (end moved later).
+  while (targetEnd && coveredEnd && dayDiff(parseISO(coveredEnd), parseISO(targetEnd)) > 0 && guard++ < 60) {
+    const t = invoiceTotals(active);
+    const closed = t.paid > 0 && t.balance <= 0;
+    const room = INV_CAP_DAYS - invCoveredDays(active, r);
+    if (active.locked || closed || room <= 0) {                                  // spill → fresh chunk invoice
+      const chunkEnd = minISO(addDaysISO(coveredEnd, INV_CAP_DAYS), targetEnd);
+      active = createContinuationInvoice(r, coveredEnd, chunkEnd);
+      const res = billChunkUnits(active, r, coveredEnd, chunkEnd, coveredEnd, retro, 'rental', r.invoiceId);
+      reindex('invoices', active);
+      sum.newInvoices++; sum.count += res.count; sum.subtotalDelta += res.delta; sum.invoiceIds.push(active.invoiceId);
+      coveredEnd = chunkEnd;
+    } else {                                                                      // grow the active open chunk
+      const grow = Math.min(room, dayDiff(parseISO(coveredEnd), parseISO(targetEnd)));
+      const newCovEnd = addDaysISO(coveredEnd, grow);
+      // retro → re-price the chunk to cheapest(covStart→newEnd), up or down (unpaid in place).
+      // OFF → add only the new days standalone (originals frozen).
+      const res = retro ? reconcileChunkRetro(active, r, invCovStart(active, r), newCovEnd)
+        : billChunkUnits(active, r, coveredEnd, newCovEnd, coveredEnd, false, 'extension', null);
+      active.covEnd = newCovEnd; reindex('invoices', active);
+      sum.count += res.count; sum.subtotalDelta += res.delta; if (!sum.invoiceIds.includes(active.invoiceId)) sum.invoiceIds.push(active.invoiceId);
+      coveredEnd = newCovEnd;
+    }
+  }
+  // FRONT extension — days added BEFORE the earliest chunk's covStart (start moved earlier).
+  // Symmetric to the back loop: grow the earliest OPEN chunk's covStart earlier (retro reconcile /
+  // OFF standalone), or spill a fresh ≤28-day continuation chunk when it's paid/locked/full.
+  const targetStart = r.startDate;
+  let earliest = rentalInvoices(r)[0] || active;
+  let coveredStart = earliest.covStart || prevStart || r.startDate;
+  while (targetStart && coveredStart && dayDiff(parseISO(targetStart), parseISO(coveredStart)) > 0 && guard++ < 60) {
+    const t = invoiceTotals(earliest);
+    const closed = t.paid > 0 && t.balance <= 0;
+    const room = INV_CAP_DAYS - invCoveredDays(earliest, r);
+    if (earliest.locked || closed || room <= 0) {                                // spill → fresh FRONT chunk invoice
+      const chunkStart = maxISO(addDaysISO(coveredStart, -INV_CAP_DAYS), targetStart);
+      earliest = createContinuationInvoice(r, chunkStart, coveredStart);
+      const res = billChunkUnits(earliest, r, chunkStart, coveredStart, chunkStart, retro, 'rental', r.invoiceId);
+      reindex('invoices', earliest);
+      sum.newInvoices++; sum.count += res.count; sum.subtotalDelta += res.delta; sum.invoiceIds.push(earliest.invoiceId);
+      coveredStart = chunkStart;
+    } else {                                                                      // grow the earliest open chunk earlier
+      const grow = Math.min(room, dayDiff(parseISO(targetStart), parseISO(coveredStart)));
+      const newCovStart = addDaysISO(coveredStart, -grow);
+      const res = retro ? reconcileChunkRetro(earliest, r, newCovStart, invCovEnd(earliest, r))
+        : billChunkUnits(earliest, r, newCovStart, coveredStart, newCovStart, false, 'extension', null);
+      earliest.covStart = newCovStart; reindex('invoices', earliest);
+      sum.count += res.count; sum.subtotalDelta += res.delta; if (!sum.invoiceIds.includes(earliest.invoiceId)) sum.invoiceIds.push(earliest.invoiceId);
+      coveredStart = newCovStart;
+    }
+  }
+  if (!sum.count) return null;
+  sum.subtotalDelta = Math.round(sum.subtotalDelta * 100) / 100;
+  return sum;
 }
 /* ── Transport journey-picker (Our yard · Truck · Customer site) — like the rental-
    window picker, but for transport. Click an endpoint then a second: store→truck =
@@ -961,6 +1230,7 @@ function syncTransportLine(r) {
   });
   want.forEach((w) => { inv.lineItems.push(w); changed = true; });   // brand-new units' transport lines
   if (changed) reindex('invoices', inv);
+  syncProtectionLine(r);   // F4b — protection rides on the rental subtotal, so recompute whenever lines sync (the chokepoint for add/remove/split/void)
 }
 /* §20 ADD any MISSING per-unit rental line to the linked invoice. Never regenerates an
    existing line (its payment allocation is keyed by lid — regeneration would orphan it);
@@ -974,21 +1244,50 @@ function syncRentalLines(r) {
   rentalLineItems(r).forEach((li) => { if (!have.has(li.unitId)) { inv.lineItems.push(li); changed = true; } });
   if (changed) reindex('invoices', inv);
 }
+/* F4b — Rental Protection invoice line. ONE 'protection' line per rental (ref=rentalId, no
+   unitId), amount = rentalProtectionAmount(r) (15% of the equipment subtotal). Taxable like a
+   rental line. Built at invoice creation; kept in sync (lid-preserving, paid-safe) by
+   syncProtectionLine — mirroring the transport-line reprice so allocations/refunds survive. */
+function protectionLineItems(r) {
+  const amt = rentalProtectionAmount(r);
+  if (amt <= 0) return [];
+  const pct = Math.round(rentalProtectionRate() * 100);
+  return [{ kind: 'protection', ref: r.rentalId, lid: lineLid(), label: `Rental Protection · ${pct}%`, amount: amt }];
+}
+function syncProtectionLine(r) {
+  if (!r || !r.invoiceId) return;
+  const inv = IDX.invoice.get(r.invoiceId); if (!inv) return;
+  const want = rentalProtectionAmount(r);
+  const pct = Math.round(rentalProtectionRate() * 100);
+  const label = `Rental Protection · ${pct}%`;
+  let changed = false, found = false;
+  inv.lineItems = (inv.lineItems || []).filter((li) => {
+    if (!(li.kind === 'protection' && li.ref === r.rentalId)) return true;
+    if (itemPaid(inv, li) > 0) { found = true; return true; }                 // never touch a PAID protection line (refund first)
+    if (want <= 0) { changed = true; return false; }                          // no longer applies → drop the unpaid line
+    found = true;
+    if (li.amount !== want || li.label !== label) { li.amount = want; li.label = label; changed = true; }   // reprice unpaid IN PLACE (keeps its lid → allocation survives)
+    return true;
+  });
+  if (!found && want > 0) { inv.lineItems.push({ kind: 'protection', ref: r.rentalId, lid: lineLid(), label, amount: want }); changed = true; }
+  if (changed) reindex('invoices', inv);
+}
 /* sweep ORPHANED invoice lines — a rental/transport line for THIS rental whose unit is no
    longer on it (and isn't paid) is dropped. Belt-and-suspenders after add/remove/split. */
 function healInvoiceLines(r) {
   if (!r || !r.invoiceId) return;
-  const inv = IDX.invoice.get(r.invoiceId); if (!inv) return;
   const live = new Set(rentalUnitIds(r));
-  const before = (inv.lineItems || []).length;
-  inv.lineItems = (inv.lineItems || []).filter((li) => {
-    const orphan = (li.kind === 'rental' || li.kind === 'transport') && li.ref === r.rentalId && li.unitId && !live.has(li.unitId);
-    return !orphan || itemPaid(inv, li) > 0;
+  rentalInvoices(r).forEach((inv) => {   // §28cap — sweep the whole billing series
+    const before = (inv.lineItems || []).length;
+    inv.lineItems = (inv.lineItems || []).filter((li) => {
+      const orphan = (li.kind === 'rental' || li.kind === 'transport' || li.kind === 'extension') && li.ref === r.rentalId && li.unitId && !live.has(li.unitId);
+      return !orphan || itemPaid(inv, li) > 0;
+    });
+    if ((inv.lineItems || []).length !== before) reindex('invoices', inv);
   });
-  if ((inv.lineItems || []).length !== before) reindex('invoices', inv);
 }
 
-/* ════════════ INLINE TRANSPORT EDITOR + GOOGLE MAPS (Jac 2026-06-15) ═════════
+/* ════════════ APP-06 · INLINE TRANSPORT EDITOR + GOOGLE MAPS (Jac 2026-06-15) ═════════
    Replaces the old `site` popup. An inline panel — minimap on top, address field,
    keyboard-navigable suggestions below — lets you set a site address in place.
    Progressive enhancement: real Google (Places + Map + Distance Matrix) when a
@@ -1348,11 +1647,6 @@ function rentalRevStatus(r) {
   if (base === 'Reserved') { const n = dayDiff(TODAY, parseISO(r.startDate)); if (n === 0) return 'Today'; if (n === 1) return 'Tomorrow'; }
   return base;
 }
-function relDate(iso) {
-  const d = parseISO(iso); if (!d) return '';
-  const n = dayDiff(TODAY, d);
-  return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : fmtShortDate(iso);
-}
 function activeRentalForUnit(unitId) {
   // §20 judge by the UNIT's OWN status, not the rental roll-up — a No-Show /
   // Returned unit on an otherwise-active rental is NOT actively renting.
@@ -1413,13 +1707,21 @@ function isUnitAvailableFor(u, startISO, endISO, selfId) {
 function categoryAvailableCount(catId, startISO, endISO, selfId) {
   return DATA.units.filter((u) => u.categoryId === catId && isUnitAvailableFor(u, startISO, endISO, selfId)).length;
 }
-/** The rental window in scope while the calendar is open (drives the availability UI). */
+/** The rental window in scope (drives the availability lens on the Units/Categories cards).
+ *  §inline (Jac 2026-06-25): whenever a rental is open in standard mode, its window — or its
+ *  STAGED window while you're editing the inline calendar — drives the lens; clears when the
+ *  rental detail closes. */
 function activeDraftWindow() {
-  const win = (r) => (r && r.startDate && r.endDate) ? { start: r.startDate, end: r.endDate, time: r.startTime, selfId: r.rentalId } : null;
-  // live while the window is being PICKED (Categories/Units update before "Done")
-  if (state.winpicker) { const w = win(IDX.rental.get(state.winpicker.rentalId)); if (w) return w; }
-  // persists after the picker closes via the "available" search; a manually-typed
-  // "available" with no picked window defaults to "available now" (today → tomorrow)
+  const win = (o) => (o && o.startDate && o.endDate) ? { start: o.startDate, end: o.endDate, time: o.startTime, selfId: o.rentalId } : null;
+  const sess = activeSession(), rc = sess && sess.cards && sess.cards.rentals;
+  const openRental = (rc && rc.mode === 'standard' && rc.recId && !rc.released) ? rc.recId : null;
+  if (openRental && state.winEdit && state.winEdit.rentalId === openRental) {
+    const s = state.winEdit.staged;
+    const base = s ? { startDate: s.startDate, endDate: s.endDate, startTime: s.startTime, rentalId: openRental } : IDX.rental.get(openRental);
+    const w = win(base); if (w) return w;
+  }
+  // persists via the "available" search; a manually-typed "available" with no window
+  // defaults to "available now" (today → tomorrow)
   if (availSearchActive()) return state.availWin || { start: TODAY_ISO, end: addDays(TODAY_ISO, 1), time: '', selfId: null };
   return null;
 }
@@ -1498,6 +1800,16 @@ function categoryMix(categoryId) {
   us.forEach((u) => { if (c[u.inspectionStatus] != null) c[u.inspectionStatus]++; });
   return { ...c, total: us.length };
 }
+/* §9 RENTABLE fleet — Jac's definition, lifted verbatim from the Ready-Rate KPI: a
+   unit counts as rentable when its fleetStatus isn't Inactive/Sold/For-Sale AND its
+   inspection isn't Failed. Sold units have left the yard, so they're out of inventory
+   too. One source for the category mini-card's rentable/total health tally. */
+const RENTABLE_SKIP_FLEET = new Set(['Inactive', 'Sold', 'For Sale']);
+const isUnitRentable = (u) => !RENTABLE_SKIP_FLEET.has(u.fleetStatus) && u.inspectionStatus !== 'Failed';
+function categoryRentable(categoryId) {
+  const inv = DATA.units.filter((u) => u.categoryId === categoryId && u.fleetStatus !== 'Sold');   // Sold left the yard → not inventory
+  return { rentable: inv.filter(isUnitRentable).length, total: inv.length };
+}
 /** A unit's current rental bucket (mirrors §12.4 Rental Status into 3 buckets). */
 function unitRentalBucket(u) {
   const r = activeRentalForUnit(u.unitId);
@@ -1550,7 +1862,7 @@ function categoryStats(cat) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §4 STATE & SESSIONS — one normalized object + the session model (SPEC §0.1)
+   APP-07 · §4 STATE & SESSIONS — one normalized object + the session model (SPEC §0.1)
    ════════════════════════════════════════════════════════════════════════
    A "session" is the full grid state. The default (no tabs) session is pure
    list-search across all cards. Each TAB carries its own isolated session with
@@ -1598,7 +1910,7 @@ const state = {
   overlay: null,       // { kind, ... } for popups
   focusedCard: null,   // clicked card → orange border (§0.1 visual feedback, no anchor)
   transportArm: null,  // §20 route-rail two-click selector: { rentalId, unitId, node } — the FIRST stop tapped (armed orange); a second stop locks the type
-  winpicker: null,     // { rentalId, monthISO, anchor } — the rental-window range picker
+  winEdit: null,       // §inline rental-window editor (rentalId, monthISO, anchor, staged) — NOT a modal
   datesearch: null,    // { scope, monthISO, anchor, start, end, editIndex } — §5.4d standalone date/range SEARCH picker (type "date"→Enter)
   availWin: null,      // §10 persistent window scope for the "available" search (set by the picker; outlives it)
   filterTerms: [],            // §5.4 — AND-narrowing filter terms (type + Enter)
@@ -1611,7 +1923,7 @@ const state = {
   invMergePick: null,         // invoiceId whose "Merge invoice" picker is open (consolidate unpaid bills)
   dashboard: false,           // §5.3/§11 Office Dispatch Time Grid (grid-swap mode)
   seq: 1,
-  invoiceSeq: DATA.invoices.length,   // monotonic invoice number (never reused after a discard)
+  invoiceSeq: maxInvoiceSeq(),   // monotonic invoice number — derived from the highest running number actually present (NOT .length: see maxInvoiceSeq)
   previewsOn: (() => { try { return localStorage.getItem('jactec.previewsOff') !== '1'; } catch (e) { return true; } })(),   // hover previews (per device)
   overbookOn: (() => { try { return localStorage.getItem('jactec.overbook') === '1'; } catch (e) { return false; } })(),   // §10 allow-overbooking policy (per device, default OFF — drag build)
   hapticsOff: (() => { try { return localStorage.getItem('jactec.hapticsOff') === '1'; } catch (e) { return false; } })(),   // §M-touch Vibration-API feedback (per device, default ON; Android-only, no-op on iOS)
@@ -1619,13 +1931,26 @@ const state = {
   settings: loadAdminSettings(),   // Settings Board admin customization (config.settings); mirrored to localStorage, applied at boot via applySettings()
 };
 const activeSession = () => (state.activeTabId ? state.tabs.find((t) => t.id === state.activeTabId)?.session : state.defaultSession) || state.defaultSession;
-/** Next unique invoice id — a monotonic counter so deleting a Quote-stage invoice can't reuse a number. */
-const nextInvoiceId = () => CFG.invoiceId(TODAY_ISO, ++state.invoiceSeq);
+/** Highest running number actually present across invoices, parsed from each id's
+ *  leading digits (e.g. '07i02Ju26' -> 7). The counter MUST come from the data, not
+ *  the array: `DATA.invoices.length` started from the seed file (4) and was never
+ *  recomputed after loadFromBackend swapped in the real invoices, so every login it
+ *  restarted low and minted 05i…/06i… numbers that already existed on the backend —
+ *  duplicate "##i" prefixes that the 18s refresh poll then leap-frogged in. `.length`
+ *  also shrinks on discard (breaking the "never reused" invariant) and doesn't grow
+ *  when the poll pushes remote invoices in. Mirrors nextUnitId/nextCategoryId. */
+function maxInvoiceSeq() {
+  return (DATA.invoices || []).reduce((m, inv) => { const n = /^(\d+)i/.exec(String(inv.invoiceId || '')); return n ? Math.max(m, +n[1]) : m; }, 0);
+}
+/** Next unique invoice id — a monotonic counter so deleting a Quote-stage invoice can't
+ *  reuse a number. Always jumps past the current max in the data, so it can't collide
+ *  with invoices loaded at login or pushed in by the live-refresh poll mid-session. */
+const nextInvoiceId = () => { state.invoiceSeq = Math.max(state.invoiceSeq || 0, maxInvoiceSeq()) + 1; return CFG.invoiceId(TODAY_ISO, state.invoiceSeq); };
 
 /* ── session actions ──────────────────────────────────────────────────────
    `recType` is only meaningful for the Shop card (which holds inspections /
    workOrders / serviceOrders); it's undefined for the 5 normal cards. */
-function setAnchor(session, card, recId, recType) {
+function setAnchor(session, card, recId, recType, opts = {}) {
   sweepEmptyDrafts(recId);   // #8 — anchoring elsewhere deletes an abandoned empty draft
   if (state.unitPick && !(card === 'units' && state.unitPick.ids.includes(recId))) state.unitPick = null;   // leaving the picker clears it
   const entityCard = entityCardOf(card, recType);
@@ -1633,15 +1958,22 @@ function setAnchor(session, card, recId, recType) {
   const rec = recOf(entityCard, recId);
   session.anchor = { card, recId, recType };
   session.cascade = state.cascade.cascadeAll(type, rec);
-  // anchored card → standard; others → list (cascade)
-  for (const c of GRID_CARDS) {
-    const ccs = session.cards[c.id];
-    ccs.backStack = []; ccs.fwdStack = [];
-    ccs.mode = c.id === card ? 'standard' : 'list';
-    ccs.recId = c.id === card ? recId : null;
-    ccs.recType = c.id === card ? recType : null;
-    ccs.released = false;                                       // re-cascade clears any per-card "browse all" release
-    if (c.id !== card) { ccs.search = ''; ccs.filterTerms = []; }   // cascaded cards reset to the clean anchored view
+  // §264 — a REFRESH (reanchorRender after an option-click: complete/cancel/clear/etc.)
+  // only needs the cascade membership recomputed above; it must NOT reset the sibling
+  // cards. The destructive reset below is for a FRESH anchor only — re-running it on every
+  // option-click was wiping the record you had open in a sibling column plus any typed
+  // search/filter and the back/forward history (the "kicked off the card I was reading" bug).
+  if (!opts.preserve) {
+    // anchored card → standard; others → list (cascade)
+    for (const c of GRID_CARDS) {
+      const ccs = session.cards[c.id];
+      ccs.backStack = []; ccs.fwdStack = [];
+      ccs.mode = c.id === card ? 'standard' : 'list';
+      ccs.recId = c.id === card ? recId : null;
+      ccs.recType = c.id === card ? recType : null;
+      ccs.released = false;                                       // re-cascade clears any per-card "browse all" release
+      if (c.id !== card) { ccs.search = ''; ccs.filterTerms = []; }   // cascaded cards reset to the clean anchored view
+    }
   }
   // 3-column display: make the anchored card the visible member of its column
   // (shop anchors map to their recType member). Pure display; cascade is unchanged.
@@ -1655,6 +1987,15 @@ function anchorRecord(card, recId, recType) {
   // allowed, only the tab X clears it. The new tab inherits the current session's
   // per-card searches (don't reset them).
   openInTab(card, recId, recType, { inheritFrom: activeSession() });
+}
+// Double-tap/dbl-click anchor TOGGLE (Jac): double-tapping the record that's already
+// THIS session's anchor drops the anchor (clearAnchor) instead of opening a duplicate
+// anchored tab. Any other record anchors as usual. Used by the gesture paths only —
+// the ⊞ button keeps its always-open-a-new-tab behavior.
+function anchorOrToggle(card, recId, recType) {
+  const a = activeSession().anchor;
+  if (a && a.card === card && String(a.recId) === String(recId) && (a.recType || null) === (recType || null)) return clearAnchor();
+  return anchorRecord(card, recId, recType);
 }
 
 /* Phase 1 shared path — freeze the current session and open card/recId in a NEW
@@ -1713,7 +2054,17 @@ function closeTab(id) {
   if (state.activeTabId === id) state.activeTabId = state.tabs.length ? state.tabs[Math.max(0, i - 1)].id : null;
   render();
 }
-function closeAll() { state.tabs = []; state.activeTabId = null; state.searchMode = false; state.query = ''; state.winpicker = null; state.datesearch = null; render(); }
+function closeAll() { state.tabs = []; state.activeTabId = null; state.searchMode = false; state.query = ''; state.winEdit = null; state.datesearch = null; render(); }
+// §313 — keep only the active tab; with none active, fall back to a full close.
+function closeOthers() { if (!state.activeTabId) { closeAll(); return; } state.tabs = state.tabs.filter((t) => t.id === state.activeTabId); render(); }
+// §313 — Close-all trigger. 1–2 tabs close immediately; >2 ask first (a quick popover).
+function openCloseAllMenu(anchorEl) {
+  const n = state.tabs.length;
+  if (!n) return;
+  if (n <= 2) { closeAll(); return; }
+  const row = `<div class="dd-confirm">${actionPill('danger', `Close all ${n}`, { js: 'js-closeall' })}${ghostPill('Close others', { js: 'js-closeothers', tip: 'Keep the current tab open' })}</div>`;
+  openDropdown(anchorEl, `<div class="dd-sec">Close all ${n} tabs?</div>${row}`, { align: 'right' });
+}
 /* Wave 2 (Jac): QUOTES SURVIVE. Nothing is swept on tab close / session switch —
    a Quote-status rental (or any fresh record) lives until Completed/Cancelled
    or deliberately deleted. The `mock` flag stays purely a UI affordance gate
@@ -1769,10 +2120,26 @@ function openStandard(card, recId, recType) {
   // category name so Units narrows to that category's window-available units (the
   // 'available' chip is already pinned by enterAvailabilitySearch). The category stays
   // in standard mode, so it remains the calendar's availability subject (greyed days).
-  if (card === 'categories' && state.winpicker && availWin) {
+  if (card === 'categories' && state.winEdit && availWin) {
     const cat = IDX.category.get(recId), s = activeSession(), us = s.cards.units;
     if (cat && us) { us.search = cat.name; us.listLimit = undefined; if (s.cols && s.cols.left) s.cols.left = 'units'; }
   }
+  render();
+}
+/** Jump to the Units card filtered to one category's units — wired to a category
+ *  mini-card's Availability pill (Jac 2026-06-25). Narrows Units by the category
+ *  name (same seam the winpicker uses) and makes sure the Units card is on screen,
+ *  swapping the column that holds Categories over to Units when Units isn't visible. */
+function showCategoryUnits(categoryId) {
+  const cat = IDX.category.get(categoryId); if (!cat) return;
+  const s = activeSession(), us = s.cards.units; if (!us) return;
+  us.search = cat.name; us.listLimit = undefined; us.mode = 'list'; us.recId = null; us.recType = null;
+  if (s.cols) {
+    const slots = ['left', 'middle', 'right'].filter((k) => k in s.cols);
+    if (!slots.some((k) => s.cols[k] === 'units')) s.cols[(slots.find((k) => s.cols[k] === 'categories')) || slots[0]] = 'units';
+  }
+  state.focusedCard = 'units';
+  if (state.mobileCol !== undefined) state.mobileCol = 'units';   // mobile single-column → show Units
   render();
 }
 /** Universal pill rule (§0.2): clicking any pill forces its target card into
@@ -1891,7 +2258,7 @@ function rowOpen(card, recId, recType) {
 function deferOrAnchor(key, singleFn, anchor) {
   if (pendingRowClick && pendingRowClick.key === key) {
     clearTimeout(pendingRowClick.timer); pendingRowClick = null;
-    return anchorRecord(anchor.card, anchor.recId, anchor.recType);
+    return anchorOrToggle(anchor.card, anchor.recId, anchor.recType);   // 2nd tap on the anchored record un-anchors (toggle)
   }
   if (pendingRowClick) clearTimeout(pendingRowClick.timer);
   pendingRowClick = { key, timer: setTimeout(() => { pendingRowClick = null; singleFn(); }, DBL_MS) };
@@ -2056,6 +2423,7 @@ function totColMatch(card, rec, col, value) {
     if (value === 'on-schedule') return !s || (s.status !== 'past-due' && s.status !== 'due-soon');
     return false;
   }
+  if (col === '__wophase') return card === 'workOrders' && (rec.phase || '—') === value;   // shop front-page WO bar: match this phase AND exclude non-WO items (the normal 'phase' fallback would let them through)
   const c = cardColumns(card, activeSession()).find((x) => x.key === col);
   return c ? String(c.get(rec)) === String(value) : true;
 }
@@ -2068,10 +2436,15 @@ function termsFor(scope) {
   return (cs.filterTerms = cs.filterTerms || []);
 }
 function afterFilterChange(scope) {
+  const sel = scope === 'global' ? '#globalsearch' : `.mini-search[data-card="${scope}"]`;
+  // Only KEEP focus on the search box if the user was already typing in it (Enter-to-pin a
+  // term → let them add another). A chip / graph-segment / Not-Ready tap must NOT grab focus
+  // — on a phone that pops the keyboard + scroll-jumps the layout out from under you (Jac).
+  const wasTyping = !!(document.activeElement && document.activeElement.matches && document.activeElement.matches(sel));
   if (scope === 'global') recomputeSearchMode();           // sets searchMode + resets list limits
   else activeSession().cards[scope].listLimit = undefined;  // re-window this card from the top
   render();
-  document.querySelector(scope === 'global' ? '#globalsearch' : `.mini-search[data-card="${scope}"]`)?.focus();
+  if (wasTyping) document.querySelector(sel)?.focus();
 }
 // A1 — a footer chip adds an EXACT, removable filter pill to the card's search bar (one
 // filtering pathway, cleared from the search bar) instead of a separate sticky footer filter.
@@ -2126,7 +2499,7 @@ function filterTermPill(ft, i, scope) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §5a ICONS — inline SVG (stroke-based, currentColor)
+   APP-08 · §5a ICONS — inline SVG (stroke-based, currentColor)
    ════════════════════════════════════════════════════════════════════════ */
 /* Icon registries (I, CARD_ICON, RING_ICON) live in icons.js — generic glyphs
    are vendored VERBATIM from Lucide (regenerate: `node tools/gen-icons.mjs`),
@@ -2134,7 +2507,7 @@ function filterTermPill(ft, i, scope) {
    stays below in §5, intentionally bespoke. */
 
 /* ════════════════════════════════════════════════════════════════════════
-   SETTINGS BOARD — admin customization (config.settings).
+   APP-09 · SETTINGS BOARD — admin customization (config.settings).
    A curated, VENDORED subset of Lucide (MIT) glyphs an admin can pin to a
    status option from the Statuses & Icons tab. Inlined as path data via ico()
    — same dependency-free pattern as I / CARD_ICON. NEVER a runtime import.
@@ -2629,7 +3002,6 @@ const INSP_DEFAULTS = {
     { id: 'iqc-pt-06', label: 'All Cords/Wires/ZipTies/Tape/Etc Removed', type: 'toggle', required: false },
     { id: 'iqc-pt-07', label: 'Unused & Broken Items Removed', type: 'toggle', required: false },
     { id: 'iqc-pt-08', label: 'This Unit Looks Better Than When I Found It', type: 'toggle', required: false },
-    { id: 'iqc-pt-09', label: 'Leveler: Not Broken', type: 'toggle', required: false },
     { id: 'iqc-pt-10', label: 'You Cleaned Air Filter', type: 'toggle', required: false },
     { id: 'iqc-pt-11', label: 'Pull Cord Will Not Break', type: 'toggle', required: false },
     { id: 'iqc-pt-12', label: 'You Greased Main Shaft', type: 'toggle', required: false },
@@ -2673,7 +3045,6 @@ const INSP_DEFAULTS = {
     { id: 'iqc-cs-08', label: 'Unused & Broken Items Removed', type: 'toggle', required: false },
     { id: 'iqc-cs-09', label: 'Cover Works Properly', type: 'toggle', required: false },
     { id: 'iqc-cs-10', label: 'This Unit Looks Better Than When I Found It', type: 'toggle', required: false },
-    { id: 'iqc-cs-11', label: 'Leveler: Not Broken', type: 'toggle', required: false },
     { id: 'iqc-cs-12', label: 'You Cleaned Air Filter', type: 'toggle', required: false },
     { id: 'iqc-cs-13', label: 'Pull Cord Will Not Break', type: 'toggle', required: false },
     { id: 'iqc-cs-14', label: 'You Greased This Zerk', type: 'toggle', required: false },
@@ -2691,15 +3062,59 @@ function checklistFor(unit) { const c = unit && inspectionCfg(unit.categoryId); 
 const checklistRequired = (unit) => { const c = checklistFor(unit); return !!(c && c.required); };
 const INSP_TYPES = ['toggle','file','select','number','date','text'];
 const inspItemType = (it) => it && it.type ? it.type : 'toggle';
+// Does this item's answer count as a failure? Per-type fail condition lives on `it.fail`
+// (Jac 2026-06-26). A toggle with no `it.fail` reads as failWhen:'fail' so every legacy item
+// (incl. all 21 default families) behaves exactly as before. A failing answer flows the
+// UNCHANGED completeChecklist → setInspResult('Fail') → autoWOFromInspection cascade.
 function inspItemFails(it, val) {
   const t = inspItemType(it);
-  if (t === 'toggle') return val === 'Fail';
+  const f = (it && it.fail) || null;
+  if (t === 'toggle') return (f && f.failWhen === 'pass') ? val === 'Pass' : val === 'Fail';
   if (t === 'select') { const o = (it.options || []).find((op) => op.label === val); return !!(o && o.fail); }
+  if (t === 'number') {
+    if (!f || !f.op || f.op === 'none') return false;
+    const v = Number(val); if (val == null || val === '' || !isFinite(v)) return false;
+    const a = Number(f.a), b = Number(f.b);
+    if (f.op === 'above') return isFinite(a) && v > a;
+    if (f.op === 'below') return isFinite(a) && v < a;
+    if (f.op === 'outside') return isFinite(a) && isFinite(b) && (v < a || v > b);
+    if (f.op === 'inside') return isFinite(a) && isFinite(b) && v >= a && v <= b;
+    return false;
+  }
+  if (t === 'date') {
+    if (!f || !f.op || f.op === 'none' || !val) return false;            // ISO yyyy-mm-dd compares lexically
+    const ref = (!f.ref || f.ref === 'today') ? TODAY_ISO : f.ref;
+    if (f.op === 'before') return val < ref;
+    if (f.op === 'after') return val > ref;
+    return false;
+  }
+  if (t === 'text') {
+    if (!f || !f.op || f.op === 'none') return false;
+    if (f.op === 'empty') return val == null || val === '';
+    if (f.op === 'contains') return !!(f.value && typeof val === 'string' && val.toLowerCase().includes(String(f.value).toLowerCase()));
+    return false;
+  }
   return false;
 }
+// Is required photo evidence missing for this item right now? Policy `it.evidence`
+// (Jac 2026-06-26): none/optional never block; always → needs ≥1 photo; failphoto →
+// needs a photo only when the item's answer currently fails. Keys off inspItemFails so
+// an out-of-range number or expired date demands a photo too.
+function inspEvidenceMissing(it, val, evArr) {
+  const p = (it && it.evidence) || 'none';
+  if (p === 'none' || p === 'optional') return false;
+  const has = !!(evArr && evArr.length);
+  if (p === 'always') return !has;
+  if (p === 'failphoto') return inspItemFails(it, val) && !has;
+  return false;
+}
+// Every item is answer-required now (Jac 2026-06-26 — the Optional/Required toggle is gone);
+// the old `it.required` flag is simply ignored.
 function inspItemUnanswered(it, val) {
-  if (inspItemType(it) === 'toggle') return !val;          // must pick Pass or Fail (as today)
-  return !!it.required && (val == null || val === '');      // required non-toggle must be filled; optional may be blank
+  const t = inspItemType(it);
+  if (t === 'toggle') return !val;                 // must pick Pass or Fail
+  if (t === 'select' || t === 'file') return !val; // must choose an option / attach a file
+  return val == null || val === '';                // number / date / text — must be filled
 }
 const COMPANY_DEFAULTS = { name: 'JacRentals', tagline: 'Heavy-Equipment Rental · Sulphur, LA', revenueGoal: (CFG.REVENUE_GOAL_DEFAULT || 150000), maxNetDays: 30 };
 const companyName = () => (companyCfg().name || '').trim() || COMPANY_DEFAULTS.name;
@@ -2713,6 +3128,265 @@ const companyPhone = () => (companyCfg().phone || '').trim();
 // registry (§7.1b) or what a customer actually e-signs.
 const membershipPrintTemplate = () => { const t = companyCfg().membershipAgreementTemplate; return (typeof t === 'string' && t.trim()) ? t : AGREEMENTS.membership.text; };
 const companyRevenueGoal = () => { const n = Number(companyCfg().revenueGoal); return n > 0 ? n : COMPANY_DEFAULTS.revenueGoal; };
+/* Membership subscription pricing — Owner-settable in Settings → Company, read here
+   (and server-side at billing time) so Jac can reprice without a code deploy
+   (spec §2/§10.1). Stored as flat config keys (mem*), assembled with the shipped
+   defaults. protectionPct is a percent of the BASE fee only. */
+const MEMBERSHIP_DEFAULTS = { monthlyBase: 299, annualBase: 2691, monthlyTransport: 500, annualTransport: 4500, protectionPct: 15, protectionCapMonthly: 2000 };
+const membershipPricing = () => {
+  const c = companyCfg();
+  const num = (v, d) => { const n = Number(v); return (v != null && v !== '' && isFinite(n) && n >= 0) ? n : d; };
+  return {
+    monthlyBase:          num(c.memMonthlyBase,      MEMBERSHIP_DEFAULTS.monthlyBase),
+    annualBase:           num(c.memAnnualBase,       MEMBERSHIP_DEFAULTS.annualBase),
+    monthlyTransport:     num(c.memMonthlyTransport, MEMBERSHIP_DEFAULTS.monthlyTransport),
+    annualTransport:      num(c.memAnnualTransport,  MEMBERSHIP_DEFAULTS.annualTransport),
+    protectionPct:        num(c.memProtectionPct,    MEMBERSHIP_DEFAULTS.protectionPct),
+    protectionCapMonthly: num(c.memProtectionCap,    MEMBERSHIP_DEFAULTS.protectionCapMonthly),
+  };
+};
+/* Pure: a membership cycle's itemized charge. plan 'Monthly'|'Yearly'; addOns
+   {transport,protection}. NO proration (spec §2); protection = pct of BASE only;
+   tax = TAX_RATE (10.75%). Returns exact-cent figures. The client mirrors this for
+   the live enrollment total; the backend recomputes it authoritatively at charge time. */
+function membershipFee({ plan, addOns } = {}, pricing) {
+  const p = pricing || membershipPricing();
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const annual = plan === 'Yearly' || plan === 'Annual';
+  const base = annual ? p.annualBase : p.monthlyBase;
+  const transport = (addOns && addOns.transport) ? (annual ? p.annualTransport : p.monthlyTransport) : 0;
+  const protection = (addOns && addOns.protection) ? r2(base * (p.protectionPct / 100)) : 0;
+  const subtotal = r2(base + transport + protection);
+  const tax = r2(subtotal * TAX_RATE);
+  return { base, transport, protection, subtotal, tax, total: r2(subtotal + tax) };
+}
+/* Membership lifecycle status, derived from the customer's fields (spec §3):
+     None       — not a member account
+     Incomplete — 'Member Incomplete' (enrolled but not activated: no card / agreement / first charge)
+     Active     — paid through today (or a prepaid-to-term member), OR a legacy member with no
+                  subscription fields yet (grandfathered so existing members keep their rate)
+     Past Due   — paidUntil lapsed but still inside the 7-day grace (KEEPS member rates per the agreement)
+     Lapsed     — grace expired (the backend also flips accountType off Member, reverting pricing)
+   ISO date strings compare lexically, so direct >= works for YYYY-MM-DD. */
+function membershipStatus(c) {
+  if (!c) return 'None';
+  const at = c.accountType || '';
+  if (!/Member/.test(at)) return 'None';
+  if (at === 'Member Incomplete') return 'Incomplete';
+  if (!(c.paidUntil || c.paidCadence || c.commitmentEnd)) return 'Active';   // legacy/grandfathered member — no subscription data yet
+  if (c.prepaid) return 'Active';
+  if (c.paidUntil && c.paidUntil >= TODAY_ISO) return 'Active';
+  if (c.graceUntil && c.graceUntil >= TODAY_ISO) return 'Past Due';
+  return 'Lapsed';
+}
+/* The ONE pricing/entitlement gate (spec §10.4): member rate + $0 Unlimited-Transport
+   apply only to an Active or in-grace member — refused to Incomplete AND lapsed, in both
+   the quote and the invoice line. Past Due keeps the rate through the grace window. */
+const isActiveMember = (c) => { const s = membershipStatus(c); return s === 'Active' || s === 'Past Due'; };
+/* Rental Protection (F4) — an account-level surcharge (spec §2.1), available to members
+   AND non-members. The rate is the Owner-settable protection % (shared with the membership
+   add-on). rentalProtectionAmount = that % of the rental's EQUIPMENT subtotal (rental lines
+   only — not transport, not other surcharges), 0 when the account doesn't carry protection. */
+const rentalProtectionRate = () => membershipPricing().protectionPct / 100;
+function rentalProtectionAmount(r) {
+  const cust = r && IDX.customer.get(r.customerId);
+  if (!cust || !cust.rentalProtection) return 0;
+  const base = rentalLineItems(r).reduce((a, li) => a + (Number(li.amount) || 0), 0);
+  return Math.round(base * rentalProtectionRate() * 100) / 100;
+}
+/* ── Membership economics (F7, spec §7) — per-customer, internal-only ──────────────
+   Fee revenue (paid membership invoices, falling back to the legacy paidFees field),
+   member-rate rental revenue (actual) vs the equipment-rate-only RETAIL counterfactual
+   (what a non-member would have paid), and the derived member discount + net program
+   contribution. The counterfactual is derived on the fly from rentalPrice's retail
+   branch — nothing extra is stored. */
+function membershipFeeRevenue(c) {
+  let sum = 0, any = false;
+  for (const inv of DATA.invoices) { if (inv.membership && inv.customerId === c.customerId) { sum += Number(inv.amountPaid) || 0; any = true; } }
+  return any ? sum : (Number(c.paidFees) || 0);
+}
+function membershipEconomics(c) {
+  if (!c) return null;
+  const r2 = (n) => Math.round(n * 100) / 100;
+  let memberRev = 0, retailRev = 0;
+  for (const r of DATA.rentals) {
+    if (r.customerId !== c.customerId) continue;
+    for (const eu of rentalUnits(r)) {
+      if (unitVoided(r, eu)) continue;
+      const u = IDX.unit.get(eu.unitId); if (!u) continue;
+      const cat = IDX.category.get(u.categoryId); if (!cat) continue;
+      const s = parseISO(r.startDate), e = parseISO(r.endDate); if (!s || !e) continue;
+      const days = Math.max(1, dayDiff(s, e));
+      memberRev += days * (cat.memberDaily || 0);                                                   // member-rate equipment revenue
+      const retail = rentalPrice({ categoryId: u.categoryId, startDate: r.startDate, endDate: r.endDate, customerId: '__retail__' });   // forced non-member → retail tiers
+      retailRev += retail ? retail.price : 0;
+    }
+  }
+  const feeRevenue = r2(membershipFeeRevenue(c));
+  const discount = r2(retailRev - memberRev);                                                       // what the member rate gave away on equipment
+  return { feeRevenue, memberRev: r2(memberRev), retailRev: r2(retailRev), discount, net: r2(feeRevenue - discount) };
+}
+function membershipEconomicsHtml(c) {
+  const e = membershipEconomics(c);
+  if (!e || (!e.feeRevenue && !e.memberRev && !e.retailRev)) return '';
+  return `<div class="mem-econ">
+    ${kv(money(e.feeRevenue), { sfx: 'membership fees', derived: true })}
+    ${kv(money(e.memberRev), { sfx: 'member-rate rentals', derived: true })}
+    ${kv(money(e.retailRev), { sfx: 'retail equivalent', derived: true })}
+    ${kv(money(e.discount), { sfx: 'member discount', derived: true })}
+    ${kv(money(e.net), { sfx: 'net program', derived: true })}
+  </div>`;
+}
+// The outstanding Cancellation Invoice for a lapsed/cancelled Monthly member (spec §4), if any.
+function membershipCancellationInvoice(c) {
+  if (!c) return null;
+  return DATA.invoices.find((inv) => inv.membershipCancellation && inv.customerId === c.customerId && invoiceTotals(inv).balance > 0.005) || null;
+}
+/* ── Membership section (F6) — lifecycle state + actions, in the yard data-plate language ── */
+function membershipSectionHtml(c) {
+  const status = membershipStatus(c);
+  const isMem = status === 'Active' || status === 'Past Due';
+  const yrFull = (iso) => `${fmtShortDate(iso)}, ${parseISO(iso).getFullYear()}`;
+  const stageSet = !!(c.membershipStage && c.membershipStage !== 'N/A');
+  const stateBadge = isMem
+    ? badge(status === 'Past Due' ? 'Past Due' : 'Active Member', status === 'Past Due' ? 'yellow' : 'green')
+    : status === 'Lapsed' ? badge('Lapsed', 'red')
+      : status === 'Incomplete' ? badge('Member Incomplete', 'yellow') : '';
+  const graceN = (status === 'Past Due' && c.graceUntil) ? dayDiff(TODAY, parseISO(c.graceUntil)) : null;   // days left in the 7-day grace
+  const graceFlag = (graceN != null && graceN >= 0) ? kvPills(badge(`⚠ Canceled in ${graceN} day${graceN === 1 ? '' : 's'}`, 'red')) : '';
+  const paidUntil = (isMem && c.paidUntil) ? kv(yrFull(c.paidUntil), { sfx: c.prepaid ? 'prepaid through' : 'paid until' }) : '';
+  const planBadges = c.paidCadence ? kvPills(`${badge('Paid ' + c.paidCadence, 'green')}${c.unlimitedTransport ? badge('Unlimited Transport', 'purple') : ''}${c.rentalProtection ? badge('Protected', 'blue') : ''}${c.autoRenew ? badge('Auto-Renew', 'navy') : ''}`) : '';
+  const cxlInv = membershipCancellationInvoice(c);
+  // Enroll / Cancel / Pay-Cancellation are MONEY actions → Office/Admin only, same gate as the
+  // invoice Pay/Charge/Refund row (5868) and Add-Card (canMoney). Print Agreement is not a money
+  // action, so it stays visible to every role. (Handlers re-check canMoney() as defence-in-depth.)
+  const mayMoney = canMoney();
+  const enrollBtn = (!isMem && mayMoney) ? actionPill('commit', status === 'Incomplete' ? 'Complete Enrollment' : 'Saddle Up — Enroll', { js: 'js-mem-enroll', h: 26, data: { rec: c.customerId } }) : '';
+  const cancelBtn = (isMem && mayMoney) ? actionPill('danger', 'Cancel Membership', { js: 'js-mem-cancel', h: 26, data: { rec: c.customerId } }) : '';
+  const payCxlBtn = (cxlInv && mayMoney) ? actionPill('money', 'Pay Cancellation ' + money2(invoiceTotals(cxlInv).balance), { js: 'js-mem-paycxl', h: 26, data: { rec: c.customerId } }) : '';
+  const printBtn = stageSet ? actionPill('commit', 'Print Agreement', { js: 'js-print-magreement', h: 26, data: { rec: c.customerId } }) : '';
+  const actions = [enrollBtn, cancelBtn, payCxlBtn, printBtn].filter(Boolean).join('');
+  return `<div class="section"><h4>Membership</h4><div class="fieldstack centered">
+    ${kvPills(funnelPill(c.customerId, 'membership', c.membershipStage || 'N/A'))}
+    ${stateBadge ? kvPills(stateBadge) : ''}
+    ${graceFlag}
+    ${paidUntil}
+    ${planBadges}
+    ${membershipEconomicsHtml(c)}
+    ${actions ? `<div class="kv pillrow">${actions}</div>` : ''}
+  </div></div>`;
+}
+/* ── F5 — enrollment / cancel / reactivate orchestration ──────────────────────────
+   Reuses the deployed, money-gated stripeChargeInvoice action (same security model as
+   today's rental charges). Enrollment creates the membership invoice + sets the member
+   fields, then charges the saved card; the account only goes ACTIVE on a cleared charge
+   (a decline leaves it Member Incomplete). Cancel reverts to retail and, for a Monthly
+   member mid-commitment, drops a Cancellation Invoice; paying it in full reopens the
+   membership prepaid through the term (spec §4). Rental Protection persists on lapse. */
+const MEMBERSHIP_MONTHS = 12;
+const memberAccountType = (c) => (c.company && c.company.trim()) ? 'Business Member' : 'Non-Business Member';
+const addMonthsISO = (iso, n) => { const d = parseISO(iso) || new Date(); return isoOf(new Date(d.getFullYear(), d.getMonth() + n, d.getDate())); };
+const monthsRemaining = (toISO) => { const a = new Date(), b = parseISO(toISO); if (!b) return 0; return Math.max(0, (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth())); };
+function markInvoicePaidLocal(inv, method) { const t = invoiceTotals(inv); inv.amountPaid = t.total; inv.paid = true; inv.paymentMethod = method || 'Card'; inv.paidAt = new Date().toISOString(); reindex('invoices', inv); }
+// Build a membership invoice (kind:'membership' lines so it's identifiable for the §7 economics + revenue rollup).
+function buildMembershipInvoice(c, lines, { cancellation = false, date = TODAY_ISO, due } = {}) {
+  const id = nextInvoiceId();
+  const inv = { invoiceId: id, customerId: c.customerId, membership: true, membershipCancellation: cancellation, date, dueDate: due || date, po: '', amountPaid: 0, lineItems: lines, mock: true };
+  DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
+  return inv;
+}
+function openMembershipEnroll(custId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  openOverlay({ kind: 'membershipEnroll', custId, plan: 'Monthly', addOns: { transport: false, protection: !!c.rentalProtection }, autoRenew: false, startDate: TODAY_ISO, busy: false, error: '' });
+}
+const memIsDemo = () => (typeof backendPassword === 'undefined' || !backendPassword);
+// Apply the Active member fields locally (the server is authoritative for the PROTECTED
+// paidUntil/graceUntil — set them here for an immediate UI, they round-trip via the backend).
+function memApplyActive(c, o, start, paidUntil) {
+  c.accountType = memberAccountType(c);
+  c.paidCadence = (o.plan === 'Annual' ? 'Yearly' : 'Monthly');
+  c.commitmentStart = start; c.commitmentEnd = addMonthsISO(start, MEMBERSHIP_MONTHS);
+  c.autoRenew = !!o.autoRenew; c.addOns = { transport: !!o.addOns.transport, protection: !!o.addOns.protection };
+  if (o.addOns.transport) c.unlimitedTransport = true;
+  if (o.addOns.protection) c.rentalProtection = true;
+  c.prepaid = false; c.graceUntil = ''; c.paidUntil = paidUntil;
+  reindex('customers', c);
+  logAction(c, `Membership enrolled — ${o.plan}${o.addOns.transport ? ' + Transport' : ''}${o.addOns.protection ? ' + Protection' : ''}`);
+}
+async function membershipEnrollCommit() {
+  const o = state.overlay; if (!o || o.kind !== 'membershipEnroll' || o.busy) return;
+  const c = IDX.customer.get(o.custId); if (!c) return;
+  if (!(hasCardOnFile(c) && hasValidCard(c))) { o.error = 'A valid card on file is required to charge the membership.'; renderOverlay(); flashOr('.overlay .js-me-commit', 'Add a card on file first.'); return; }
+  const start = o.startDate || TODAY_ISO;
+  o.busy = true; o.error = ''; renderOverlay();
+  try {
+    if (memIsDemo()) {   // #local — client-side invoice + simulated charge (no backend)
+      const pricing = membershipPricing(), fee = membershipFee({ plan: o.plan, addOns: o.addOns }, pricing);
+      const lines = [{ kind: 'membership', ref: c.customerId, lid: lineLid(), label: `Membership · ${o.plan} base`, amount: fee.base }];
+      if (fee.transport) lines.push({ kind: 'membership', ref: c.customerId, lid: lineLid(), label: 'Unlimited Transport', amount: fee.transport });
+      if (fee.protection) lines.push({ kind: 'membership', ref: c.customerId, lid: lineLid(), label: `Rental Protection · ${pricing.protectionPct}%`, amount: fee.protection });
+      const inv = buildMembershipInvoice(c, lines, { date: start, due: start });
+      markInvoicePaidLocal(inv, 'Card (demo)');
+      memApplyActive(c, o, start, addMonthsISO(start, o.plan === 'Annual' ? 12 : 1));
+      closeOverlay(); render(); toast('Membership active — saddle up! ✓'); return;
+    }
+    // PROD — the backend creates the invoice, charges the card, and sets the protected fields server-side
+    const r = await backendCall('membershipEnroll', { customerId: c.customerId, plan: (o.plan === 'Annual' ? 'Yearly' : 'Monthly'), addOns: o.addOns, startDate: start, autoRenew: !!o.autoRenew });
+    if (state.overlay !== o) return;
+    if (r && r.ok && r.status === 'active') {
+      memApplyActive(c, o, start, r.paidUntil || addMonthsISO(start, o.plan === 'Annual' ? 12 : 1));
+      closeOverlay(); render(); toast('Membership active — saddle up! ✓'); return;
+    }
+    o.busy = false;
+    o.error = (r && r.status === 'incomplete') ? (friendlyPayErr(r.charge) || 'Charge declined — the account stays Member Incomplete until payment clears.') : ((r && friendlyPayErr(r)) || 'Enrollment failed — try again.');
+    renderOverlay();
+  } catch (e) { if (state.overlay === o) { o.busy = false; o.error = 'Network error — try again.'; renderOverlay(); } }
+}
+async function membershipCancel(custId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  const status = membershipStatus(c);
+  if (status !== 'Active' && status !== 'Past Due') return;
+  const yest = isoOf(new Date(Date.parse(TODAY_ISO) - 86400000));
+  if (!memIsDemo()) {   // PROD — backend drops the Cancellation Invoice + expires paid-through server-side
+    try {
+      const r = await backendCall('membershipCancel', { customerId: c.customerId });
+      if (r && r.ok) { c.paidUntil = yest; c.graceUntil = yest; c.prepaid = false; reindex('customers', c); render(); toast(r.cancellationInvoiceId ? 'Membership cancelled — cancellation invoice on the account.' : 'Membership cancelled.'); }
+      else toast('Cancel failed — try again.');
+    } catch (e) { toast('Network error — try again.'); }
+    return;
+  }
+  // demo (#local) — client-side
+  // Monthly mid-commitment → a Cancellation Invoice for the remaining term (Annual is already prepaid).
+  let cxl = null;
+  if (c.paidCadence === 'Monthly' && c.commitmentEnd && !c.prepaid) {
+    const rem = monthsRemaining(c.commitmentEnd);
+    if (rem > 0) {
+      const fee = membershipFee({ plan: 'Monthly', addOns: c.addOns || {} }, membershipPricing());
+      cxl = buildMembershipInvoice(c, [{ kind: 'membership', ref: c.customerId, lid: lineLid(), label: `Cancellation — ${rem} mo remaining (Membership)`, amount: Math.round(fee.subtotal * rem * 100) / 100 }], { cancellation: true, due: c.commitmentEnd });
+    }
+  }
+  // Keep the member accountType but expire paid-through + grace → derives 'Lapsed' (pricing reverts via the gate);
+  // rentalProtection is NOT cleared (never free); unlimitedTransport entitlement falls away with Active status.
+  c.paidUntil = yest; c.graceUntil = yest; c.prepaid = false;
+  reindex('customers', c);
+  logAction(c, cxl ? `Membership cancelled — Cancellation Invoice ${money(invoiceTotals(cxl).total)} (remaining term)` : 'Membership cancelled');
+  render(); toast(cxl ? 'Membership cancelled — cancellation invoice on the account.' : 'Membership cancelled.');
+}
+async function membershipReactivate(custId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  const cxl = membershipCancellationInvoice(c); if (!cxl) return;
+  if (!(hasCardOnFile(c) && hasValidCard(c))) { toast('A valid card on file is required to pay the cancellation invoice.'); return; }
+  const reopen = () => { c.accountType = memberAccountType(c); c.paidUntil = c.commitmentEnd || addMonthsISO(TODAY_ISO, MEMBERSHIP_MONTHS); c.prepaid = true; c.graceUntil = ''; reindex('customers', c); logAction(c, `Membership reactivated — cancellation paid in full, prepaid through ${c.paidUntil}`); render(); toast('Membership reactivated — prepaid through the term ✓'); };
+  try {
+    if (memIsDemo()) {   // #local — charge the cancellation invoice locally
+      markInvoicePaidLocal(cxl, 'Card (demo)'); reopen(); return;
+    }
+    // PROD — backend charges the Cancellation Invoice in full + sets prepaid server-side
+    const r = await backendCall('membershipReactivate', { customerId: c.customerId, invoiceId: cxl.invoiceId });
+    if (r && r.ok && r.status === 'active') reopen();
+    else toast(friendlyPayErr(r && r.charge) || 'Charge declined — membership stays lapsed.');
+  } catch (e) { toast('Network error — try again.'); }
+}
 // System-wide ceiling on customer Net-day terms (Settings → Company). Caps every customer's net days.
 const companyMaxNetDays = () => { const n = Number(companyCfg().maxNetDays); return n >= 0 && isFinite(n) ? n : COMPANY_DEFAULTS.maxNetDays; };
 // Normalize a raw Net-days draft value → an integer 0..max, or undefined when blank.
@@ -2749,34 +3423,87 @@ function setDraftStatus(o, set, val, patch) {
   if (!next.color) delete next.color; if (!next.icon) delete next.icon; if (!next.label) delete next.label;   // empties → fall back to the shipped default
   if (Object.keys(next).length) o.draftSettings.status[set][val] = next; else delete o.draftSettings.status[set][val];
 }
-function captureLoginEdits(o) {   // keep typed-but-unsaved password edits across a tab switch
+function captureLoginEdits(o) {   // keep typed-but-unsaved password + label edits across a re-render
   const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
   if (!root.querySelector('.set-input[data-role]')) return;
   const roles = {}; root.querySelectorAll('.set-input[data-role]').forEach((i) => { roles[i.dataset.role] = i.value; });
   o.config.roles = roles; o.config.admin = root.querySelector('.set-input[data-admin]')?.value ?? o.config.admin;
+  const meta = draftRoleMeta(o);
+  root.querySelectorAll('.set-input[data-rolelabel]').forEach((i) => { const id = i.dataset.rolelabel; (meta[id] || (meta[id] = {})).label = i.value; });
+}
+/* Role customization (2026-06-26): built-in logins that can't be deleted (Admin
+   is the separate permanent field below). Renaming/re-tiering them is allowed. */
+const PROTECTED_ROLE_IDS = ['developer'];
+function draftSettingsObj(o) {
+  if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
+  return o.draftSettings;
+}
+function draftRoleMeta(o) { const s = draftSettingsObj(o); if (!s.roleMeta || typeof s.roleMeta !== 'object') s.roleMeta = {}; return s.roleMeta; }
+/* Backfill a {label,tier} entry for every login the config holds, so the pane can
+   render tiers even on a backend that predates roleMeta. Defaults: the role key
+   doubles as its label; tier from BUILTIN_ROLE_TIERS, else staff. */
+function ensureRoleMeta(o) {
+  const roles = (o.config && o.config.roles) || {}; const meta = draftRoleMeta(o);
+  Object.keys(roles).forEach((id) => {
+    const m = meta[id] || (meta[id] = {});
+    if (!m.label) m.label = id;
+    if (!m.tier) m.tier = BUILTIN_ROLE_TIERS[id.toLowerCase()] || 'staff';
+  });
+}
+// Just the active tab's pane HTML — so an in-pane edit can repaint ONLY the pane
+// (rerenderSettingsPane) instead of tearing down the whole overlay (renderOverlay), which flashed.
+function settingsPaneFor(o) {
+  if (o.tab === 'statuses') return settingsStatusesPane(o);
+  if (o.tab === 'logins') return settingsLoginsPane(o);
+  if (o.tab === 'kpis') return settingsKpisPane(o);
+  if (o.tab === 'general') return settingsCompanyPane(o);
+  if (o.tab === 'requirements') return settingsRulesPane(o);
+  if (o.tab === 'fields') return settingsFieldsPane(o);
+  if (o.tab === 'inspections') return settingsInspectionsPane(o);
+  return settingsPlannedPane(SETTINGS_TABS.find((t) => t.id === o.tab));
 }
 function settingsBoardHtml(o) {
   const rail = SETTINGS_TABS.map((t) => `<button class="set-tab js-set-tab${o.tab === t.id ? ' on' : ''}" data-tab="${t.id}"><span class="set-tab-ic">${t.icon || ''}</span><span class="set-tab-l">${esc(t.label)}</span>${t.v1 ? '' : '<span class="set-tab-dot" data-tip="Planned — wired in next"></span>'}</button>`).join('');
-  let pane;
-  if (o.tab === 'statuses') pane = settingsStatusesPane(o);
-  else if (o.tab === 'logins') pane = settingsLoginsPane(o);
-  else if (o.tab === 'kpis') pane = settingsKpisPane(o);
-  else if (o.tab === 'general') pane = settingsCompanyPane(o);
-  else if (o.tab === 'requirements') pane = settingsRulesPane(o);
-  else if (o.tab === 'fields') pane = settingsFieldsPane(o);
-  else if (o.tab === 'inspections') pane = settingsInspectionsPane(o);
-  else pane = settingsPlannedPane(SETTINGS_TABS.find((t) => t.id === o.tab));
-  return `<div class="set-board"><nav class="set-rail" aria-label="Settings sections">${rail}</nav><div class="set-pane">${pane}</div></div>`;
+  return `<div class="set-board"><nav class="set-rail" aria-label="Settings sections">${rail}</nav><div class="set-pane">${settingsPaneFor(o)}</div></div>`;
 }
+// Repaint the settings board (rail + pane) in place — no overlay teardown, so it never flashes —
+// preserving pane scroll. Rebuilding the rail too means tab switches are safe through this path.
+// Returns false if the settings body isn't mounted yet, so callers fall back to renderOverlay().
+function rerenderSettingsPane() {
+  const o = state.overlay; if (!o || o.kind !== 'settings') return false;
+  const body = document.querySelector('.overlay .settings-body'); if (!body) return false;
+  const st = (body.querySelector('.set-pane') || {}).scrollTop || 0;
+  body.innerHTML = settingsBoardHtml(o);
+  const np = body.querySelector('.set-pane'); if (np) np.scrollTop = st;
+  return true;
+}
+// In-settings re-render that never flashes; falls back to a full overlay render when the settings
+// board isn't the live surface. Use from any settings-pane handler in place of renderOverlay().
+function reSettings() { if (!rerenderSettingsPane()) renderOverlay(); }
 function settingsLoginsPane(o) {
+  ensureRoleMeta(o);
   const cfg = o.config || { roles: {}, admin: '' };
+  const meta = draftRoleMeta(o);
   const pwType = o.revealPw ? 'text' : 'password';   // masked by default so passwords don't shoulder-surf; toggle to reveal
-  const roleRows = Object.keys(cfg.roles || {}).map((role) => `<label class="set-row"><span class="set-role">${esc(role)}</span><input class="set-input" type="${pwType}" data-role="${esc(role)}" value="${esc(cfg.roles[role])}" autocomplete="off" /></label>`).join('');
+  // Tier picker — a segmented control (R14) over ROLE_TIERS; the active tier rides blue.
+  const tierSeg = (id, tier) => segCtl(ROLE_TIERS.map((t) => ({ js: 'js-role-tier', on: t.id === tier ? 'blue' : null, data: { role: id, tier: t.id }, label: t.label })), 'set-tierseg');
+  const roleRows = Object.keys(cfg.roles || {}).map((id) => {
+    const m = meta[id] || {}; const protd = PROTECTED_ROLE_IDS.includes(id.toLowerCase());
+    return `<div class="set-rolecard">
+      <div class="set-row set-rolehead">
+        <input class="set-input set-rolelabel" data-rolelabel="${esc(id)}" value="${esc(m.label || id)}" placeholder="Role name" autocomplete="off" />
+        <input class="set-input" type="${pwType}" data-role="${esc(id)}" value="${esc(cfg.roles[id])}" placeholder="Password" autocomplete="off" />
+        ${protd ? `<span class="set-lock" data-tip="Built-in role — can’t be removed">${I.lock}</span>` : closeX('js-role-del', { data: { role: id } })}
+      </div>
+      <div class="set-tierrow"><span class="set-tiercap">Tier</span>${tierSeg(id, m.tier)}</div>
+    </div>`;
+  }).join('');
   return `
-    <div class="set-pane-head"><h4>Roles &amp; Logins</h4><p>Each role signs in with its password (plus their name). Changes apply at next sign-in.</p></div>
+    <div class="set-pane-head"><h4>Roles &amp; Logins</h4><p>Each role signs in with its password (plus their name). Pick a <strong>tier</strong> for what it can do, rename it, or add your own. Changes apply at next sign-in.</p></div>
     <div class="set-reveal-row"><button class="set-reveal js-set-reveal" type="button">${I.eye} ${o.revealPw ? 'Hide passwords' : 'Show passwords'}</button></div>
     ${roleRows}
-    <label class="set-row set-admin"><span class="set-role">Admin</span><input class="set-input" type="${pwType}" data-admin="1" value="${esc(cfg.admin || '')}" autocomplete="off" /></label>
+    ${addBtn('Role', { js: 'js-role-add' })}
+    <label class="set-row set-admin"><span class="set-role" data-tip="The permanent top-level login — always Admin tier, can’t be removed.">Admin</span><input class="set-input" type="${pwType}" data-admin="1" value="${esc(cfg.admin || '')}" autocomplete="off" /></label>
     <div class="set-row" style="margin-top:14px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="ON: dropping a unit onto a conflicting rental links anyway — both sides get a pulsing red 'Overbooked' flag while the overlap exists. OFF: the drop is blocked, naming the conflict.">Allow overbooking</span>${segCtl([{ label: 'Off', js: 'js-overbook', data: { val: '0' }, on: state.overbookOn ? null : 'red' }, { label: 'On', js: 'js-overbook', data: { val: '1' }, on: state.overbookOn ? 'green' : null }])}</div>
     <p class="set-note">Drag &amp; drop policy — saved on this device.</p>
     <div class="set-row" style="margin-top:12px;align-items:center"><span class="set-role" style="flex:0 0 auto" data-tip="A light vibration confirms committed actions on phones (post a chat, drop a link, complete a WO, release-to-cancel). Android only — iOS has no vibration.">Haptic feedback</span>${segCtl([{ label: 'Off', js: 'js-haptics', data: { val: '0' }, on: state.hapticsOff ? 'red' : null }, { label: 'On', js: 'js-haptics', data: { val: '1' }, on: state.hapticsOff ? null : 'green' }])}</div>
@@ -2788,6 +3515,7 @@ function settingsCompanyPane(o) {
   const ph = (k) => esc(COMPANY_DEFAULTS[k]);
   const goal = Number(co.revenueGoal) > 0 ? Number(co.revenueGoal) : COMPANY_DEFAULTS.revenueGoal;
   const maxNet = (co.maxNetDays != null && co.maxNetDays !== '' && isFinite(Number(co.maxNetDays))) ? Number(co.maxNetDays) : COMPANY_DEFAULTS.maxNetDays;
+  const retro = co.retroactivePricing !== false;   // default ON
   return `
     <div class="set-pane-head"><h4>Company</h4><p>Your yard's identity and targets. These flow onto printed receipts and the dashboard — leave one blank to keep the shipped default.</p></div>
     <div class="co-form">
@@ -2799,13 +3527,37 @@ function settingsCompanyPane(o) {
       <p class="set-note">Feeds the Sales <strong>Revenue Goal</strong> ring — currently <strong>${esc(money(goal))}/mo</strong>. The ring fills as this month's rental revenue climbs toward it.</p>
       <label class="co-fld co-fld-goal"><span class="kpi-cap">MAX PAYMENT TERMS (NET DAYS)</span><span class="co-goal-wrap"><input class="co-in co-in-num js-co-field" data-f="maxNetDays" value="${co.maxNetDays != null ? esc(co.maxNetDays) : ''}" placeholder="${COMPANY_DEFAULTS.maxNetDays}" inputmode="numeric" autocomplete="off"/><span class="co-goal-suffix">days</span></span></label>
       <p class="set-note">The ceiling on any customer's Net-day terms (currently <strong>${esc(maxNet)} days</strong>). A customer's Net X auto-sets their invoice due date, capped here.</p>
+      <label class="co-fld co-fld-toggle"><span class="kpi-cap">RETROACTIVE RENTAL PRICING</span>
+        ${segCtl([{ label: 'Off', js: 'js-retro-set', data: { val: 'off' }, on: retro ? null : 'gray' }, { label: 'On', js: 'js-retro-set', data: { val: 'on' }, on: retro ? 'green' : null }])}
+      </label>
+      <p class="set-note"><strong>On</strong> (default): extending a rental bills the cheapest price for <strong>all</strong> the days rented — what's already paid counts toward it (a week paid rolls into the month). <strong>Off</strong>: the extension is billed as a fresh rental of just the added days; the original invoice price stays as it was.</p>
       <div class="co-preview">
         <span class="kpi-cap">RECEIPT PREVIEW</span>
         <div class="co-receipt"><div class="co-receipt-brand">${esc(companyDraftName(co))}</div><div class="co-receipt-sub">${esc(companyDraftTagline(co))}</div></div>
       </div>
       <label class="co-fld"><span class="kpi-cap">MEMBERSHIP AGREEMENT — PRINT TEMPLATE</span><textarea class="co-in co-in-area js-co-field" data-f="membershipAgreementTemplate" rows="9" autocomplete="off" spellcheck="false">${co.membershipAgreementTemplate != null ? v('membershipAgreementTemplate') : esc(AGREEMENTS.membership.text)}</textarea></label>
       <p class="set-note">Printed from a member's profile via <strong>Print Agreement</strong>. Placeholders <strong>{{customerName}}</strong>, <strong>{{date}}</strong>, <strong>{{membershipType}}</strong> are filled in per customer at print time. Clear the box to fall back to the standard agreement.</p>
+      ${settingsMembershipPricing(co)}
     </div>`;
+}
+/* Membership subscription pricing — Owner-settable (spec §2/§10.1). Flat mem* keys,
+   placeholders show the shipped defaults; blank = fall back to default. Reuses the
+   co-fld settings inputs (unstamped, like the sibling Company fields). */
+function settingsMembershipPricing(co) {
+  const d = MEMBERSHIP_DEFAULTS;
+  const dollar = (f, def) => `<label class="co-fld co-fld-goal"><span class="kpi-cap">${esc(f.cap)}</span><span class="co-goal-wrap"><span class="co-goal-$">$</span><input class="co-in co-in-num js-co-field" data-f="${f.key}" value="${co[f.key] != null ? esc(co[f.key]) : ''}" placeholder="${def}" inputmode="numeric" autocomplete="off"/></span></label>`;
+  const pct = `<label class="co-fld co-fld-goal"><span class="kpi-cap">RENTAL PROTECTION RATE</span><span class="co-goal-wrap"><input class="co-in co-in-num js-co-field" data-f="memProtectionPct" value="${co.memProtectionPct != null ? esc(co.memProtectionPct) : ''}" placeholder="${d.protectionPct}" inputmode="numeric" autocomplete="off"/><span class="co-goal-suffix">% of base</span></span></label>`;
+  return `
+      <div class="co-memprice">
+        <span class="kpi-cap" style="opacity:.7">MEMBERSHIP PRICING</span>
+        ${dollar({ cap: 'BASE — MONTHLY', key: 'memMonthlyBase' }, d.monthlyBase)}
+        ${dollar({ cap: 'BASE — ANNUAL', key: 'memAnnualBase' }, d.annualBase)}
+        ${dollar({ cap: 'UNLIMITED TRANSPORT — MONTHLY', key: 'memMonthlyTransport' }, d.monthlyTransport)}
+        ${dollar({ cap: 'UNLIMITED TRANSPORT — ANNUAL', key: 'memAnnualTransport' }, d.annualTransport)}
+        ${pct}
+        ${dollar({ cap: 'RENTAL PROTECTION — COVERAGE CAP / MO', key: 'memProtectionCap' }, d.protectionCapMonthly)}
+      </div>
+      <p class="set-note">Drives enrollment + recurring billing. <strong>Rental Protection</strong> adds its rate to the base fee and to each rental's subtotal, covering up to the monthly cap in damages. Leave a box blank to keep the shipped default.</p>`;
 }
 const companyDraftName = (co) => (String(co.name || '').trim() || COMPANY_DEFAULTS.name);
 const companyDraftTagline = (co) => (String(co.tagline || '').trim() || COMPANY_DEFAULTS.tagline);
@@ -2863,6 +3615,84 @@ function ensureInspDraft(o, key) {   // key = an inspFamilyKey (family or ungrou
 function draftInspCfg(o, key) {
   return (o.draftSettings && o.draftSettings.inspections && o.draftSettings.inspections[key]) || inspCfgByKey(key) || { required: false, items: [] };
 }
+// Fail-condition model (Jac 2026-06-26): each item carries a typed `it.fail` instead of the
+// old Optional/Required flag. These three helpers drive the Settings builder.
+function inspFailDefault(type) {
+  if (type === 'toggle') return { failWhen: 'fail' };
+  if (type === 'number') return { op: 'none', a: '', b: '' };
+  if (type === 'date') return { op: 'none', ref: 'today' };
+  if (type === 'text') return { op: 'none', value: '' };
+  return null;                                   // select → options[].fail ; file → never fails
+}
+function inspFailDesc(it) {
+  const t = inspItemType(it); const f = it.fail || {};
+  if (t === 'toggle') return f.failWhen === 'pass' ? 'Toggle · fails on Pass (inverse)' : 'Toggle · Pass/Fail';
+  if (t === 'file') return 'Photo · evidence (never fails)';
+  if (t === 'number') {
+    if (!f.op || f.op === 'none') return 'Number · informational';
+    if (f.op === 'outside' || f.op === 'inside') return `Number · fails ${f.op} ${esc(String(f.a))}–${esc(String(f.b))}`;
+    return `Number · fails ${f.op} ${esc(String(f.a))}`;
+  }
+  if (t === 'date') {
+    if (!f.op || f.op === 'none') return 'Date · informational';
+    return `Date · fails ${f.op} ${(!f.ref || f.ref === 'today') ? 'today' : esc(f.ref)}`;
+  }
+  if (t === 'text') {
+    if (!f.op || f.op === 'none') return 'Text · informational';
+    return f.op === 'empty' ? 'Text · fails if blank' : `Text · fails if contains "${esc(f.value || '')}"`;
+  }
+  if (t === 'select') return `Dropdown · ${(it.options || []).map((op) => op.fail ? `<span style="color:var(--red)">${esc(op.label)}</span>` : esc(op.label)).join(' / ')}`;
+  return esc(t);
+}
+// The type-conditional fail-condition editor in the add-item / edit-item row.
+function inspFailEditor(d) {
+  const t = d.type || 'toggle';
+  const f = d.fail || inspFailDefault(t) || {};
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  if (t === 'file') return '<p class="set-note">Photo answer — this item never trips a fail.</p>';
+  if (t === 'select') return '';                 // the options well below IS the select's fail editor
+  if (t === 'toggle') return `<div class="insp-opt-row"><span class="insp-opt-lbl">Fails when</span>${segCtl([
+      { label: '✕ Fail', js: 'js-insp-failwhen', data: { v: 'fail' }, on: f.failWhen === 'pass' ? null : 'red' },
+      { label: '✓ Pass', js: 'js-insp-failwhen', data: { v: 'pass' }, on: f.failWhen === 'pass' ? 'red' : null }])}</div>`;
+  if (t === 'number') {
+    const needB = f.op === 'outside' || f.op === 'inside';
+    const ins = (f.op && f.op !== 'none') ? `<input class="co-in js-insp-faila" inputmode="numeric" style="max-width:84px" placeholder="${needB ? 'min' : 'value'}" value="${esc(f.a == null ? '' : String(f.a))}" />${needB ? `<input class="co-in js-insp-failb" inputmode="numeric" style="max-width:84px" placeholder="max" value="${esc(f.b == null ? '' : String(f.b))}" />` : ''}` : '';
+    return `<div class="insp-opt-row"><span class="insp-opt-lbl">Fails</span>${segCtl(['none', 'above', 'below', 'outside', 'inside'].map((op) => ({ label: op === 'none' ? 'Never' : cap(op), js: 'js-insp-failop', data: { v: op }, on: (f.op || 'none') === op ? 'red' : null })))}${ins}</div>`;
+  }
+  if (t === 'date') {
+    const ref = (f.op && f.op !== 'none') ? `${segCtl([{ label: 'Today', js: 'js-insp-dateref', data: { v: 'today' }, on: (!f.ref || f.ref === 'today') ? 'green' : null }, { label: 'A date', js: 'js-insp-dateref', data: { v: 'pick' }, on: (f.ref && f.ref !== 'today') ? 'green' : null }])}${(f.ref && f.ref !== 'today') ? `<input type="date" class="co-in js-insp-datev" style="max-width:150px" value="${esc(f.ref)}" />` : ''}` : '';
+    return `<div class="insp-opt-row"><span class="insp-opt-lbl">Fails</span>${segCtl(['none', 'before', 'after'].map((op) => ({ label: op === 'none' ? 'Never' : cap(op), js: 'js-insp-failop', data: { v: op }, on: (f.op || 'none') === op ? 'red' : null })))}${ref}</div>`;
+  }
+  if (t === 'text') {
+    const val = f.op === 'contains' ? `<input class="co-in js-insp-failval" style="max-width:160px" placeholder="keyword (e.g. crack)" value="${esc(f.value || '')}" />` : '';
+    return `<div class="insp-opt-row"><span class="insp-opt-lbl">Fails</span>${segCtl([{ label: 'Never', js: 'js-insp-failop', data: { v: 'none' }, on: (f.op || 'none') === 'none' ? 'red' : null }, { label: 'If blank', js: 'js-insp-failop', data: { v: 'empty' }, on: f.op === 'empty' ? 'red' : null }, { label: 'If contains', js: 'js-insp-failop', data: { v: 'contains' }, on: f.op === 'contains' ? 'red' : null }])}${val}</div>`;
+  }
+  return '';
+}
+// The add/edit item editor — rendered inline under the row being edited (Jac 2026-06-26:
+// "just under the field I want to edit"), or at the bottom of the list in add mode.
+function inspEditorBlock(o) {
+  const d = o.inspDraft && typeof o.inspDraft === 'object' ? o.inspDraft : { label: '', type: 'toggle', fail: inspFailDefault('toggle'), options: [] };
+  const optWell = d.type === 'select' ? `<div class="insp-opt-well">
+    ${(d.options || []).map((op, i) => `<div class="insp-opt-row"><span class="insp-opt-lbl">${esc(op.label)}</span>${segCtl([{ label: 'OK', js: 'js-insp-opt-fail', data: { i, v: '0' }, on: op.fail ? null : 'gray' }, { label: 'Fails', js: 'js-insp-opt-fail', data: { i, v: '1' }, on: op.fail ? 'red' : null }])}<button class="so-reset js-insp-opt-remove" data-i="${i}" data-tip="Remove option">${I.x}</button></div>`).join('')}
+    <div style="display:flex;align-items:center;gap:8px;margin-top:6px"><input class="co-in js-insp-opt-label" placeholder="New option (e.g. Bald)" value="${esc(d.optLabel || '')}" autocomplete="off" />${addBtn('Option', { js: 'js-insp-opt-add', line: true })}<button class="pill ghost js-insp-opt-na" data-tip="Add an N/A option you can flag pass or fail">+ N/A</button></div>
+  </div>` : '';
+  return `<div class="cf-add${o.inspEditId ? ' cf-edit' : ''}">
+      <input class="co-in js-insp-label" placeholder="New checklist item (e.g. Hydraulics — no leaks)" value="${esc(d.label || '')}" autocomplete="off" />
+      ${segCtl(INSP_TYPES.map((t) => ({ label: t, js: 'js-insp-type', data: { type: t }, on: (d.type || 'toggle') === t ? 'green' : null })))}
+      ${inspFailEditor(d)}
+      ${optWell}
+      ${(d.type || 'toggle') !== 'file' ? `<div class="insp-opt-row"><span class="insp-opt-lbl">Evidence</span>${segCtl([
+        { label: 'None', js: 'js-insp-ev', data: { v: 'none' }, on: (d.evidence || 'none') === 'none' ? 'gray' : null },
+        { label: 'Optional', js: 'js-insp-ev', data: { v: 'optional' }, on: d.evidence === 'optional' ? 'green' : null },
+        { label: 'Fail photo', js: 'js-insp-ev', data: { v: 'failphoto' }, on: d.evidence === 'failphoto' ? 'red' : null },
+        { label: 'Always', js: 'js-insp-ev', data: { v: 'always' }, on: d.evidence === 'always' ? 'red' : null }])}</div>` : ''}
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="pill ignition ${o.inspEditId ? 'js-insp-editsave' : 'js-insp-add'}" data-r="R17">${o.inspEditId ? 'Save changes' : '+ Add item'}</button>
+        ${o.inspEditId ? '<button class="pill ghost js-insp-editcancel">Cancel</button>' : ''}
+      </div>
+    </div>`;
+}
 function settingsInspectionsPane(o) {
   const cats = DATA.categories || [];
   const fams = []; const seen = new Set();
@@ -2874,41 +3704,22 @@ function settingsInspectionsPane(o) {
   const famLabel = inspFamilyLabel(famKey);
   const memberCount = cats.filter((c) => inspFamilyKey(c) === famKey).length;
   const items = cfg.items || [];
-  const inspDraft = o.inspDraft && typeof o.inspDraft === 'object' ? o.inspDraft : { label: '', type: 'toggle', required: false, options: [] };
   const rows = items.length ? items.map((it) => {
-    const t = inspItemType(it);
-    let desc;
-    if (t === 'toggle') desc = 'Toggle · Pass/Fail';
-    else if (t === 'file') desc = `File${it.required ? ' · required' : ''}`;
-    else if (t === 'number') desc = `Number${it.required ? ' · required' : ''}`;
-    else if (t === 'date') desc = `Date${it.required ? ' · required' : ''}`;
-    else if (t === 'text') desc = `Text${it.required ? ' · required' : ''}`;
-    else if (t === 'select') {
-      const optLabels = (it.options || []).map((op) => op.fail ? `<span style="color:var(--red)">${esc(op.label)}</span>` : esc(op.label)).join(' / ');
-      desc = `Dropdown · ${optLabels}${it.required ? ' · required' : ''}`;
-    } else desc = t;
-    return `<div class="rule-row">
-      <div class="rule-main"><span class="rule-label">${esc(it.label)}</span><span class="rule-desc">${desc}</span></div>
+    const row = `<div class="rule-row"${o.inspEditId === it.id ? ' style="outline:1px solid var(--accent,#ff7a1a);border-radius:8px"' : ''}>
+      <div class="rule-main"><span class="rule-label">${esc(it.label)}</span><span class="rule-desc">${inspFailDesc(it)}${it.evidence && it.evidence !== 'none' ? ` · photo: ${esc(it.evidence === 'failphoto' ? 'on fail' : it.evidence)}` : ''}</span></div>
+      <button class="so-reset js-insp-edit" data-id="${esc(it.id)}" data-tip="Edit item">${I.sliders}</button>
       <button class="so-reset js-insp-remove" data-cat="${esc(famKey)}" data-id="${esc(it.id)}" data-tip="Remove item">${I.x}</button>
     </div>`;
+    return o.inspEditId === it.id ? row + inspEditorBlock(o) : row;   // editor opens directly under THIS row
   }).join('') : '<p class="set-note">No checklist items yet — add the things to inspect below.</p>';
-  const optWell = inspDraft.type === 'select' ? `<div class="insp-opt-well">
-    ${(inspDraft.options || []).map((op, i) => `<div class="insp-opt-row"><span class="insp-opt-lbl">${esc(op.label)}</span>${segCtl([{ label: 'OK', js: 'js-insp-opt-fail', data: { i, v: '0' }, on: op.fail ? null : 'gray' }, { label: 'Fails', js: 'js-insp-opt-fail', data: { i, v: '1' }, on: op.fail ? 'red' : null }])}<button class="so-reset js-insp-opt-remove" data-i="${i}" data-tip="Remove option">${I.x}</button></div>`).join('')}
-    <div style="display:flex;align-items:center;gap:8px;margin-top:6px"><input class="co-in js-insp-opt-label" placeholder="New option (e.g. Bald)" value="${esc(inspDraft.optLabel || '')}" autocomplete="off" />${addBtn('Option', { js: 'js-insp-opt-add', line: true })}</div>
-  </div>` : '';
   return `
-    <div class="set-pane-head"><h4>Inspections</h4><p>Build a checklist per equipment type. When a type's checklist is <strong>Required</strong>, starting an inspection on one of its units opens a full-screen checklist that must be completed — any Toggle Fail or flagged Dropdown selection trips the existing failed-inspection work order.</p></div>
+    <div class="set-pane-head"><h4>Inspections</h4><p>Build a checklist per equipment type. Every item must be answered; each carries a <strong>fail condition</strong> (editable anytime). When a type's checklist is <strong>Required</strong>, starting an inspection on one of its units opens a full-screen checklist that must be completed — any item that meets its fail condition trips the existing failed-inspection work order.</p></div>
     <div class="set-picker">${pick}</div>
     ${memberCount > 1 ? `<p class="set-note">Shared by all ${memberCount} ${esc(famLabel)} categories — edit once, applies to every one.</p>` : ''}
     <div class="rule-row" style="margin-bottom:10px"><div class="rule-main"><span class="rule-label">Require a checklist for ${esc(famLabel)}</span><span class="rule-desc">On = +Inspection takes over the sheet until every item is checked.</span></div>${segCtl([{ label: 'Off', js: 'js-insp-req', data: { cat: famKey, v: '0' }, on: cfg.required ? null : 'gray' }, { label: 'Required', js: 'js-insp-req', data: { cat: famKey, v: '1' }, on: cfg.required ? 'red' : null }])}</div>
+    <div class="rule-row" style="margin-bottom:10px"><div class="rule-main"><span class="rule-label">Walkaround video / photos</span><span class="rule-desc">A unit-level capture on the checklist (video allowed). Required = must capture before Complete.</span></div>${segCtl([{ label: 'Off', js: 'js-insp-walk', data: { cat: famKey, v: 'off' }, on: (cfg.walkaround || 'off') === 'off' ? 'gray' : null }, { label: 'Optional', js: 'js-insp-walk', data: { cat: famKey, v: 'optional' }, on: cfg.walkaround === 'optional' ? 'green' : null }, { label: 'Required', js: 'js-insp-walk', data: { cat: famKey, v: 'required' }, on: cfg.walkaround === 'required' ? 'red' : null }])}</div>
     <div class="rule-list">${rows}</div>
-    <div class="cf-add">
-      <input class="co-in js-insp-label" placeholder="New checklist item (e.g. Hydraulics — no leaks)" value="${esc(inspDraft.label || '')}" autocomplete="off" />
-      ${segCtl(INSP_TYPES.map((t) => ({ label: t, js: 'js-insp-type', data: { type: t }, on: (inspDraft.type || 'toggle') === t ? 'green' : null })))}
-      ${segCtl([{ label: 'Optional', js: 'js-insp-itemreq', data: { v: '0' }, on: inspDraft.required ? null : 'gray' }, { label: 'Required', js: 'js-insp-itemreq', data: { v: '1' }, on: inspDraft.required ? 'red' : null }])}
-      ${optWell}
-      <button class="pill ignition js-insp-add" data-r="R17">+ Add item</button>
-    </div>`;
+    ${o.inspEditId ? '' : inspEditorBlock(o)}`;
 }
 function settingsFieldsPane(o) {
   const ent = o.cfEntity || 'customers'; o.cfEntity = ent;
@@ -3083,7 +3894,7 @@ async function lockKpiFromWrangler(mi) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §5 UI BUILDERS — ONE function per design rule (the SPEC v8 rulebook).
+   APP-10 · §5 UI BUILDERS — ONE function per design rule (the SPEC v8 rulebook).
    Every builder stamps its output with data-r="Rn". The flash-lint (R0)
    slowly pulses anything WITHOUT a stamp: if it flashes, it bypassed the
    system. Debug language: "that violates R4" → fix the builder, fixed
@@ -3104,7 +3915,7 @@ async function lockKpiFromWrangler(mi) {
 const SET_CARD = { rentalStatus: 'rentals', unitRentalStatus: 'rentals', invoiceStatus: 'invoices', unitInspectionStatus: 'inspections', inspectionResult: 'inspections', unitFleetStatus: 'units', gpsStatus: 'units', unitOrderStatus: 'workOrders', woPhase: 'workOrders', woType: 'workOrders', customerPayStatus: 'customers', accountType: 'customers', serviceStatus: 'serviceOrders', expenseReconcile: 'expenses', vendorType: 'vendors', companyFileType: 'files' };
 const dataAttrs = (data) => Object.entries(data || {}).map(([k, v]) => ` data-${k}="${esc(String(v))}"`).join('');
 /* ════════════════════════════════════════════════════════════════════════
-   FLAG-DRIVEN COLOR ENGINE — SPEC docs/specs/flag-color-system.md
+   APP-11 · FLAG-DRIVEN COLOR ENGINE — SPEC docs/specs/flag-color-system.md
    Flags answer "what must I do with this record right now?". getEntityColor →
    the computed status color: GRAY if formally archived, else the highest active-
    flag severity (red > yellow > green), else GREEN (nothing to do). FLAG_META
@@ -3170,8 +3981,12 @@ const FLAG_COND = {
     'unpaid-balance':    (c) => c.payStatus === 'Unpaid',
     'blacklisted':       (c) => /Blacklist/i.test(c.accountType || ''),
     'no-card':           (c) => cardFlag(c) === 'none' &&
-      (DATA.rentals.some((r) => r.customerId === c.customerId) ||
+      (DATA.rentals.some((r) => r.customerId === c.customerId && r.status !== 'Reserved') ||
        DATA.invoices.some((i) => i.customerId === c.customerId)),
+    'no-card-reserved':  (c) => cardFlag(c) === 'none' &&
+      DATA.rentals.some((r) => r.customerId === c.customerId && r.status === 'Reserved') &&
+      !DATA.rentals.some((r) => r.customerId === c.customerId && r.status !== 'Reserved') &&
+      !DATA.invoices.some((i) => i.customerId === c.customerId),
     'customer-lost':     (c) => customerActivity(c).stage === 'Lost',
     'customer-inactive': (c) => customerActivity(c).stage === 'Inactive',
     'partial-balance':   (c) => c.payStatus === 'Partial',
@@ -3434,13 +4249,13 @@ function openCtxMenuAt(target, x, y) {
   // §13.4 — inside an OPEN graph view, right-click/long-press the panel (or the Views & sort
   // control above it) opens the graph-chrome menu instead of the per-element Wrangler menu,
   // so the filter pills / sort can be hidden and Reset.
-  if (card && !state.winpicker) {
+  if (card && !(state.winEdit && state.winEdit.anchor)) {
     const cid = card.dataset.card, gcs = cid && activeSession().cards[cid];
     if (gcs && gcs.graphView && (target.closest('.gv-panel') || target.closest('.sort'))) return openGvChromeMenu({ clientX: x, clientY: y }, cid);
   }
   // While the rental-window picker is open, keep right-click → BACK working; just suppress
   // the element context menu (it gets in the way of picking). (Jac B5, 2026-06-15)
-  const leaf = state.winpicker ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
+  const leaf = (state.winEdit && state.winEdit.anchor) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
   const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
   if (hit) return openCtxMenu({ clientX: x, clientY: y }, hit);
   if (!card) return;
@@ -3555,7 +4370,7 @@ const RULE_META = {
   R13: ['History', 'historySection', 'count chips above the search bar filter inline; record-backed links only'],
   R14: ['Seg toggle', 'segCtl', '3-state segmented control (condition · wash)'],
   R15: ['Journey', 'yardToolHtml / miniJourneyHtml', 'yard +Start/+FC/+End + Jac─Site─Jac transport; white = video owed'],
-  R16: ['Day timeline', 'DETAIL.rentals timeline', 'the rental window in day cells; centered gate + naked price·rate'],
+  R16: ['Window calendar', 'rdcal-edit / winPickerEl (inline)', 'the rental window — an INLINE editable month calendar in the detail (popup retired 2026-06-25); tap start→end, the left Units/Categories card shows availability live, fragile rentals stage with an inline Confirm panel below the calendar'],
   R17: ['Action pill', 'actionPill', 'commit = blue · money = green · danger = solid red; .locked = gated'],
   R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear'],
   R19: ['Attention flash', 'attnFlash / flashOr', 'a glow that points AT the next action — replaces an error message when the fix is on screen'],
@@ -3566,7 +4381,7 @@ const RULE_META = {
   R24: ['Close ✕', 'closeX', 'red circle · white ✕ — the deliberate close/remove; hover-reveal variant on tabs'],
   R25: ['Sync banner', 'renderSyncBanner / #sync-banner', 'persistent “Not saving” plate — red hazard-stripe danger cap; raised when the backend sync is failing, hides on recovery. The ONE non-toast alert; lives on <body>, outside #app'],
 };
-/* ════════════ DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
+/* ════════════ APP-12 · DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
    The Rulebook grew from "stamped element rules" (R0–R24 above) into the WHOLE
    design system. RB_FOUNDATION = the primitives the rules are built FROM (type,
    color, form, surfaces, motion…) — NOT data-r stamped, they're the tokens &
@@ -3607,6 +4422,9 @@ const RB_FOUNDATION = {
   'color-tan': ['✶', 'Wrangler tan', '--tan #c2925a / --tan-deep (yard theme)',
     'The light ranch seasoning — worn leather for saddle-stitch dividers & tiny touches. Restrained.',
     rbSw('var(--tan,#c2925a)', 'Tan', 'saddle-stitch', '#1a1205')],
+  'color-ec-red': ['⚠', 'ec-red · flagging glow', 'fill: color-mix(--red 65%, white) · shadow: 0 0 3px --red, 0 0 7px (--red 60%+transparent)',
+    'Official treatment for EVERY flagging-red signal — text names/pills/flags/headers, borders, dots/bars. Three knobs in style.css .ec-red group: fill % (65), inner glow (3px), outer halo (7px / 60%). Never use pure --red alone on flagging text.',
+    `<span style="-webkit-text-fill-color:color-mix(in srgb,var(--red) 65%,white);text-shadow:0 0 3px var(--red),0 0 7px color-mix(in srgb,var(--red) 60%,transparent);font-weight:700;font-size:13px;letter-spacing:.5px">TUCKER FONTENOT · No Card · $0.30 overdue</span>`],
   // ── FORM ──
   'radius': ['◳', 'Radius', '--radius 14–16 · --chip-radius 11–12 · 8–10 controls · 999 pills',
     'Cards/popups softest · chips medium · controls tight · pills & counters full-round · rings/avatars circles.',
@@ -3732,7 +4550,7 @@ function onInspectMove(e) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §6 LIST ROWS — row meta + the universal row template
+   APP-13 · §6 LIST ROWS — row meta + the universal row template
    ════════════════════════════════════════════════════════════════════════ */
 const ROW_META = {
   rentals:    (r) => ({ title: rentalDisplayName(r), sub: IDX.customer.get(r.customerId)?.name || '', color: rentalStatusDisplay(r).color }),
@@ -3757,12 +4575,27 @@ const unitsVisible = (rows, cs) => {
   if (f === 'soldInactive') return rows.filter(isSoldInactive); // only Sold/Inactive
   return rows.filter((u) => u.fleetStatus === 'Active');        // default: Active only (For Sale/Sold/Inactive hidden)
 };
+// Invoice Payment-Method filter (#337) — classify a recorded payment method into the
+// five filter buckets. Unpaid invoices have no recorded method ('' → excluded by any
+// specific filter); anything set but not cash/card/check falls into 'other'.
+const INV_METHOD_OPTS = [['all', 'All'], ['cash', 'Cash'], ['card', 'Card'], ['check', 'Check'], ['other', 'Other']];
+const INV_METHOD_LABEL = Object.fromEntries(INV_METHOD_OPTS);
+function invMethodClass(inv) {
+  const m = (inv.paymentMethod || '').trim().toLowerCase();
+  if (!m) return '';
+  if (/^cash$/.test(m)) return 'cash';
+  if (/^card/.test(m)) return 'card';
+  if (/^check/.test(m)) return 'check';
+  return 'other';
+}
 function rowViz(card, rec) {
   // §10 availability tint takes precedence while a rental window is in scope
   if (availWin && availUnavailable(card, rec)) return `<div class="row-viz" style="background:var(--red-bg)"></div>`;
   if (card === 'rentals') return '';   // Jac 2026-06-12: the wash is dead — the row IS a timeline now
   if (card === 'customers') return customerSpectrumViz(rec);
-  if (card === 'categories') return categoryMixViz(rec.categoryId);
+  // categories: no full-card wash — the mini-card's bordered plate (--catr-hl) and its
+  // rentable/total pill carry fleet health now (Jac 2026-06-25). The §10 window-red
+  // tint above still applies when a window leaves 0 available.
   if (card === 'serviceOrders') { const s = topServiceForUnit(rec); if (s) return `<div class="row-viz" style="background:linear-gradient(90deg, var(--${s.color}-bg), transparent 60%)"></div>`; }
   if (card === 'units') {
     // colour each unit row by its INSPECTION status as a left gradient (same style as
@@ -3777,13 +4610,6 @@ function customerSpectrumViz(c) {
   const pct = c._digest?.activePct ?? 0;
   return `<div class="row-viz" style="background:linear-gradient(90deg, var(--red-bg), var(--orange-bg), var(--yellow-bg), var(--green-bg)); clip-path: inset(0 ${100 - pct}% 0 0)"></div>`;
 }
-function categoryMixViz(catId) {
-  const mix = categoryMix(catId);
-  if (!mix.total) return '';
-  const g = (mix.Ready / mix.total) * 100, y = (mix['Not Ready'] / mix.total) * 100, r = (mix.Failed / mix.total) * 100;
-  return `<div class="row-viz" style="background:linear-gradient(90deg, var(--mix-green) 0 ${g}%, var(--mix-yellow) ${g}% ${g + y}%, var(--mix-red) ${g + y}% ${g + y + r}%)"></div>`;
-}
-
 /* A library glyph representing a unit's CATEGORY (Jac) — keyword-resolved from the
    category name onto the vendored CATEGORY_ICON map (Lucide + the Tabler backhoe).
    Never hand-authored; unknowns fall back to the backhoe (heavy-equipment default). */
@@ -3835,7 +4661,7 @@ function unitWoSoPill(u) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §6b PER-CARD ROWS
+   APP-14 · §6b PER-CARD ROWS
    ════════════════════════════════════════════════════════════════════════ */
 function rowEl(card, rec) {
   const id = idOf(card, rec);
@@ -3874,7 +4700,7 @@ const ROWS = {
     const stColor = rentalStatusDisplay(r).color;   // border-left highlight follows rental status
     const units = rentalUnitsLabel(r);               // comma-separated unit names (empty on a bare quote)
     const s = parseISO(r.startDate), e = parseISO(r.endDate);
-    const stPill = statusPill('rentalStatus', rentalDisplayStatus(r), { card: 'rentals', recId: r.rentalId });
+    const stPill = masterGate(r);   // R1 gate — advance rental status straight from the list row (Jac 2026-06-24)
 
     // ── Balance (R8 derived): Paid green · upcoming yellow · past-due red ───
     let bal = '', balCls = '';
@@ -3893,7 +4719,7 @@ const ROWS = {
       if (!unit) return '';
       const insp = unit.inspectionStatus;
       const ic = insp === 'Failed' ? 'var(--red)' : insp === 'Not Ready' ? 'var(--yellow)' : insp === 'Passed' ? 'var(--green)' : 'var(--txt)';
-      return `<span class="rcc-uname" style="color:${ic}" data-tip="${esc(unit.name)}: ${esc(insp || 'Unknown')}">${esc(unit.name)}</span>`;
+      return `<span class="rcc-uname${insp === 'Failed' ? ' ec-red' : ''}" style="color:${ic}" data-tip="${esc(unit.name)}: ${esc(insp || 'Unknown')}">${esc(unit.name)}</span>`;
     }).filter(Boolean).join('<span class="rcc-usep">, </span>') || (units ? `<span class="rcc-uname">${esc(units)}</span>` : '');
     const headHtml = `<div class="rcc-head">
       <div class="rcc-h1">${unitNameHtml ? `<span class="rcc-units">${unitNameHtml}</span>` : ''}${stPill}</div>
@@ -3961,7 +4787,7 @@ const ROWS = {
     const isMember = c.accountType === 'Member' || c.accountType === 'Business Member';
     const nameColor = (fc === 'red' || fc === 'yellow') ? `var(--${fc})` : fc === 'gray' ? 'var(--txt-3)' : (fc === 'green' && isMember) ? 'var(--green)' : 'var(--txt)';
     const acct = getStatus('customerAccountType', c.accountType || 'Non-Business');
-    const sub = [esc(c.phone || ''), c.accountType ? esc(acct.label) : ''].filter(Boolean).join(' · ');
+    const sub = c.phone ? esc(c.phone) : '';
 
     // Pay status AS A NUMBER (Jac — no "New Customer" text): owed balance → yellow before
     // its due date / red on-or-after; otherwise rolling-12-month spend → green.
@@ -3978,7 +4804,7 @@ const ROWS = {
 
     // Most-progressed funnel stage of the two tracks (used-sales / membership); Don't
     // Contact ranks lowest of the non-N/A stages (shown only when it's the sole one).
-    const FUNNEL_RANK = { 'Inbound Lead': 1, 'Outbound Lead': 2, 'Contacted': 3, 'Not A No!': 4, 'Payment Discussed': 5, 'Paid': 6, "Don't Contact": 0.5 };
+    const FUNNEL_RANK = { 'Inbound Lead': 1, 'Outbound Lead': 2, 'Contacted': 3, 'Not A No!': 4, 'Payment Discussed': 5, 'Paid': 6, 'Signed': 6, "Don't Contact": 0.5 };
     const topStage = [c.usedSalesStage || 'N/A', c.membershipStage || 'N/A']
       .filter((s) => s && s !== 'N/A').sort((a, b) => (FUNNEL_RANK[b] || 0) - (FUNNEL_RANK[a] || 0))[0];
     const funnelHtml = topStage ? statusPill('funnelStage', topStage) : badge('N/A', 'gray');
@@ -3988,7 +4814,7 @@ const ROWS = {
     const acctPill = statusPill('customerAccountType', c.accountType || 'Non-Business');
     return `<div class="cr">
       <div class="cr-id">
-        <span class="r-title cr-name" style="color:${nameColor}">${esc(c.name)}</span>
+        <span class="r-title cr-name${fc === 'red' ? ' ec-red' : ''}" style="color:${nameColor}">${esc(c.name)}</span>
         ${sub ? `<span class="cr-sub">${sub}</span>` : ''}
       </div>
       ${payHtml}
@@ -4009,26 +4835,47 @@ const ROWS = {
       <div class="ur-pills"><div class="ur-pill-slot">${unitRentalInspPill(u)}</div><div class="ur-pill-slot">${unitWoSoPill(u)}</div></div>
       <div class="ur-id">
         <span class="ur-sub">${sub}</span>
-        <span class="r-title ur-name" style="color:${nameColor}">${esc(u.name)}</span>
+        <span class="r-title ur-name${hl === 'red' ? ' ec-red' : ''}" style="color:${nameColor}">${esc(u.name)}</span>
       </div>
       <span class="ur-cat">${categoryIconFor(cat && cat.name)}</span>
     </div>`;
   },
 
   categories: (c) => {
-    const mix = categoryMix(c.categoryId);
-    const st = categoryStats(c);
-    // §10: under a rental window, lead with how many units are available for it.
-    let availLead = '';
-    if (availWin) { const n = categoryAvailableCount(c.categoryId, availWin.start, availWin.end, availWin.selfId); availLead = n > 0 ? badge(`${n} Available`, 'green') : badge('0 Available', 'red'); }
-    // Layout (Jac 2026-06-23): [status badges LEFT] · [name/rates RIGHT] — mirrors the units row swap.
-    const badges = [availLead, mix.Ready ? badge(`${mix.Ready} Ready`, 'green') : '', mix['Not Ready'] ? badge(`${mix['Not Ready']} Not Ready`, 'yellow') : '', mix.Failed ? badge(`${mix.Failed} Failed`, 'red') : '', st.roi != null ? badge(`${st.roi}% ROI`, st.roi >= 0 ? 'green' : 'red') : ''].join('');
-    return `<div class="catr">
-      <div class="catr-pills">${badges}</div>
-      <div class="catr-id">
-        <span class="r-title">${esc(c.name)}</span>
-        <span class="catr-sub">${money(c.rate1Day)}/1d · ${num(st.avgHours)} HRS</span>
+    // MINI-CARD (Jac 2026-06-25): the category as a vertical unit data-plate. The
+    // Categories list renders these 3-across (2 when narrow) — see the .list grid.
+    //   [icon · stamped NAME]
+    //   [Availability slot · rentable/inventory slot]   ← two equal pills, Units-style
+    //   [1-Day · 7-Day · 4-Week stacked rates]          ← the rate card, vertical
+    // The whole plate's border carries the rentable-health color (--catr-hl), exactly
+    // like the rentals mini-card's --rcc-hl.
+    const r = categoryRentable(c.categoryId);
+    const tallyColor = r.total === 0 ? 'gray' : r.rentable === 0 ? 'red' : r.rentable < r.total ? 'yellow' : 'green';
+    // FREE units (inspection-AGNOSTIC): Active fleet, not out on a rental for the window
+    // (or right now). Their inspection makeup colors BOTH the plate border and the name
+    // (Jac 2026-06-25): any free unit Ready → green · else any Not Ready → yellow · else
+    // the only free ones are Failed → red · none free → neutral line.
+    const free = DATA.units.filter((u) => {
+      if (u.categoryId !== c.categoryId || u.fleetStatus !== 'Active') return false;
+      return availWin ? rentalsOverlappingUnit(u.unitId, availWin.start, availWin.end, availWin.selfId).length === 0
+                      : !activeRentalForUnit(u.unitId);
+    });
+    const someInsp = (s) => free.some((u) => u.inspectionStatus === s);
+    const hl = (someInsp('Ready') || someInsp('Passed')) ? 'green' : someInsp('Not Ready') ? 'yellow' : someInsp('Failed') ? 'red' : 'line';
+    const nameColor = (hl === 'green' || hl === 'yellow' || hl === 'red') ? `var(--${hl})` : 'var(--txt)';
+    // SLOT 1 — Availability (true RENTABLE availability: Failed excluded). Window-aware.
+    const availN = availWin
+      ? categoryAvailableCount(c.categoryId, availWin.start, availWin.end, availWin.selfId)
+      : free.filter(isUnitRentable).length;
+    const availTip = availWin ? `${availN} available for the selected rental window` : `${availN} rentable and free to go out right now`;
+    const rate = (label, v) => `<div class="catr-rate"><span class="catr-rk">${label}</span><span class="catr-rv${v ? '' : ' none'}">${v ? money(v) : '—'}</span></div>`;
+    return `<div class="catr" style="--catr-hl:var(--${hl})">
+      <div class="catr-head"><span class="catr-cat">${categoryIconFor(c.name)}</span><span class="r-title catr-name${hl === 'red' ? ' ec-red' : ''}" style="color:${nameColor}" data-tip="${esc(c.name)}">${esc(c.name)}</span></div>
+      <div class="catr-pills">
+        <div class="catr-slot js-cat-avail" data-cat="${esc(c.categoryId)}" data-tip="${esc(availTip)} — tap to open these units">${badge(`${availN} Avail`, availN > 0 ? 'green' : 'red')}</div>
+        <div class="catr-slot" data-tip="${r.rentable} of ${r.total} units rentable — in-yard, inspection not failed">${badge(`${r.rentable}/${r.total}`, tallyColor)}</div>
       </div>
+      <div class="catr-rates">${rate('1-Day', c.rate1Day)}${rate('7-Day', c.rate7Day)}${rate('4-Week', c.rate4Wk)}${rate('Weekend', c.weekend)}</div>
     </div>`;
   },
 
@@ -4092,7 +4939,7 @@ const ROWS = {
 };
 
 /* ════════════════════════════════════════════════════════════════════════
-   §7 COLUMN REGISTRY & FOOTER TOTALS — one source of truth per card
+   APP-15 · §7 COLUMN REGISTRY & FOOTER TOTALS — one source of truth per card
    (spreadsheet popup), the List-View totals row, and (later) the List-View
    value picker. Each column: { key, label, type, get(rec), cell(rec), badge,
    set?, meta?, agg }. `get` returns the RAW value (number, or status key for
@@ -4289,7 +5136,7 @@ function rowInnerHTML(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §8 DETAIL RENDERERS — kv/efld/notes · v2 helpers (yard tool, WO sections,
+   APP-16 · §8 DETAIL RENDERERS — kv/efld/notes · v2 helpers (yard tool, WO sections,
    journeys, head flags) · the DETAIL{} map · history
    ════════════════════════════════════════════════════════════════════════ */
 /* Label-free stacked field (§6.2 #3): value + optional prefix/suffix qualifier.
@@ -4730,41 +5577,6 @@ function rentalLineRefund(r, unitId) {
 /* Jac ─ Site ─ Jac transport journey under an invoice rental line. +Log Delivery /
    +Log Recovery ARE the same captures as the yard tool's +Start/+End (one event,
    shared fields, so both views stay in sync). Self-pickup collapses to one line. */
-/** Action-column transport affordance (under +Unit): a blue +Transport button
- *  when none is set, or a compact type+price chip (per unit on multi-unit). */
-function transportActionHtml(r) {
-  const units = rentalUnits(r);
-  const one = (eu, u) => {
-    const du = eu ? ` data-unit="${esc(eu.unitId)}"` : '';
-    const T = eu || r;
-    const hasT = T.transportType && T.transportType !== 'Self';
-    const nameSfx = (units.length > 1 && u) ? ` · ${esc(u.name)}` : '';
-    if (!hasT) return `<button class="add-field anchor js-tedit-open" data-r="R5b" data-rec="${esc(r.rentalId)}"${du} data-leg="delivery" style="height:26px">+Transport${nameSfx}</button>`;
-    const st = getStatus('transportType', T.transportType);
-    const tr = eu ? unitTransport(r, eu) : rentalTransport(r);
-    const oneWay = (tr && tr.perLeg != null) ? tr.perLeg : (tr && tr.price != null ? tr.price : null);
-    return `<span class="pill c-${st.color} js-tedit-open" data-r="R4" data-rec="${esc(r.rentalId)}"${du} data-leg="delivery" style="cursor:pointer">${CARD_ICON.rentals}${esc(st.label)}${nameSfx}${oneWay ? ` · ${money(oneWay)}` : ''}</span>`;
-  };
-  if (!units.length) return one(null, null);
-  return units.map((eu) => { const u = IDX.unit.get(eu.unitId); return u ? one(eu, u) : ''; }).join('');
-}
-/** The Transport section shown on rentals with no invoice yet (with an invoice,
- *  the per-unit journeys ride the invoice lines). Renders a journey per unit that
- *  has transport, plus the inline editor for whichever leg is being edited. */
-function transportSectionHtml(r) {
-  const te = state.transportEdit;
-  const units = rentalUnits(r);
-  const list = units.length ? units : [null];
-  const rows = list.map((eu) => {
-    const hasT = (eu || r).transportType && (eu || r).transportType !== 'Self';
-    const editing = te && te.rentalId === r.rentalId && (te.unitId || null) === (eu ? eu.unitId : null);
-    if (!hasT && !editing) return '';
-    const u = eu ? IDX.unit.get(eu.unitId) : null; if (eu && !u) return '';
-    return `<div class="tjrow">${units.length > 1 && u ? `<span class="stamp tjname">${esc(u.name)}</span>` : ''}${miniJourneyHtml(r, eu)}</div>`;
-  }).filter(Boolean).join('');
-  if (!rows) return '';
-  return `<div class="tsec"><span class="muted tsec-label">Transport</span>${rows}</div>`;
-}
 function miniJourneyHtml(r2, eu) {
   const T = eu || r2;   // §20 per-unit transport + captures (fallback to the rental for legacy)
   const uId = eu ? eu.unitId : (r2.unitId || '');
@@ -4900,48 +5712,17 @@ function headFlagsHtml(card, rec) {
   return '';
 }
 
-/* §12.2 RENTAL DETAIL CALENDAR — numbered-date, full-window, Sunday-anchored.
-   Reuses the rcc track system (solid=elapsed, 30% opacity=remaining). */
-function rentalDetailCal(r, stColor) {
-  const s = parseISO(r.startDate), e = parseISO(r.endDate);
-  if (!s || !e) return '';
-  const ttype = r.transportType;
-  const isSelf = !ttype || ttype === 'Self';
-  const startIcon = isSelf ? CARD_ICON.customers : I.truck;
-  const endHasTruck = ttype === 'Recovery' || ttype === 'Round-Trip';
-  const endIcon = isSelf ? CARD_ICON.customers : (endHasTruck ? I.truck : '');
-  const firstSun = new Date(s.getFullYear(), s.getMonth(), s.getDate() - s.getDay());
-  const lastSatDelta = (6 - e.getDay() + 7) % 7;
-  const lastSat = new Date(e.getFullYear(), e.getMonth(), e.getDate() + lastSatDelta);
-  const totalDays = Math.round((lastSat - firstSun) / 86400000) + 1;
-  const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-  const dowRow = DOW.map((l) => `<span>${l}</span>`).join('');
-  const cells = [];
-  for (let i = 0; i < totalDays; i++) {
-    const d = new Date(firstSun.getFullYear(), firstSun.getMonth(), firstSun.getDate() + i);
-    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const isToday = iso === TODAY_ISO, isStart = iso === r.startDate, isEnd = iso === r.endDate;
-    const inWin = iso >= r.startDate && iso <= r.endDate;
-    const elapsed = inWin && d <= TODAY;
-    const cls = ['rdcal-day', isToday && 'is-today', isStart && 'is-start', isEnd && 'is-end',
-      inWin && 'is-win', inWin && (elapsed ? 'elapsed' : 'fut'),
-      (!isToday && !inWin && d < TODAY) && 'is-past'].filter(Boolean).join(' ');
-    const time = isStart ? (r.startTime || '') : '';
-    const icon = isStart ? startIcon : (isEnd ? endIcon : '');
-    cells.push(`<div class="${cls}">${inWin ? '<span class="rdcal-bar"></span>' : ''}${time ? `<span class="rdcal-t">${esc(time)}</span>` : ''}<span class="rdcal-n">${d.getDate()}</span>${icon ? `<span class="rdcal-ico">${icon}</span>` : ''}</div>`);
-  }
-  return `<div class="rdcal js-open-winpicker" data-rec="${esc(r.rentalId)}" style="--rdcal-hl:var(--${stColor})">
-    <div class="rdcal-dow">${dowRow}</div>
-    <div class="rdcal-body">${cells.join('')}</div>
-  </div>`;
-}
+/* §12.2 — the rental window is now edited INLINE in the standard detail (rdcal-edit →
+   winPickerEl); the old display-only rentalDetailCal + its popup trigger were retired
+   with the inline migration (Jac 2026-06-25). */
 
 const DETAIL = {
   /* ── RENTALS — fully built (§12.2 standard mode) ── */
   rentals: (r, cs) => {
     const cat = IDX.category.get(r.categoryId);
     const cust = IDX.customer.get(r.customerId);
-    const inv = r.invoiceId ? IDX.invoice.get(r.invoiceId) : null;
+    const invs = rentalInvoices(r);   // §28cap — a rental can have a ≤28-day invoice series
+    const inv = invs[0] || (r.invoiceId ? IDX.invoice.get(r.invoiceId) : null);
     const invT = inv ? invoiceTotals(inv) : null;
     const truck = showsTruck(r.status, r.transportType);
     const stColor = rentalStatusDisplay(r).color;
@@ -4949,17 +5730,17 @@ const DETAIL = {
     const hasWin = s && e;
     const units = rentalUnits(r);
 
-    /* invoice pill — ✕ unlink only while $0 is assigned (Jac's rule). */
+    /* invoice pill(s) — the billing series; ✕ unlink only on the primary while $0 is assigned. */
     const paidForThis = inv ? rentalAllocated(inv, r.rentalId) : 0;
-    const invPill = inv
-      ? `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(inv.invoiceId)}">${CARD_ICON.invoices}${esc(invoiceShort(inv.invoiceId))}${paidForThis <= 0 ? `<span class="x" data-x="inv-remove" data-tip="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`
+    const invPill = invs.length
+      ? invs.map((iv, k) => `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(iv.invoiceId)}"${invs.length > 1 ? ` data-tip="${esc('Invoice ' + (k + 1) + ' of ' + invs.length + (iv.contOf ? ' — continuation (28-day cap)' : ''))}"` : ''}>${CARD_ICON.invoices}${esc(invoiceShort(iv.invoiceId))}${k === 0 && paidForThis <= 0 ? `<span class="x" data-x="inv-remove" data-tip="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`).join('')
       : addBtn('Invoice', { link: true, js: 'js-create-invoice', h: 26, data: { rec: r.rentalId } });
 
-    /* Balance (paid / total) for the header right side. */
+    /* Balance (paid / total) for the header right side — summed across the invoice series. */
     const rentLines = rentalLineItems(r);
-    const eventTotal = invT ? invT.total : rentLines.reduce((a, li) => a + (Number(li.amount) || 0), 0);
-    const eventPaid = invT ? invT.paid : 0;
-    const balColor = (eventPaid > 0 && eventPaid >= eventTotal) ? 'green' : (invT && invT.status === 'Not Due') ? 'blue' : 'red';
+    const eventTotal = invs.length ? invs.reduce((a, iv) => a + invoiceTotals(iv).total, 0) : rentLines.reduce((a, li) => a + (Number(li.amount) || 0), 0);
+    const eventPaid = invs.reduce((a, iv) => a + invoiceTotals(iv).paid, 0);
+    const balColor = (eventPaid > 0 && eventPaid >= eventTotal) ? 'green' : (invT && invT.status === 'Not Due' && eventPaid <= 0) ? 'blue' : 'red';
     const rdBal = `<span class="rd-bal balline" data-chat-el data-chat-label="${esc('Balance ' + money(eventPaid) + ' / ' + money(eventTotal))}" data-chat-color="${esc(balColor)}"${inv ? ` data-chat-card="invoices" data-chat-rec="${esc(inv.invoiceId)}"` : ''}><b style="color:var(--${balColor})">${money(eventPaid)}</b><span class="tot"> / ${money(eventTotal)}</span></span>`;
 
     /* Header: customer + PO left · status gate top-right, then invoice+balance below. */
@@ -4967,8 +5748,11 @@ const DETAIL = {
       ? entityPill('customers', cust, { x: 'cust-swap' })
       : addBtn('Customer', { link: true, js: 'js-quickadd-cust', h: 26, data: { card: 'rentals', rec: r.rentalId, slot: 'customer' } });
     const poField = efld('rentals', r, 'rentalId', 'po', 'Add PO', { fmt: (v) => 'PO ' + v });
+    // F4 — Rental Protection advisory: when the account doesn't carry protection, every
+    // rental shows a caution badge (parallel to the PO Required flag). Resolved on the account.
+    const protReminder = (cust && !cust.rentalProtection) ? `<span data-tip="Rental Protection isn't enabled on this account — enable it on the customer to cover damages">${badge('Protection off', 'yellow')}</span>` : '';
     const rdHead = `<div class="rd-head">
-      <div class="rd-head-l">${custEl}${poField}</div>
+      <div class="rd-head-l">${custEl}${poField}${protReminder}</div>
       <div class="rd-head-r">${masterGate(r, { truck })}<div class="rd-head-bal">${invPill}${rdBal}</div></div>
     </div>`;
 
@@ -4976,10 +5760,18 @@ const DETAIL = {
     const blockN = units.filter((eu) => { const bu = IDX.unit.get(eu.unitId); return bu && bu.inspectionStatus !== 'Ready' && !unitVoided(r, eu); }).length;
     const blocker = blockN ? `<button class="tl-blocker js-tl-blocker" data-rec="${esc(r.rentalId)}" data-tip="Jump to the machines that aren't ready"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>${blockN} machine${blockN > 1 ? 's' : ''} Not Ready →</button>` : '';
 
-    /* Calendar: numbered-date full-window grid, or draft window picker. */
-    const calHtml = hasWin
-      ? rentalDetailCal(r, stColor)
-      : `<button class="statusbar draftwin wintrigger js-open-winpicker" data-rec="${esc(r.rentalId)}"><span class="wt-label">${r.startDate ? esc(fmtShortDate(r.startDate)) + ' → pick end' : 'Select rental window'}</span></button>`;
+    /* Calendar: the INLINE editable window calendar (popup retired — Jac 2026-06-25).
+       Tap a day to set start, tap another to set end; the left Categories/Units card
+       reflects availability for the window live. A fragile (invoiced/out) rental stages
+       its edits with an inline "Confirm new window" panel (below the grid, above Clear)
+       carrying the money preview — the calendar stays editable, no blocking popup. */
+    if (!state.winEdit || state.winEdit.rentalId !== r.rentalId) {
+      state.winEdit = { rentalId: r.rentalId, monthISO: firstOfMonthISO(r.startDate || TODAY_ISO), anchor: null };
+      if (rentalFragile(r)) state.winEdit.staged = { rentalId: r.rentalId, startDate: r.startDate || '', endDate: r.endDate || '', startTime: r.startTime || '' };
+    }
+    // (the `.staged` class is no longer styled — the dim/pointer-block went away when the
+    //  Confirm panel moved inline (2026-06-26), so we stop emitting the now-inert hook.)
+    const calHtml = `<div class="rdcal-edit" data-rec="${esc(r.rentalId)}" style="--rdcal-hl:var(--${stColor})">${winPickerEl(r)}</div>`;
 
     /* Duration label (shared across all unit rows). */
     const durLabel = hasWin
@@ -5017,6 +5809,8 @@ const DETAIL = {
       ? actionPill('danger', 'Cancel Rental', { js: 'js-cancel-rental', h: 26, data: { rec: r.rentalId } })
       : actionPill('commit', 'Complete Rental', { js: `js-complete-rental${canComplete ? '' : ' locked'}`, h: 26, data: { rec: r.rentalId } });
     const fcRow = r.fieldCall ? actionPill('danger', 'Field Call active — clear', { js: 'js-clear-fc', data: { rec: r.rentalId } }) : '';
+    // §ext — extending is now inline: tap a later end date in the calendar above; a fragile
+    // (invoiced/out) rental stages it behind the Confirm card with the money preview.
     const rdFoot = `<div class="rd-foot"><div class="rd-foot-l">${fcRow}</div><div class="rd-foot-r">${crBtn}</div></div>`;
 
     const rentalSec = `<div class="section sec-${stColor} rentalsec">
@@ -5304,7 +6098,7 @@ const DETAIL = {
           ${efield('address', 'Add address', true)}
         </div>
         <div class="side r">
-          ${kvPills(`${badge(acct.label, acct.color)}${c.requiresPO ? badge('PO Required', 'yellow') : ''}${agPill}`)}
+          ${kvPills(`${badge(acct.label, acct.color)}${c.requiresPO ? badge('PO Required', 'yellow') : ''}${c.rentalProtection ? badge('Protected', 'blue') : ''}${agPill}`)}
           ${kv(money(d.totalPaid), { pfx: 'Total', derived: true })}
           ${kv(`${d.visits || 0}`, { pfx: 'Visits', derived: true })}
           ${kv(`${d.years || 0} yrs`, { pfx: 'Customer for', derived: true })}
@@ -5323,14 +6117,7 @@ const DETAIL = {
       <div class="kv pillrow">${intCats}${addBtn('Category', { link: true, js: 'js-addcat', h: 26, data: { rec: c.customerId } })}</div>
     </div></div>`;
     // #293 — once a membership stage is set, offer a printable filled-in agreement (handout/PDF).
-    const memberStageSet = !!(c.membershipStage && c.membershipStage !== 'N/A');
-    const membership = `<div class="section"><h4>Membership</h4><div class="fieldstack centered">
-      ${kvPills(funnelPill(c.customerId, 'membership', c.membershipStage || 'N/A'))}
-      ${isMember && c.paidUntil ? kv(yr(c.paidUntil), { sfx: 'paid until' }) : ''}
-      ${c.paidCadence ? kvPills(`${badge('Paid ' + c.paidCadence, 'green')}${c.unlimitedTransport ? badge('Unlimited Transport', 'purple') : ''}`) : ''}
-      ${c.paidFees ? kv(money(c.paidFees), { sfx: 'paid fees' }) : ''}
-      ${memberStageSet ? `<div class="kv pillrow">${actionPill('commit', 'Print Agreement', { js: 'js-print-magreement', h: 26, data: { rec: c.customerId } })}</div>` : ''}
-    </div></div>`;
+    const membership = membershipSectionHtml(c);   // F6/F7 — lifecycle state, economics + actions
     /* §12.1 ACTION BOARD v4 (Jac 2026-06-12): header row = "Actions" label +
        +Log Actions · +Schedule Actions + "Schedule" label; under them, TWO
        columns — logged actions LEFT, scheduled RIGHT. No empty-state text;
@@ -5488,8 +6275,10 @@ const DETAIL = {
         </div>
       </div></div>`;
     const notes = notesSection('invoices', i, 'invoiceId');
+    // §28cap — a continuation invoice (a later 28-day chunk of a long rental) links back to its first invoice
+    const contChip = i.contOf ? `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(i.contOf)}" data-tip="${esc('Continuation of this rental — back to first invoice ' + invoiceShort(i.contOf) + ' (28-day cap split)')}">${CARD_ICON.invoices}Cont. of ${esc(invoiceShort(i.contOf))}</span>` : '';
     return `<div class="detail">
-      <div class="detail-head"><span class="d-title">${esc(i.invoiceId)}</span>${statusPill('invoiceStatus', t.status)}${locked ? badge('🔒 Locked', 'gray') : ''}</div>
+      <div class="detail-head"><span class="d-title">${esc(i.invoiceId)}</span>${statusPill('invoiceStatus', t.status)}${locked ? badge('🔒 Locked', 'gray') : ''}${contChip}</div>
       ${notes.top}
       ${invoiceSec}
       ${notes.bottom}
@@ -5669,7 +6458,7 @@ function historyFor(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §9 CARDS & GRID — cardEl, listView, the 3-column shell
+   APP-17 · §9 CARDS & GRID — cardEl, listView, the 3-column shell
    ════════════════════════════════════════════════════════════════════════ */
 function listFor(card, session) {
   // search mode → filtered across all; anchored (cascade) → cascade subset; else → all
@@ -5718,7 +6507,17 @@ function sortRows(card, rows, sort) {
     }
   };
   const dir = sort.dir === 'desc' ? -1 : 1;
-  return [...rows].sort((a, b) => { const va = val(a), vb = val(b); return va < vb ? -dir : va > vb ? dir : 0; });
+  return [...rows].sort((a, b) => {
+    // Genuinely-completed rentals sink to the bottom so the active queue leads — they stay
+    // searchable/viewable, just below. Cancelled/No-Show are NOT counted: they're not
+    // "completed" until the Complete button is clicked, so they stay up where they can be
+    // worked (mirrors the cancelish check in the rental footer). (Jac 2026-06-24)
+    if (card === 'rentals') {
+      const done = (r) => r.completed && r.status !== 'Cancelled' && r.status !== 'No Show';
+      const ac = done(a) ? 1 : 0, bc = done(b) ? 1 : 0; if (ac !== bc) return ac - bc;
+    }
+    const va = val(a), vb = val(b); return va < vb ? -dir : va > vb ? dir : 0;
+  });
 }
 
 const VIRT_CAP = 60;   // first-paint cap (SPEC §3 windowing)
@@ -5754,7 +6553,7 @@ function detailTitle(card, rec) {
   }
 }
 /* ════════════════════════════════════════════════════════════════════════
- * 3-COLUMN LAYOUT (display-only shell over the existing cards).
+ * APP-18 · 3-COLUMN LAYOUT (display-only shell over the existing cards).
  * Each column paints ONE active "member" card; the rest are a tab/icon away.
  * The 3 shop members (inspections/serviceOrders/workOrders) still render via the
  * single 'shop' engine card with its segment pinned — NO engine/anchor/cascade
@@ -5842,24 +6641,22 @@ function colTabsEl(col, active, session) {
 /* The coltab buttons themselves (no wrapper) — shared by the desktop in-card tab row
    (colTabsEl) AND the phone footer (mobileDockEl), so a toggle looks identical in both. */
 function colTabButtonsHtml(col, active, session) {
-  // v2 (Jac call #1): the standalone Inspections + Work Orders tabs go away —
-  // they live INSIDE the Unit card now; only Service keeps a tab. The hidden
-  // tab still renders while its member is ACTIVE so deep links navigate home.
-  const HIDDEN_TABS = new Set(['inspections', 'workOrders']);
-  // "Not Ready" filter chip (Jac 2026-06-11): rides with the Service heart on the
-  // units column — clipboard-? icon + count; hidden when zero; it's just a filter.
-  const notReady = col.members.includes('units') ? DATA.units.filter((u) => u.inspectionStatus === 'Not Ready').length : 0;
-  const nrChip = notReady ? `<button class="coltab js-notready compact alert" data-tip="${notReady} Not Ready — filter the Units list"><span class="ct-ico">${CARD_ICON.inspectionsPending || CARD_ICON.inspections}</span><span class="ct-n">${notReady}</span></button>` : '';
-  return col.members.filter((m) => !HIDDEN_TABS.has(m) || m === active).map((m) => {
-    const on = m === active, compact = SHOP_TYPES.includes(m);   // shop sub-types are icon-only
-    const n = memberCount(m, session);
-    const alert = SHOP_TYPES.includes(m) && shopAlertCount(m, session) > 0;   // red = work needs doing
-    return `<button class="coltab js-coltab${on ? ' on' : ''}${compact ? ' compact' : ''}${alert ? ' alert' : ''}" data-col="${col.id}" data-member="${m}" data-tip="${esc(MEMBER_TITLE[m])}${alert ? ' — needs attention' : ''}">`
+  // The 3 shop sub-types (inspections/workOrders/serviceOrders) fold into ONE wrench
+  // "Shop" toggle that opens the shop graph; the old Service-heart toggle + Not-Ready
+  // chip are absorbed into it (the graph's Services + Not Ready bars).
+  const coltabBtn = (m, on, { alert = false, count = null } = {}) =>
+    `<button class="coltab js-coltab${on ? ' on' : ''}${alert ? ' alert' : ''}" data-col="${col.id}" data-member="${m}" data-tip="${esc(MEMBER_TITLE[m] || m)}${alert ? ' — needs attention' : ''}">`
       + `<span class="ct-ico">${memberIcon(m)}</span>`
-      + (compact ? '' : `<span class="ct-lbl">${esc(MEMBER_TITLE[m])}</span>`)
-      + `<span class="ct-n">${n}</span>`
+      + `<span class="ct-lbl">${esc(MEMBER_TITLE[m] || m)}</span>`
+      + (count != null ? `<span class="ct-n">${count}</span>` : '')
       + `</button>`;
-  }).join('') + nrChip;
+  let out = col.members.filter((m) => !SHOP_TYPES.includes(m)).map((m) => coltabBtn(m, m === active, { count: memberCount(m, session) })).join('');
+  if (col.members.some((m) => SHOP_TYPES.includes(m))) {   // this column owns the shop → append the wrench Shop toggle
+    const shopActive = active === 'shop' || SHOP_TYPES.includes(active);
+    const alertN = SHOP_TYPES.reduce((a, ty) => a + shopAlertCount(ty, session), 0);   // total items needing the crew
+    out += coltabBtn('shop', shopActive, { alert: alertN > 0, count: alertN });
+  }
+  return out;
 }
 /* Jac 2026-06-12: the nav cluster (List / Anchor / New tab) rides the TOGGLE row,
    not the title row — the item header gets room to breathe and head gates align right. */
@@ -5874,6 +6671,7 @@ function colActionsHtml(active, session) {
 }
 function memberCardEl(member, session) {
   if (member === 'calendar') return calendarCardEl(session);
+  if (member === 'shop') return shopCardEl({ id: 'shop', title: 'Shop' }, session);   // the wrench "Shop" member = the COMBINED view (segment bar + 3-bar front-page graph), no forcedSeg
   if (SHOP_TYPES.includes(member)) return shopCardEl({ id: 'shop', title: MEMBER_TITLE[member] }, session, member);
   return cardEl(GRID_CARD_BY_ID[member], session);
 }
@@ -5908,7 +6706,7 @@ function cardEl(cardDef, session) {
       : '';
     const head = el('div', 'card-head');
     head.innerHTML = `
-      ${cardJog(card, cs)}
+      ${document.body.classList.contains('is-phone') ? '' : cardJog(card, cs)}${/* §M — on phones the jog rides the bottom dock (where List view keeps it), not the card header */ ''}
       <span class="c-titlecard"><span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}</span>
       ${commentMarkerHtml(card, stdRec)}
       ${headFlagsHtml(card, stdRec)}`;
@@ -5968,6 +6766,12 @@ function listView(cardDef, session) {
     chip.innerHTML = `<span class="muted">${n === 1 ? 'Linked unit on' : `${n} linked units on`} invoice</span> <b>${esc(invoiceShort(state.unitPick.from))}</b> <span class="muted">— open one to add a work order</span> <button class="x js-clear-unitpick" data-tip="Clear filter">${I.x}</button>`;
     wrap.appendChild(chip);
   }
+  // Invoices payment-method filter active → clearable chip as the closed-menu signal (#337)
+  if (card === 'invoices' && cs.payMethod && cs.payMethod !== 'all') {
+    const chip = el('div', 'fleet-chip');
+    chip.innerHTML = `<span class="muted">Payment method</span> <b>${esc(INV_METHOD_LABEL[cs.payMethod] || cs.payMethod)}</b> <button class="x js-clear-paymethod" data-tip="Clear filter">${I.x}</button>`;
+    wrap.appendChild(chip);
+  }
 
   let rows = listFor(card, session);
   if (card === 'units') rows = unitsVisible(rows, cs);   // default: Active only — hide non-Active fleet (or reveal via the sort) (#2/#34)
@@ -5980,6 +6784,7 @@ function listView(cardDef, session) {
     const reveal = cs && cs.sort && (cs.sort.field === 'allFleet' || cs.sort.field === 'soldInactive');
     if (!reveal) rows = rows.filter((u) => u.fleetStatus === 'Active');
   }
+  if (card === 'invoices' && cs.payMethod && cs.payMethod !== 'all') rows = rows.filter((i) => invMethodClass(i) === cs.payMethod);   // §337 stacks with search/status/sort
   if (cs.search.trim() || (cs.filterTerms || []).length) { rows = rows.filter((rec) => rowMatches(card, rec, cs.search, cs.filterTerms)); }
   rows = sortRows(card, rows, cs.sort);
   // §10 — while a rental window is in scope, order Units: available+Ready, available+Not
@@ -6029,7 +6834,7 @@ function listView(cardDef, session) {
 const PLUS_NEW = new Set(['rentals', 'invoices', 'customers']);
 
 /* ════════════════════════════════════════════════════════════════════════
-   §10 SHOP CARD — merged Work Orders + Service Orders + Inspections
+   APP-19 · §10 SHOP CARD — merged Work Orders + Service Orders + Inspections
    ────────────────────────────────────────────────────────────────────────
    ITERATE HERE: this whole block is the Shop card's presentation. The grid
    plumbing (anchor/cascade/tabs/standard-mode) routes through it via the
@@ -6223,7 +7028,7 @@ function shopRowEl(type, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §11 HEADER, KPI & BOTTOM BAR
+   APP-20 · §11 HEADER, KPI & BOTTOM BAR
    ════════════════════════════════════════════════════════════════════════ */
 /** Apple-style band coloring (§11): 0-25 red · 25-50 orange · 50-75 yellow ·
  *  75-100 green · 95-100 glowing green. */
@@ -6347,7 +7152,7 @@ const KPI_HELP = {
 };
 
 /* ════════════════════════════════════════════════════════════════════════
-   §11b KPI METRIC ENGINE — admin-definable KPIs (Settings → KPIs & Rings).
+   APP-21 · §11b KPI METRIC ENGINE — admin-definable KPIs (Settings → KPIs & Rings).
    A SAFE, declarative spec (no eval, Pages-public-safe): a metric is filters +
    an aggregate over an entity allowlist, evaluated by kpiEval(). The shipped 15
    KPIs route through kind:'builtin' (the legacy math above), so with no admin
@@ -6472,11 +7277,6 @@ function wrValidateKpi(act) {
   return { ok: !issues.length, ring, issues, value, role: act.role, idx };
 }
 
-/** §11 Team ring — per-position average across the 5 roles (skips null placeholders). */
-function kpiTeam() {
-  const all = ROLES.map((r) => kpiFor(r.id));
-  return [0, 1, 2].map((i) => { const vals = all.map((v) => v[i]).filter((x) => x != null); return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null; });
-}
 
 /* §11 GAMIFICATION (Jac 2026-06-13) — when an action raises a ring's underlying
    metric, pop the raw delta over that ring (natural unit: +$X on money rings, +N
@@ -6516,13 +7316,45 @@ function scorePop(roleId, ringIdx, delta, unit) {
   btn.appendChild(pop);                                            // floats up + fades (CSS), then removed
   setTimeout(() => pop.remove(), 760);
 }
+/* ════════════ APP-22 · COMING 2026 — the roadmap morale plate (Jac 2026-06-23) ════════
+   The KPI rings ride behind a blur (the metrics engine isn't wired up yet). Rather
+   than leave dead frosted glass up top, the rings wear a "Coming 2026" data-plate
+   that opens this roadmap — what's on the docket plus every area of the yard we're
+   building out. Pure morale: a glance at how much is coming. The list mirrors
+   backlog.md (the sorted task branches) + the area map; keep it in step when those
+   move. type: Feature (gray) · Fix (red) · Cleanup (gray) · Planned (yellow). */
+const ROADMAP_ITEMS = [
+  { t: 'Rental Status button',                   area: 'Rentals',       type: 'Feature' },
+  { t: 'Card-on-File no longer blocks On Rent',  area: 'Rentals',       type: 'Fix' },
+  { t: 'Retire the obsolete Window Picker',      area: 'Rentals',       type: 'Cleanup' },
+  { t: 'Invoice Card',                           area: 'Invoicing',     type: 'Feature' },
+  { t: 'Fix the “OBi” invoice link label',       area: 'Invoicing',     type: 'Fix' },
+  { t: 'Category rows — scroll by group',        area: 'Units',         type: 'Feature' },
+  { t: 'Default Services — hand over the manuals',area: 'Shop',         type: 'Feature' },
+  { t: 'Custom Fields + defaults',               area: 'Backend',       type: 'Feature' },
+  { t: 'Customer self-service portal',           area: 'Mobile',        type: 'Feature' },
+  { t: 'Notifications',                           area: 'Comms',         type: 'Feature' },
+  { t: 'Customer texts & email',                 area: 'Comms',         type: 'Feature' },
+  { t: 'Memberships — round out the details',    area: 'Members',       type: 'Planned' },
+];
+const ROADMAP_AREAS = [
+  'Rentals & Dispatch', 'Invoicing & Payments', 'Customers / CRM', 'Memberships',
+  'Units & Fleet', 'Maintenance Shop', 'Financials & KPIs', 'Backend & Data',
+  'Design System', 'Mobile & Remote', 'Comms & Notifications', 'HR & Compliance',
+  'Sales & Growth', 'Maps & Location', 'Search & Views', 'Frontend & Performance',
+  'Mr. Wrangler AI',
+];
 function headerEl() {
   const h = el('div', 'header');
   const roleRing = (id, label, vals, color) => `<button class="kpi-ring js-ring" data-role="${id}">
       <span class="ring-wrap">${ring3SVG(vals, color, { size: 64 })}</span>
       <span class="ring-label">${esc(label)}</span>
     </button>`;
-  const rings = ROLES.map((role) => roleRing(role.id, role.label, kpiFor(role.id), role.color)).join('');
+  // "Coming 2026" floats free over the blurred rings (no card) — taps open the roadmap.
+  const comingPlate = `<button class="coming-plate js-roadmap" data-tip="What's coming in 2026" aria-label="Coming 2026 — open the roadmap">
+      <span class="cp-stamp">Coming <b>2026</b></span>
+    </button>`;
+  const rings = ROLES.map((role) => roleRing(role.id, role.label, kpiFor(role.id), role.color)).join('') + comingPlate;
   // §M1 — phone-only TOP TOOLBAR: the full tool set opened up across the top of the screen
   // (logo + rings stay on their own row above it). Notifications + Requests live here too.
   const nu = unseenNotifs();
@@ -6536,6 +7368,7 @@ function headerEl() {
     <div class="header-right">
       <div class="hr-top">
         <div class="header-tabs tabstrip">${tabStrip(state.tabs)}</div>
+        ${state.tabs.length ? `<span class="closeall-slot">${ghostPill('Close all', { js: 'js-closeall-menu', tip: 'Close all tabs' })}</span>` : ''}
         <span class="spacer"></span>
         ${currentUser ? `<span class="hello-name">${esc(currentUser)}</span>` : ''}
       </div>
@@ -6577,10 +7410,10 @@ function bottomBarInner(opts = {}) {
     <button class="iconbtn js-wrangler" data-tip="New chat with Mr. Wrangler — ask the yard AI, or report a bug" style="font-size:16px">🤠</button>
     ${opts.noInbox ? '' : `<button class="iconbtn js-requests" data-tip="Requests for your OK — review what Mr. Wrangler filed">${I.inbox}${wranglerRequests.length ? `<span class="bb-badge">${wranglerRequests.length > 9 ? '9+' : wranglerRequests.length}</span>` : ''}</button>`}
     <button class="iconbtn js-hotkeys" data-tip="Mouse &amp; keyboard shortcuts">${I.mouse}</button>
-    ${adminUnlocked() ? `<button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
+    ${devUnlocked() ? `<button class="iconbtn js-lint${document.body.classList.contains('rw-lint') ? ' on' : ''}" data-tip="Design lint — flash anything that bypassed the UI builders (R0)">${I.eye}</button>
     <button class="iconbtn js-inspect${state.inspect ? ' on' : ''}" data-tip="Design Inspector — hover names the rule, click copies the reference">${I.search}</button>
-    <button class="iconbtn js-rulebook" data-tip="The R-Rulebook — visual design reference (SPEC v8)">${I.doc}</button>
-    <button class="iconbtn js-photo-sweep" data-tip="Offload base64 photos to Drive — one-shot migration to de-bloat the payload">${I.camera}</button>` : ''}`;
+    <button class="iconbtn js-rulebook" data-tip="The R-Rulebook — visual design reference (SPEC v8)">${I.doc}</button>` : ''}
+    ${adminUnlocked() ? `<button class="iconbtn js-photo-sweep" data-tip="Offload base64 photos to Drive — one-shot migration to de-bloat the payload">${I.camera}</button>` : ''}`;
 }
 // §18g/§17 — the bottom COMMS BAND: toolbar pinned left · the conversation rail
 // fills the middle (every Mr. Wrangler request + chat and every team thread is its
@@ -6657,22 +7490,26 @@ function activeMobileCard() {
   const member = (s.cols && s.cols[colObj.id]) || colObj.default;
   return SHOP_TYPES.includes(member) ? 'shop' : member;
 }
-// §M1 — the card the phone is currently showing (the active column's member).
+// §M1 — the card the phone is currently showing (the active column's member). Fold the
+// shop sub-types to 'shop' (mirror activeMobileCard) so the footer toggle highlight + the
+// swipe-step index track the single Shop entry instead of failing to match.
 function currentMobileMember() {
   const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
   const s = activeSession();
-  return (s.cols && s.cols[colObj.id]) || colObj.default;
+  const m = (s.cols && s.cols[colObj.id]) || colObj.default;
+  return SHOP_TYPES.includes(m) ? 'shop' : m;
 }
-// §M1 — the flat card list the phone toggle bar offers. On desktop, inspections + work
-// orders live INSIDE the Unit card (hidden tabs); on phone they get their own toggles too.
-const MOBILE_CARDS = ['units', 'categories', 'inspections', 'serviceOrders', 'rentals', 'calendar', 'customers', 'invoices'];
+// §M1 — the flat card list the phone toggle bar offers. The 3 shop sub-types fold into one
+// 'shop' entry (the wrench), matching desktop; it opens the 3-bar shop graph.
+const MOBILE_CARDS = ['units', 'categories', 'shop', 'rentals', 'calendar', 'customers', 'invoices'];
 // §M1 — jump straight to a card (flattens the 3-column model on phones): set the column +
-// member, flip the visible column, and show that card's LIST.
+// member, flip the visible column, and show that card's LIST (or, for Shop, its graph).
 function goToCard(member) {
   const s = activeSession(); const col = COLUMN_OF[member];
   if (s.cols && col) s.cols[col] = member;
   const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx;
-  const mc = s.cards[member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; }
+  if (member === 'shop') { const sc = s.cards.shop; if (sc) { sc.segment = 'all'; sc.graphView = true; sc.mode = 'list'; sc.recId = null; sc.recType = null; } }
+  else { const mc = s.cards[member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
   render();
 }
 // §M1 phone footer — ONE card-toggle bar: every card collapsed to its icon, the SELECTED
@@ -6690,7 +7527,7 @@ function mobileDockEl() {
   return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
-   §17 INTERNAL TEAM DOCK (Jac, Phase 7) — a bottom-bar chat built on the Phase-6
+   APP-23 · §17 INTERNAL TEAM DOCK (Jac, Phase 7) — a bottom-bar chat built on the Phase-6
    record comments: a live "what's flagged" feed, a rail of TAGGED elements
    (records / lines / pills / prices) shown as colored tabs you add + remove so a
    thread carries its own context, and role buttons that toggle who's included.
@@ -6705,7 +7542,6 @@ function chatComments() {
 function chatUnreadCount() { const u = commentUserKey(); return chatComments().filter((c) => !(c.ack || []).includes(u)).length; }
 const chatById = (id) => state.chat.chats.find((c) => c.id === id) || null;
 const activeChat = () => chatById(state.chat.activeId);
-const chatLive = () => { const c = activeChat(); return !!c && c.participants.length > 0; };
 function chatRoleOn(id) { const c = activeChat(); return !!c && c.participants.includes(id); }
 function chatsTagging(card, recId) { return state.chat.chats.filter((c) => (c.tags || []).some((t) => t.ref && t.ref.card === card && String(t.ref.recId) === String(recId))); }
 function chatMarkSeen() { const c = activeChat(); if (c) c.seen[commentUserKey()] = Date.now(); }
@@ -7194,7 +8030,6 @@ function dispatchEvents() {
    yard and back. D = Deliver, R = Recover, 🏠 = JAC. Drag a stop to reorder the
    run; type a time; the date rides as a bold-red deadline. Order + times are
    per-device (localStorage). */
-const DISPATCH_HOME = 'JAC · 102 S Huntington';
 const dispatchStopId = (ev) => `${ev.rentalId}|${ev.unitId || ''}|${ev.task}`;
 const _lsJSON = (k) => { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } };
 const _lsSave = (k, o) => { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) {} };
@@ -7461,7 +8296,7 @@ function tabBadge(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §13.3 CARD GRAPH VIEW (Phase 4) — a per-card charts overlay, sibling to the
+   APP-24 · §13.3 CARD GRAPH VIEW (Phase 4) — a per-card charts overlay, sibling to the
    Board View. Units first: Field-Call stats, an inspection donut, a parts donut,
    and the unit roster. Pure SVG/CSS — no chart lib. (FC = Field Call.)
    ════════════════════════════════════════════════════════════════════════ */
@@ -7567,7 +8402,7 @@ function gvBuckets(days) {
   return out;
 }
 /* ════════════════════════════════════════════════════════════════════════
-   §13.4 GRAPH CAROUSEL (Jac 2026-06-16) — the per-card Graph is a deck of
+   APP-25 · §13.4 GRAPH CAROUSEL (Jac 2026-06-16) — the per-card Graph is a deck of
    INTERACTIVE views stacked ABOVE the list. Chevrons cycle the view; clicking a
    slice / bar / row / number TOGGLES a search entry (the one filtering pathway),
    so the chart drives the rows. Same-column toggles OR together. Each view
@@ -7735,6 +8570,26 @@ function graphViewsFor(card) {
       { key: 'nums', title: 'By the Numbers', kind: 'nums', segs: status.map((s) => ({ ...s })) },
     ];
   }
+  if (card === 'shop') {
+    // The Shop "front page" (wrench toggle): one stacked-bar view of what needs the
+    // crew's attention right now — Not Ready · Services · Work Orders.
+    const notReady = DATA.units.filter((u) => u.inspectionStatus === 'Not Ready').length;
+    let svcOver = 0, svcDue = 0;
+    DATA.units.forEach((u) => { if (u.washRequested) return; const s = topServiceForUnit(u); if (!s) return; if (s.status === 'past-due') svcOver++; else if (s.status === 'due-soon') svcDue++; });
+    const woByPhase = {}; DATA.workOrders.filter((w) => w.phase !== 'Complete' && !w.cancelled).forEach((w) => { const ph = w.phase || '—'; woByPhase[ph] = (woByPhase[ph] || 0) + 1; });
+    const woParts = Object.keys(STATUS.woPhase).filter((ph) => ph !== 'Complete' && woByPhase[ph]).map((ph) => ({ col: '__wophase', value: ph, label: getStatus('woPhase', ph).label || ph, count: woByPhase[ph], color: getStatus('woPhase', ph).color || 'gray' }));
+    const bars = [
+      // Not Ready reuses the established js-notready affordance (route to the Units list,
+      // filtered to Not-Ready) rather than a graph filter — same behavior the old chip had.
+      { label: 'Not Ready', count: notReady, color: 'yellow', js: 'js-notready', tip: `${notReady} Not Ready — open the Units list` },
+      { label: 'Services', parts: [
+        { col: '__svcstat', value: 'past-due', label: 'Overdue', count: svcOver, color: 'red' },
+        { col: '__svcstat', value: 'due-soon', label: 'Due', count: svcDue, color: 'yellow' },
+      ] },
+      { label: 'Work Orders', parts: woParts },
+    ];
+    return [{ key: 'shopfront', title: 'Shop', kind: 'stackbars', segs: bars }];
+  }
   return null;
 }
 // ── state transitions. The active view's selection lives in cs.filterTerms as g-tagged
@@ -7822,6 +8677,27 @@ function gvRenderView(card, src, cs, v) {
       const inner = `<div class="gv-bar-n">${esc(money(s.count))}</div>${fill}<div class="gv-bar-x">${esc(s.label)}</div>`;
       return gvSegBtn(cs, card, src, s, inner, 'gv-barcol');
     }).join('')}</div>`;
+  }
+  if (v.kind === 'stackbars') {   // bars whose fill is a STACK of clickable segments (each = a filter); a single-part bar can carry a custom action class (js)
+    const tot = (s) => s.parts ? s.parts.reduce((a, p) => a + (p.count || 0), 0) : (s.count || 0);
+    const max = Math.max(1, ...v.segs.map(tot));
+    const bars = v.segs.map((s) => {
+      const t = tot(s), h = Math.round((t / max) * 100);
+      let stack;
+      if (s.parts) {
+        stack = s.parts.filter((p) => p.count).map((p) => {
+          const on = gvSegOn(cs, p.col, p.value);
+          return `<button class="gv-bar-seg js-gv-seg${on ? ' on' : ''}" style="flex:${p.count} 1 0;background:var(--${p.color})" data-card="${card}" data-src="${esc(src)}" data-col="${esc(p.col)}" data-value="${esc(String(p.value))}" data-label="${esc(p.label)}" data-tip="${on ? 'Remove filter' : 'Filter to ' + esc(p.label)}"></button>`;
+        }).join('');
+      } else {
+        stack = t ? `<button class="gv-bar-seg ${s.js || ''}" style="flex:1;background:var(--${s.color || v.color || 'accent'})" data-tip="${esc(s.tip || s.label)}"></button>` : '';
+      }
+      return `<div class="gv-barcol"><div class="gv-bar-n">${t || ''}</div><div class="gv-bar-track"><div class="gv-bar-stack" style="height:${h}%">${stack}</div></div><div class="gv-bar-x">${esc(s.label)}</div></div>`;
+    }).join('');
+    const legParts = [];
+    v.segs.forEach((s) => { if (s.parts) s.parts.filter((p) => p.count).forEach((p) => legParts.push(gvSegBtn(cs, card, src, p, `<i style="background:var(--${p.color})"></i><span class="gl-lbl">${esc(p.label)}</span> <b>${p.count}</b>`, 'gv-leg'))); });
+    const legend = (gvPillsHidden(card) || !legParts.length) ? '' : `<div class="gv-legend gv-legend-click">${legParts.join('')}</div>`;
+    return `<div class="gv-bars gv-stackbars">${bars}</div>${legend}`;
   }
   if (v.kind === 'lead') {
     if (!v.segs.length) return '<div class="gv-empty">No data yet.</div>';
@@ -7972,9 +8848,37 @@ function cardGraphBody(card) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §12 OVERLAYS & BOARDS — renderOverlay kinds + back-office board popups
+   APP-26 · §12 OVERLAYS & BOARDS — renderOverlay kinds + back-office board popups
    ════════════════════════════════════════════════════════════════════════ */
 let _ovScroll = {}, _ovLastKind = null;   // keep a popup-body's scroll across its OWN re-renders (sign/selfie)
+let _popDrag = { x: 0, y: 0 }, _popDragKind = null;   // drag offset of the open popup; persists across its own re-renders, resets on kind change / close
+/* §popup-drag — let users grab a popup by its stamped head and slide it out of the way (desktop
+   only; phone popups are bottom-sheets). The offset is a transform on the flex-centered .popup,
+   stashed in _popDrag so a re-render re-applies it, and cleared when the popup changes or closes. */
+function wirePopupDrag(overlay) {
+  if (document.body.classList.contains('is-phone')) return;   // phone popups dock as bottom-sheets — no drag
+  const pop = overlay.querySelector('.popup'); if (!pop) return;
+  const head = pop.querySelector('.popup-head'); if (!head) return;
+  const apply = () => { const m = _popDrag.x || _popDrag.y; pop.style.transform = m ? `translate(${_popDrag.x}px, ${_popDrag.y}px)` : ''; if (m) pop.style.animation = 'none'; };
+  apply();   // re-seat a dragged popup after its own re-render (without replaying the plateIn drop)
+  head.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button, a, input, select, textarea, label, .x')) return;   // controls keep their own behavior
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY, ox = _popDrag.x, oy = _popDrag.y;
+    const r = pop.getBoundingClientRect(), bx = r.left - ox, by = r.top - oy, w = r.width;   // rect at zero offset
+    pop.classList.add('is-dragging');
+    try { head.setPointerCapture(e.pointerId); } catch (_) {}
+    const move = (ev) => {
+      let nx = ox + (ev.clientX - sx), ny = oy + (ev.clientY - sy);
+      const M = 40;   // keep at least M px of the popup on-screen in each direction
+      nx = Math.min(window.innerWidth - M - bx, Math.max(M - w - bx, nx));
+      ny = Math.min(window.innerHeight - M - by, Math.max(-by, ny));   // never above the top edge
+      _popDrag.x = nx; _popDrag.y = ny; apply();
+    };
+    const up = () => { pop.classList.remove('is-dragging'); head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); };
+    head.addEventListener('pointermove', move); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+  });
+}
 /* ── §M3 — phone hardware-BACK button (Android) joins the dismiss chain. We keep at
    most ONE dummy history entry while any sheet/overlay/dock is open; pressing Back
    pops it and closes the topmost surface (same order as Esc), re-pushing if more
@@ -7982,10 +8886,9 @@ let _ovScroll = {}, _ovLastKind = null;   // keep a popup-body's scroll across i
    stack stays balanced. Phone-only — desktop keeps Esc/click. Wired in boot(). ── */
 let backGuard = false, backConsuming = false;
 let swipeFired = false;   // §M1/§M3 — a footer (column) or grid (Back/Fwd) swipe sets this so the trailing click is swallowed once
-function anyDismissable() { return !!(state.overlay || state.winpicker || state.datesearch || state.chat.open || state.wrangler.open); }
+function anyDismissable() { return !!(state.overlay || state.datesearch || state.chat.open || state.wrangler.open); }
 function dismissTopSheet() {
   if (state.datesearch) { closeDateSearch(); return true; }
-  if (state.winpicker) { closeWinPicker(); return true; }
   if (state.overlay) { closeOverlay(); return true; }
   if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; render(); return true; }   // mirror js-wr-close
   if (state.chat.open) { state.chat.open = false; render(); return true; }                                    // mirror js-chat-close
@@ -8005,12 +8908,14 @@ function renderOverlay() {
   if (_ovLastKind) { const _pb = root.querySelector('.set-pane') || root.querySelector('.popup-body'); if (_pb) _ovScroll[_ovLastKind] = _pb.scrollTop; }   // .set-pane is the settings scroller; .popup-body for the rest
   destroyCardElement();        // any re-render/overlay-switch tears down a mounted Stripe element
   root.innerHTML = '';
-  if (!state.overlay) { _ovLastKind = null; return; }
+  if (!state.overlay) { _ovLastKind = null; _popDragKind = null; _popDrag = { x: 0, y: 0 }; return; }
   const o = state.overlay;
+  if (o.kind !== _popDragKind) { _popDragKind = o.kind; _popDrag = { x: 0, y: 0 }; }   // a new popup opens centered; re-renders of the same one keep the dragged spot
   const overlay = el('div', 'overlay');
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeOverlay(); });
   if (buildPopupEl(o, overlay) === false) { state.overlay = null; return; }
   root.appendChild(overlay);
+  wirePopupDrag(overlay);
   { const _nb = overlay.querySelector('.set-pane') || overlay.querySelector('.popup-body'); if (_nb && _ovScroll[o.kind]) _nb.scrollTop = _ovScroll[o.kind]; }   // restore scroll on a same-overlay re-render (settings pane / sign / selfie no longer jump to top)
 
   _ovLastKind = o.kind;
@@ -8057,6 +8962,50 @@ function buildPopupEl(o, overlay, opts = {}) {
             <tbody>${rows}</tbody>
           </table>
         </div>` });
+    overlay.appendChild(pop);
+  } else if (o.kind === 'membershipEnroll') {
+    // F5 — membership enrollment. Plan + add-ons + start date + auto-renew → live total,
+    // charged on the saved card (the account goes Active only on a cleared charge).
+    const c = IDX.customer.get(o.custId);
+    const pricing = membershipPricing();
+    const fee = membershipFee({ plan: o.plan, addOns: o.addOns }, pricing);
+    const cad = o.plan === 'Annual' ? '/yr' : '/mo';
+    const ready = !!(c && hasCardOnFile(c) && hasValidCard(c));
+    const signed = c && c.membershipStage === 'Signed';
+    const planSeg = segCtl([
+      { label: 'Monthly', js: 'js-me-plan', data: { val: 'Monthly' }, on: o.plan === 'Monthly' ? 'green' : '' },
+      { label: 'Annual', js: 'js-me-plan', data: { val: 'Annual' }, on: o.plan === 'Annual' ? 'green' : '' },
+    ]);
+    const onoff = (k, on, money1) => segCtl([
+      { label: 'No', js: `js-me-${k}`, data: { val: '0' }, on: !on ? 'gray' : '' },
+      { label: money1 ? `Yes · ${money1}` : 'Yes', js: `js-me-${k}`, data: { val: '1' }, on: on ? 'green' : '' },
+    ]);
+    const tPrice = money2(o.plan === 'Annual' ? pricing.annualTransport : pricing.monthlyTransport) + cad;
+    const pPrice = pricing.protectionPct + '% of base';
+    const row = (label, ctl) => `<div class="me-row"><span class="kpi-cap">${label}</span>${ctl}</div>`;
+    const lineRow = (label, amt) => amt ? `<div class="me-line"><span>${esc(label)}</span><b class="derived">${money2(amt)}</b></div>` : '';
+    const gateNote = ready
+      ? `<p class="set-note">Charges <strong>${esc(cardLabel(c))}</strong> now. ${signed ? '' : 'Heads-up: membership agreement not yet on file — sign it from a card when you can.'}</p>`
+      : `<p class="set-note" style="color:var(--yellow)">No valid card on file — add one before enrolling (the charge needs it).</p>`;
+    const body = `
+      ${row('Plan', planSeg)}
+      ${row('Unlimited Transport', onoff('transport', o.addOns.transport, tPrice))}
+      ${row('Rental Protection', onoff('protection', o.addOns.protection, pPrice))}
+      ${row('Auto-Renew at term end', segCtl([{ label: 'No', js: 'js-me-autorenew', data: { val: '0' }, on: !o.autoRenew ? 'gray' : '' }, { label: 'Yes', js: 'js-me-autorenew', data: { val: '1' }, on: o.autoRenew ? 'navy' : '' }]))}
+      ${row('Start date', dateField('startDate', o.startDate, { ph: 'Starts today' }))}
+      <div class="me-tote">
+        ${lineRow(`${o.plan} base`, fee.base)}
+        ${lineRow('Unlimited Transport', fee.transport)}
+        ${lineRow(`Rental Protection · ${pricing.protectionPct}%`, fee.protection)}
+        ${lineRow('Tax · 10.75%', fee.tax)}
+        <div class="me-line me-total"><span>First charge</span><b>${money2(fee.total)}</b></div>
+      </div>
+      ${gateNote}
+      ${o.error ? `<p class="set-err" style="text-align:center">${esc(o.error)}</p>` : ''}`;
+    const foot = `<button class="pill ghost js-close" data-r="R18">Cancel</button>
+      <button class="pill ignition js-me-commit" data-r="R17"${(!ready || o.busy) ? ' disabled aria-disabled="true"' : ''}>${o.busy ? 'Charging…' : 'Enroll &amp; Charge ' + money2(fee.total)}</button>`;
+    const pop = el('div', 'popup'); pop.style.width = '430px';
+    pop.innerHTML = popupShell({ icon: I.horseshoe || CARD_ICON.customers || '', title: 'Saddle Up — Membership', tag: `Customer · enroll`, body, foot });
     overlay.appendChild(pop);
   } else if (o.kind === 'comment') {
     // Phase 6 (Jac redesign) — a SIMPLE comment card that floods with the picked color.
@@ -8334,20 +9283,24 @@ function buildPopupEl(o, overlay, opts = {}) {
   } else if (o.kind === 'notifications') {
     // §18f Notifications — recently-RESOLVED Mr. Wrangler fixes, surfaced in-app so a reporter
     // sees their glitch got fixed (with the verdict) without ever opening GitHub.
-    const list = wranglerNotifs;
+    const list = visibleNotifs();   // §246 — dismissed resolved-fix chips stay cleared
+    const muted = notifsMuted();
     const inner = !backendPassword
       ? '<div class="req-empty">Sign in to see notifications.</div>'
       : (!notifLoaded && notifLoading ? '<div class="req-empty">Loading…</div>'
-        : (!list.length ? '<div class="req-empty"><span class="req-empty-ic">🔔</span><p>Nothing new.</p><span>When Mr. Wrangler finishes a fix you reported, it shows here — refresh the app to see the change.</span></div>'
-          : list.map((n) => `<div class="req-card">
-              <div class="req-head"><span class="req-num">${n.merged ? '✅' : 'ⓘ'} #${n.number}</span><span class="req-title">${esc(n.title)}</span></div>
+        : (!list.length ? '<div class="req-empty"><span class="req-empty-ic">🔔</span><p>All clear.</p><span>Resolved fixes you reported show here. When Mr. Wrangler finishes one, refresh the app to see the change.</span></div>'
+          : list.map((n) => `<div class="req-card has-closex">
+              <div class="req-head"><span class="req-num">${n.merged ? '✅' : 'ⓘ'} #${n.number}</span><span class="req-title">${esc(n.title)}</span><span class="spacer"></span>${closeX('js-notif-dismiss', { data: { num: n.number }, hover: true })}</div>
               ${n.verdict ? `<div class="req-text">${esc(n.verdict).replace(/\n+/g, '<br>')}</div>` : '<div class="req-text muted">Resolved — refresh the app to see the change.</div>'}
               <div class="req-acts"><span class="req-await">${n.closedAt ? 'Resolved ' + esc(fmtShortDate(String(n.closedAt).slice(0, 10))) : 'Resolved'}</span><a class="req-link" href="${esc(n.url)}" target="_blank" rel="noopener">GitHub ↗</a></div>
             </div>`).join('')));
+    const foot = backendPassword
+      ? `${list.length ? ghostPill('Dismiss all', { js: 'js-notif-dismissall', tip: 'Clear every resolved notification' }) : ''}${ghostPill(muted ? 'Unmute' : 'Mute', { js: 'js-notif-mute', tip: muted ? 'Show the unseen badge again' : 'Silence the unseen-count badge' })}`
+      : '';
     const pop = el('div', 'popup'); pop.style.width = '460px';
-    pop.innerHTML = popupShell({ icon: I.bell, title: `Notifications${list.length ? ` · ${list.length}` : ''}`, tag: 'Mr. Wrangler · resolved',
+    pop.innerHTML = popupShell({ icon: I.bell, title: `Notifications${list.length ? ` · ${list.length}` : ''}${muted ? ' · muted' : ''}`, tag: 'Mr. Wrangler · resolved',
       headRight: `<button class="iconbtn js-notif-refresh" data-tip="Refresh">${I.refresh || '⟳'}</button>`,
-      bodyClass: 'req-wrap', body: inner });
+      bodyClass: 'req-wrap', body: inner, foot });
     overlay.appendChild(pop);
   } else if (o.kind === 'hotkeys') {
     const rows = [
@@ -8361,6 +9314,27 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: I.mouse, title: 'Mouse shortcuts', tag: 'Operator · controls', bodyClass: 'hk-body', body: `
         ${rows.map((r) => `<div class="hk-row"><div class="hk-demo hk-${r.d}">${hkDemoInner(r.d)}</div><div class="hk-text"><div class="hk-name">${esc(r.n)}</div><div class="hk-desc">${esc(r.t)}</div></div></div>`).join('')}
         <p class="muted" style="font-size:11px;margin:6px 2px 0">These work on a list row or anywhere on a card.</p>` });
+    overlay.appendChild(pop);
+  } else if (o.kind === 'roadmap') {
+    // §M2 — "Coming 2026" roadmap (the morale window behind the blurred rings).
+    const TYPE_COLOR = { Fix: 'red', Planned: 'yellow' };   // Feature/Cleanup stay gray (R3b)
+    const counts = ROADMAP_ITEMS.reduce((m, it) => (m[it.type] = (m[it.type] || 0) + 1, m), {});
+    const tally = [['Feature', 'building'], ['Fix', 'fixing'], ['Cleanup', 'cleaning up'], ['Planned', 'to scope']]
+      .filter(([t]) => counts[t]).map(([t, v]) => `${counts[t]} ${v}`).join(' · ');
+    const rows = ROADMAP_ITEMS.map((it) => `<div class="rm-row">
+        <span class="rm-badge">${badge(it.type, TYPE_COLOR[it.type] || 'gray')}</span>
+        <span class="rm-name">${esc(it.t)}</span>
+        <span class="rm-area">${esc(it.area)}</span>
+      </div>`).join('');
+    const chips = ROADMAP_AREAS.map((a) => `<span class="rm-chip">${esc(a)}</span>`).join('');
+    const pop = el('div', 'popup rm-popup');
+    pop.innerHTML = popupShell({ icon: I.horseshoe, title: 'Coming in 2026', tag: 'Roadmap · what we’re wrangling', bodyClass: 'rm-body', body: `
+        <p class="rm-intro">${ROADMAP_ITEMS.length} on the docket — ${esc(tally)}. The gauges up top light up once the metrics engine lands.</p>
+        <div class="rm-list">${rows}</div>
+        <div class="rm-stitch" aria-hidden="true"></div>
+        <div class="rm-terr-h">The whole territory — ${ROADMAP_AREAS.length} areas under the saddle</div>
+        <div class="rm-chips">${chips}</div>
+        <p class="rm-foot">Got an idea for the list? Tap <strong>🤠 Report</strong> on any card and tell Mr. Wrangler.</p>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'feedback') {
     const ctx = feedbackContext();
@@ -8460,7 +9434,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     const railTabs = `<div class="ag-tabs" role="tablist">
       <button type="button" class="ag-tab js-nc-tab${tab === 'account' ? ' on' : ''}" data-tab="account">Account</button>
       ${cards.map((k) => `<button type="button" class="ag-tab js-nc-tab${tab === k.id ? ' on' : ''}" data-tab="${esc(k.id)}"><span class="ag-dot ${{ complete: 'ok', 'in-progress': 'mid', stale: 'bad' }[cardCaptureState(custRec, k)]}"></span>${esc(brandName(k.brand))} ••${esc(k.last4)}</button>`).join('')}
-      ${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: o.editId || '' } })}
+      ${canMoney() ? addBtn('Card', { link: true, js: 'js-add-card', data: { rec: o.editId || '' } }) : ''}
     </div>`;
     const headRail = `${railTabs}<span class="spacer"></span>${isEdit ? `<button class="iconbtn iconbtn-bare js-nc-qr" data-tip="Open on phone">${I.qr}</button>` : ''}`;
     let body;
@@ -8475,10 +9449,11 @@ function buildPopupEl(o, overlay, opts = {}) {
           <label class="nc-field"><span>Phone *</span><input class="nc-in" data-f="phone" value="${esc(d.phone)}" autocomplete="off" /></label>
           <label class="nc-field"><span>Email</span><input class="nc-in" data-f="email" type="email" value="${esc(d.email)}" autocomplete="off" /></label>
           <label class="nc-field"><span>Industry</span><input class="nc-in" data-f="industry" list="nc-industries" value="${esc(d.industry)}" autocomplete="off" /></label>
-          <div class="nc-field"><span>Notes · PO</span>
+          <div class="nc-field"><span>Notes · PO · Protection</span>
             <div class="nc-notes-po">
               <input class="nc-in" data-f="accountNotes" value="${esc(d.accountNotes)}" autocomplete="off" placeholder="Notes" />
               ${(() => { const set = d.requiresPO === true || d.requiresPO === false; return `<button type="button" class="nc-po js-nc-po${d.requiresPO === true ? ' on' : ''}${set ? '' : ' req'}" aria-pressed="${d.requiresPO === true ? 'true' : 'false'}" data-tip="${set ? (d.requiresPO ? 'PO required before invoicing' : 'No PO required') : 'Answer required before saving — does this account need a PO?'}">PO ${set ? (d.requiresPO ? 'Yes' : 'No') : '?'}</button>`; })()}
+              ${(() => { const set = d.rentalProtection === true || d.rentalProtection === false; return `<button type="button" class="nc-po js-nc-rp${d.rentalProtection === true ? ' on' : ''}${set ? '' : ' req'}" aria-pressed="${d.rentalProtection === true ? 'true' : 'false'}" data-tip="${set ? (d.rentalProtection ? 'Rental Protection on — +' + (membershipPricing().protectionPct) + '% on every rental, covers damages to the monthly cap' : 'No Rental Protection — every rental shows the not-enabled reminder') : 'Answer required before saving — does this account carry Rental Protection?'}">PROT ${set ? (d.rentalProtection ? 'Yes' : 'No') : '?'}</button>`; })()}
             </div>
           </div>
           <div class="nc-field nc-wide"><span>Account type</span><div class="nc-pills">${acctPills}</div></div>
@@ -8555,8 +9530,12 @@ function buildPopupEl(o, overlay, opts = {}) {
     const u = IDX.unit.get(o.unitId); const cfg = u && checklistFor(u); const n = IDX.insp.get(o.inspId);
     if (!u || !cfg || !n) { return false; }
     n.items = n.items || {};
+    const evOf = (it) => (n.itemEvidence && n.itemEvidence[it.id]) || [];
     const items = cfg.items || [];
-    const done = items.filter((it) => !inspItemUnanswered(it, n.items[it.id])).length; const allDone = done === items.length;
+    const itemSatisfied = (it) => !inspItemUnanswered(it, n.items[it.id]) && !inspEvidenceMissing(it, n.items[it.id], evOf(it));
+    const done = items.filter(itemSatisfied).length;
+    const walk = cfg.walkaround || 'off'; const walkArr = n.evidence || []; const walkNeed = walk === 'required' && !walkArr.length;
+    const allDone = done === items.length && !walkNeed;
     const cat = IDX.category.get(u.categoryId) || {};
     const itemRows = items.map((it) => {
       const t = inspItemType(it);
@@ -8579,7 +9558,15 @@ function buildPopupEl(o, overlay, opts = {}) {
       } else {
         ctrl = segCtl([{ label: '✓ Pass', js: 'js-ck-item', data: { id: it.id, val: 'Pass' }, on: val === 'Pass' ? 'green' : null }, { label: '✕ Fail', js: 'js-ck-item', data: { id: it.id, val: 'Fail' }, on: val === 'Fail' ? 'red' : null }]);
       }
-      return `<div class="ck-row"><span class="ck-label">${esc(it.label)}</span>${ctrl}</div>`;
+      let evHtml = '';
+      const evPolicy = it.evidence || 'none';
+      if (evPolicy !== 'none' && t !== 'file') {
+        const evs = evOf(it);
+        const need = inspEvidenceMissing(it, val, evs);
+        const thumbs = evs.map((ev, i) => `<span class="ck-evthumb"><img src="${esc(ev.url)}" alt="evidence"><button class="ck-evrm js-ck-evrm" data-id="${esc(it.id)}" data-i="${i}" aria-label="Remove photo">${I.x}</button></span>`).join('');
+        evHtml = `<div class="ck-evrow${need ? ' req' : ''}">${thumbs}<label class="ck-evadd${need ? ' req' : ''}">${I.camera}<span>${evs.length ? 'Add' : (need ? 'Photo required' : 'Add photo')}</span><input type="file" accept="image/*" class="js-ck-evid" data-id="${esc(it.id)}" hidden></label></div>`;
+      }
+      return `<div class="ck-row"><span class="ck-label">${esc(it.label)}</span>${ctrl}</div>${evHtml}`;
     }).join('');
     const pop = el('div', 'popup board-popup ck-popup');
     pop.innerHTML = `
@@ -8589,7 +9576,7 @@ function buildPopupEl(o, overlay, opts = {}) {
         <span class="spacer"></span>
         <button class="x js-ck-pending" aria-label="Keep as pending">${I.x}</button>
       </div>
-      <div class="popup-body ck-body">${itemRows}</div>
+      <div class="popup-body ck-body">${walk !== 'off' ? `<div class="ck-walk${walkNeed ? ' req' : ''}"><span class="ck-walk-lbl">${I.video} Walkaround${walk === 'required' ? ' · required' : ''}</span><div class="ck-evrow${walkNeed ? ' req' : ''}">${walkArr.map((ev, i) => `<span class="ck-evthumb">${ev.kind === 'video' ? `<video src="${esc(ev.url)}"></video>` : `<img src="${esc(ev.url)}" alt="walkaround">`}<button class="ck-evrm js-ck-walkrm" data-i="${i}" aria-label="Remove">${I.x}</button></span>`).join('')}<label class="ck-evadd${walkNeed ? ' req' : ''}">${I.camera}<span>${walkArr.length ? 'Add' : 'Add photo / video'}</span><input type="file" accept="image/*,video/*" class="js-ck-walk" hidden></label></div></div>` : ''}${itemRows}</div>
       <div class="popup-foot"><button class="pill ghost js-ck-pending" data-r="R18">Keep as pending</button><button class="pill ignition js-ck-complete${allDone ? '' : ' is-disabled'}" data-r="R17">Complete inspection</button></div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'inspection') {
@@ -8776,7 +9763,7 @@ function buildPopupEl(o, overlay, opts = {}) {
   return true;
 }
 const openOverlay = (o) => { state.datepick = null; _ovScroll[o.kind] = 0; state.overlay = o; renderOverlay(); };   // fresh open starts at top
-/* ════════════ RB-WINDOWS catalog (Jac 2026-06-22) — the admin Rulebook's index of
+/* ════════════ APP-27 · RB-WINDOWS catalog (Jac 2026-06-22) — the admin Rulebook's index of
    EVERY popup window. One entry per renderOverlay kind so the "Windows" tab can list
    it and (on expand) show an inert live preview via buildPopupEl. sample() returns
    representative args from the demo seed (DATA.*); a kind whose record we don't have
@@ -8796,12 +9783,13 @@ const WINDOW_CATALOG = [
   { kind: 'requests',      label: 'Requests inbox',          tag: 'Mr. Wrangler · approvals',  sample: () => ({}) },
   { kind: 'notifications', label: 'Notifications',           tag: 'Mr. Wrangler · resolved',   sample: () => ({}) },
   { kind: 'hotkeys',       label: 'Mouse shortcuts',         tag: 'Operator · controls',       sample: () => ({}) },
+  { kind: 'roadmap',       label: 'Coming in 2026',          tag: 'Roadmap · the docket',      sample: () => ({}) },
   { kind: 'feedback',      label: 'Report a bug or request', tag: 'Mr. Wrangler · report',     sample: () => ({}) },
   { kind: 'board',         label: 'Back-office board',       tag: 'Back office · records',     sample: () => ({ board: (BACKOFFICE_BOARDS[0] || {}).id }) },
   { kind: 'boardview',     label: 'Board View',              tag: 'Card · board view',         sample: () => ({ card: 'units', query: '', sort: {}, calc: {}, colOrder: null, extraRows: [], cellData: {}, seq: 0 }) },
   { kind: 'tools',         label: 'Tools tray',              tag: 'Yard · toolbox',            sample: () => ({}) },
   { kind: 'settings',      label: 'Settings',                tag: 'Admin · settings',          sample: () => ({}) },
-  { kind: 'newCustomer',   label: 'New / Edit Customer',     tag: 'Customer · account',        sample: () => ({ editId: null, draft: { firstName: '', lastName: '', company: '', phone: '', email: '', industry: '', accountType: 'Non-Business', requiresPO: undefined, accountNotes: '', idNumber: '', netDays: '', custom: {} } }) },
+  { kind: 'newCustomer',   label: 'New / Edit Customer',     tag: 'Customer · account',        sample: () => ({ editId: null, draft: { firstName: '', lastName: '', company: '', phone: '', email: '', industry: '', accountType: 'Non-Business', requiresPO: undefined, rentalProtection: undefined, accountNotes: '', idNumber: '', netDays: '', custom: {} } }) },
   { kind: 'agreement',     label: 'Signed agreement',        tag: 'Customer · agreement',      sample: () => ({ recId: ((DATA.customers || [])[0] || {}).customerId }) },
   { kind: 'checklist',     label: 'Inspection checklist',    tag: 'Inspection · checklist',    sample: () => ({ unitId: ((DATA.units || [])[0] || {}).unitId, inspId: ((DATA.inspections || [])[0] || {}).inspectionId }) },
   { kind: 'inspection',    label: 'Failure report',          tag: 'Inspection · failure',      sample: () => ({ recId: ((DATA.inspections || [])[0] || {}).inspectionId }) },
@@ -8812,6 +9800,7 @@ const WINDOW_CATALOG = [
   { kind: 'addAch',        label: 'Add bank account',        tag: 'Customer · ACH bank',       sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
   { kind: 'verifyAch',     label: 'Verify ACH',              tag: 'Customer · verify ACH',     sample: () => { const c = (DATA.customers || []).find((x) => (x.achAccounts || []).length); return c ? { customerId: c.customerId, bankId: c.achAccounts[0].id } : {}; } },
   { kind: 'payment',       label: 'Take Payment',            tag: 'Invoice · payment',         sample: () => ({ invoiceId: ((DATA.invoices || [])[0] || {}).invoiceId }) },
+  { kind: 'membershipEnroll', label: 'Membership Enrollment', tag: 'Customer · enroll',         sample: () => ({ custId: ((DATA.customers || [])[0] || {}).customerId, plan: 'Monthly', addOns: { transport: false, protection: false }, autoRenew: false, startDate: TODAY_ISO, busy: false, error: '' }) },
 ];
 /* Build an INERT preview popup for a catalog kind (or null if a record guard trips
    or it throws). Reuses buildPopupEl with {preview:true} — the REAL popup — into a
@@ -8870,7 +9859,7 @@ async function sendFeedback() {
   } catch (e) { o.busy = false; o.error = 'Couldn’t send — check your connection and try again.'; renderOverlay(); }
 }
 /* ════════════════════════════════════════════════════════════════════════
-   §18 MR. WRANGLER — the in-app AI (Claude via the Apps Script backend).
+   APP-28 · §18 MR. WRANGLER — the in-app AI (Claude via the Apps Script backend).
    The API key NEVER touches this public repo: the frontend POSTs to BACKEND_URL
    (action 'wrangler'); Code.gs calls api.anthropic.com with the key from a Script
    Property. Carries a compact data digest + (when opened from a record) its detail.
@@ -9006,6 +9995,26 @@ function wranglerImageBlock(dataUrl) {
   const m = /^data:(image\/[a-z.+-]+);base64,(.*)$/i.exec(dataUrl || '');
   return m ? { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } } : null;
 }
+// Map a backend/Anthropic failure to a message that names the REAL cause, instead of
+// always blaming "the connection". The backend hands back the raw Anthropic error string
+// (e.g. the billing message) via r.error; a network failure throws before that. Without
+// this, an out-of-credits API key reads identically to a dead Wi-Fi — which sent us
+// hunting a phantom "connection" bug when the fix was just topping up Anthropic credits.
+function wranglerErrMsg(reason) {
+  const r = String(reason || '').toLowerCase();
+  if (/credit balance is too low|insufficient.*credit|too low to access|plans & billing|quota|billing/.test(r))
+    return "Mr. Wrangler's out of API credits — the Anthropic account needs a top-up before he can answer.";
+  if (/invalid x-api-key|authentication|api key|http-401|\b401\b|permission/.test(r))
+    return "Mr. Wrangler's API key was refused — the backend ANTHROPIC_API_KEY needs a look.";
+  if (/rate.?limit|http-429|\b429\b|overloaded|\b529\b/.test(r))
+    return "Mr. Wrangler's getting rate-limited — give him a few seconds and ask again.";
+  if (/not_found|model|http-404|\b404\b/.test(r))
+    return "Mr. Wrangler's model isn't answering — the backend model setting may be out of date.";
+  if (/bad-json|http-5\d\d|\b50[0-9]\b|\b53[0-9]\b|internal|timeout|timed out/.test(r))
+    return "Couldn't reach Mr. Wrangler's backend — give it a moment and try again.";
+  // genuine network/fetch failure (or unknown) → the original honest fallback
+  return "Mr. Wrangler couldn't answer — check the connection / backend.";
+}
 async function wranglerSend() {
   const o = state.wrangler; if (!o.open) return;
   const inp = document.querySelector('.wrangler-dock .js-wr-in');
@@ -9069,7 +10078,7 @@ async function wranglerSend() {
       o.messages.push({ role: 'assistant', content: "🤠 Demo mode — sign in to ask the real Mr. Wrangler (the live AI runs through the backend). Here's the snapshot I'd reason over:\n\n" + wranglerDigest() });
     }
     if (state.wrangler.id === replyChatId) { o.busy = false; render(); setTimeout(() => { const f = document.querySelector('.wrangler-dock .wr-feed'); if (f) f.scrollTop = f.scrollHeight; }, 0); } else render();   // only clear/scroll the dock if it's still THIS chat
-  } catch (e) { if (state.wrangler.id === replyChatId) { o.busy = false; o.error = "Mr. Wrangler couldn't answer — check the connection / backend."; render(); } }
+  } catch (e) { if (state.wrangler.id === replyChatId) { o.busy = false; o.error = wranglerErrMsg(e && e.message); render(); } }
 }
 // §18d "Send to the fixer" — turn the current Wrangler chat into a `wrangler-fix`
 // GitHub issue (the Track B repro packet). Carries the transcript, the view/role/
@@ -9114,7 +10123,7 @@ const stripWranglerAction = (text) => String(text || '')
   .replace(/```wrangler-action\s*[\s\S]*$/, '')   // #152 also drop a truncated, unclosed fence
   .trim();
 
-/* ════════════ Mr. Wrangler ACTS on your data (Jac 2026-06-16) ════════════════
+/* ════════════ APP-29 · Mr. Wrangler ACTS on your data (Jac 2026-06-16) ════════════════
    add / update / bulk-import items — NEVER delete, NEVER money/card/auth/WO. Only
    safe, allowlisted fields. Every op previews in the chat before it writes. */
 const WR_FUNNEL = ['Inbound Lead', 'Outbound Lead', "Don't Contact", 'Contacted', 'Not A No!', 'Payment Discussed', 'Paid'];
@@ -9236,7 +10245,7 @@ function wrPlanSummary(plan) {
 }
 function wrCreateCustomer(f) {
   const id = nextCustomerId();
-  const c = { customerId: id, firstName: f.firstName || '', lastName: f.lastName || '', name: `${f.firstName || ''} ${f.lastName || ''}`.trim() || (f.company || 'New lead'), company: f.company || '', phone: f.phone || '', email: f.email || '', address: f.address || '', industry: f.industry || '', accountType: f.accountType || 'Non-Business', payStatus: 'New Customer', requiresPO: false, accountNotes: f.accountNotes || '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], activityLog: [], usedSalesStage: f.usedSalesStage || 'Inbound Lead', membershipStage: f.membershipStage || 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName: f.firstName || '', lastName: f.lastName || '', name: `${f.firstName || ''} ${f.lastName || ''}`.trim() || (f.company || 'New lead'), company: f.company || '', phone: f.phone || '', email: f.email || '', address: f.address || '', industry: f.industry || '', accountType: f.accountType || 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: f.accountNotes || '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], activityLog: [], usedSalesStage: f.usedSalesStage || 'Inbound Lead', membershipStage: f.membershipStage || 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c); logAction(c, 'Added by Mr. Wrangler');
   return c;
 }
@@ -9339,7 +10348,7 @@ async function wranglerFileAction(mi) {
    engine builds + ships it. Owner/Admin only acts; everyone can see what's pending. */
 let wranglerRequests = [];
 let reqLoaded = false, reqLoading = false;
-const canApproveRequests = () => currentRole === 'Owner' || currentRole === 'Admin';
+const canApproveRequests = () => roleTier(currentRole) >= tierRank('manager');
 async function refreshWranglerRequests() {
   if (typeof backendPassword === 'undefined' || !backendPassword || reqLoading) return;   // demo/offline → no inbox
   reqLoading = true;
@@ -9364,9 +10373,21 @@ function wranglerClearNeedsAnswer(n) {
 let wranglerNotifs = [];
 let notifLoaded = false, notifLoading = false;
 const NOTIF_SEEN_KEY = 'jactec.notifsSeen';
+const NOTIF_DISMISS_KEY = 'jactec.notifsDismissed';   // §246 — issue #s the operator cleared from the feed (persists across refreshes)
+const NOTIF_MUTE_KEY = 'jactec.notifsMuted';           // §246 — silence the unseen badge entirely
 const notifsSeenMax = () => { try { return Number(localStorage.getItem(NOTIF_SEEN_KEY)) || 0; } catch (e) { return 0; } };
-const unseenNotifs = () => { const s = notifsSeenMax(); return wranglerNotifs.filter((n) => (n.number || 0) > s).length; };
+const loadDismissedNotifs = () => { try { return new Set(JSON.parse(localStorage.getItem(NOTIF_DISMISS_KEY) || '[]')); } catch (e) { return new Set(); } };
+const saveDismissedNotifs = (set) => { try { localStorage.setItem(NOTIF_DISMISS_KEY, JSON.stringify([...set])); } catch (e) {} };
+const notifsMuted = () => { try { return localStorage.getItem(NOTIF_MUTE_KEY) === '1'; } catch (e) { return false; } };
+const setNotifsMuted = (on) => { try { localStorage.setItem(NOTIF_MUTE_KEY, on ? '1' : '0'); } catch (e) {} };
+// §246 — what actually shows in the bell: resolved fixes the operator hasn't dismissed.
+const visibleNotifs = () => { const d = loadDismissedNotifs(); return wranglerNotifs.filter((n) => !d.has(n.number)); };
+const unseenNotifs = () => { if (notifsMuted()) return 0; const s = notifsSeenMax(); return visibleNotifs().filter((n) => (n.number || 0) > s).length; };
 function markNotifsSeen() { const mx = wranglerNotifs.reduce((a, n) => Math.max(a, n.number || 0), notifsSeenMax()); try { localStorage.setItem(NOTIF_SEEN_KEY, String(mx)); } catch (e) {} }
+// §246 — clear one / all resolved notifications from the feed; the badge + list follow.
+function dismissNotif(num) { const s = loadDismissedNotifs(); s.add(num); saveDismissedNotifs(s); render(); if (state.overlay?.kind === 'notifications') renderOverlay(); }
+function dismissAllNotifs() { const s = loadDismissedNotifs(); wranglerNotifs.forEach((n) => s.add(n.number)); saveDismissedNotifs(s); render(); if (state.overlay?.kind === 'notifications') renderOverlay(); }
+function toggleNotifsMuted() { setNotifsMuted(!notifsMuted()); render(); if (state.overlay?.kind === 'notifications') renderOverlay(); }
 async function refreshWranglerNotifications() {
   if (typeof backendPassword === 'undefined' || !backendPassword || notifLoading) return;   // demo/offline → no feed
   notifLoading = true;
@@ -9601,7 +10622,7 @@ const BOARD_DEF = {
   },
   files: {
     cols: ['Title', 'Type', 'Group', 'Review-By'],
-    row: (f) => [f.link ? linkName(f.name, { js: 'js-open-link', data: { url: f.link } }) : esc(f.name), statusPill('companyFileType', f.type), esc(f.group || '—'), f.reviewByDate ? esc(fmtShortDate(f.reviewByDate)) + (reviewState(f.reviewByDate) ? ' ' + reviewState(f.reviewByDate) : '') : '—'],
+    row: (f) => [f.link ? linkName(f.name, { js: 'js-open-link', data: { url: /^https?:\/\//i.test(f.link) ? f.link : 'https://' + f.link } }) : esc(f.name), statusPill('companyFileType', f.type), esc(f.group || '—'), f.reviewByDate ? esc(fmtShortDate(f.reviewByDate)) + (reviewState(f.reviewByDate) ? ' ' + reviewState(f.reviewByDate) : '') : '—'],
   },
 };
 function boardTable(boardId, query) {
@@ -9757,16 +10778,6 @@ function boardViewTable(o, session) {
   const hint = hasExtra ? `<div class="bv-fieldhint"><b>Fields:</b> ${cols.map((c) => esc(c.key)).join(', ')} &nbsp;·&nbsp; <b>functions:</b> sum() avg() min() max() count() &nbsp;·&nbsp; e.g. <code>=price*0.9</code> · <code>=total-paid</code> · <code>=hours/count(name)</code></div>` : '';
   return hint + `<table class="board-table bv-table"><thead>${head}</thead><tbody>${body}</tbody><tfoot>${summary}</tfoot></table>`;
 }
-/** Seed a Board View from a card's current sort + search, then open the popup. */
-function openBoardView(card) {
-  const session = activeSession();
-  const cs = session.cards[card] || {};
-  const cols = cardColumns(card, session);
-  const seedField = cs.sort?.field;
-  const sortCol = cols.find((c) => c.sortField === seedField || c.key === seedField) || cols[0];
-  const query = (state.searchMode && state.query) ? state.query : (cs.search || '');
-  openOverlay({ kind: 'boardview', card, query, sort: { key: sortCol?.key, dir: cs.sort?.dir || 'asc' }, calc: {}, colOrder: null, extraRows: [], cellData: {}, seq: 0 });
-}
 /** The "List rows" customiser inside Board View: choose which registry columns
  *  appear in List-View row 1 (details) vs row 2 (badges). Saved per device. */
 function bvCustomizePanel(card) {
@@ -9786,7 +10797,7 @@ function bvCustomizePanel(card) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §13 DROPDOWNS — openDropdown + status/fleet/funnel/sort menus
+   APP-30 · §13 DROPDOWNS — openDropdown + status/fleet/funnel/sort menus
    ════════════════════════════════════════════════════════════════════════ */
 /** Shared floating dropdown (matches board chrome) — used by the status pill
  *  dropdown and the in-card Sort menu. */
@@ -9830,9 +10841,11 @@ const GATE_TL = {
 const GTCHK = GTI('<path d="M5 12.5l4 4 10-11"/>');
 /** Build the gate-timeline dropdown body. `mk(value, inner, stateCls)` wraps each row
  *  into the selecting button (each gate supplies its own js-class + data-attrs). */
-function gateTimeline(set, current, title, mk) {
+function gateTimeline(set, current, title, mk, opts = {}) {
   const cfg = GATE_TL[set]; if (!cfg) return '';
-  const { order, off } = cfg;
+  const order = opts.order || cfg.order;        // F3: per-funnel order override (membership ends in 'Signed')
+  const off = cfg.off;
+  const lock = opts.lock || new Set();          // F3: values rendered display-only (not a settable button)
   const ai = order.indexOf(current);            // active row index (display order)
   const curOff = off.has(current);
   const rows = order.map((v, i) => {
@@ -9848,7 +10861,7 @@ function gateTimeline(set, current, title, mk) {
     }
     const chk = st === 'd' ? `<i class="gt-chk">${GTCHK}</i>` : '';
     const inner = `${conn}<span class="gt-node">${GATE_ICON[v] || I.circle}</span><span class="gt-lbl">${chk}${esc(getStatus(set, v).label)}</span>`;
-    return mk(v, inner, 'gt-' + st);
+    return lock.has(v) ? `<div class="gt-row gt-${st} gt-lock">${inner}</div>` : mk(v, inner, 'gt-' + st);   // F3: locked stage is display-only (auto-set, not manually settable)
   }).join('');
   return `<span class="gt-haz"></span><div class="gt-cap">${esc(title)}</div><div class="gt-body">${rows}</div>`;
 }
@@ -9927,17 +10940,22 @@ function setExpenseReconcile(expenseId, val) {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render(); renderOverlay();
 }
+// F3: the membership funnel ends in 'Signed' (auto-set by signing the agreement) instead
+// of 'Paid'; 'Signed' is shown in the timeline but locked — never a manual choice.
+const MEMBERSHIP_FUNNEL_ORDER = ['N/A', 'Inbound Lead', 'Outbound Lead', "Don't Contact", 'Contacted', 'Not A No!', 'Payment Discussed', 'Signed'];
 function openFunnelDropdown(custId, which, anchorEl) {
   const cust = IDX.customer.get(custId);
   const cur = which === 'membership' ? cust?.membershipStage : cust?.usedSalesStage;
   const title = which === 'membership' ? 'Membership funnel' : 'Used sales funnel';
-  const html = gateTimeline('funnelStage', cur || 'N/A', title, (v, inner, sc) =>
-    `<button class="gt-row ${sc} js-setfunnel" data-rec="${esc(custId)}" data-which="${which}" data-val="${esc(v)}">${inner}</button>`);
+  const mk = (v, inner, sc) => `<button class="gt-row ${sc} js-setfunnel" data-rec="${esc(custId)}" data-which="${which}" data-val="${esc(v)}">${inner}</button>`;
+  const opts = which === 'membership' ? { order: MEMBERSHIP_FUNNEL_ORDER, lock: new Set(['Signed']) } : {};
+  const html = gateTimeline('funnelStage', cur || 'N/A', title, mk, opts);
   openDropdown(anchorEl, html, { cls: 'gt' });
 }
 function setFunnelStage(custId, which, val) {
   const c = IDX.customer.get(custId);
   if (!c) return;
+  if (which === 'membership' && (val === 'Signed' || val === 'Paid')) return;   // F3: membership terminal is auto-set by signing the agreement, never manual
   const field = which === 'membership' ? 'membershipStage' : 'usedSalesStage';
   if (c[field] !== val) { c[field] = val; logAction(c, `${which === 'membership' ? 'Membership' : 'Sales'} stage → ${getStatus('funnelStage', val).label}`); }   // audit: funnel moves were unlogged (Jac, Phase 7)
   reindex('customers', c);
@@ -10032,6 +11050,11 @@ function openViewMenu(card, anchorEl) {
   }
   html += `<div class="dd-sec">Sort</div>`;
   html += SORT_FIELDS[card].map((f) => `<button class="dd-item js-sortfield${f.field === cs.sort.field ? ' on' : ''}" data-card="${card}" data-field="${f.field}">${esc(f.label)}<span class="tick">✓</span></button>`).join('');
+  if (card === 'invoices') {   // §337 — payment-method filter, stacks with the sort/search above
+    const cur = cs.payMethod || 'all';
+    html += `<div class="dd-sec">Payment Method</div>`;
+    html += INV_METHOD_OPTS.map(([val, lbl]) => `<button class="dd-item js-paymethod${val === cur ? ' on' : ''}" data-method="${val}">${esc(lbl)}<span class="tick">✓</span></button>`).join('');
+  }
   openDropdown(anchorEl, html, { align: 'right' });
 }
 /** Clicked card → orange border (§0.1 visual feedback; not an anchor). */
@@ -10044,7 +11067,7 @@ function setFocusedCard(cardId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §14 RENDER PIPELINE + toast
+   APP-31 · §14 RENDER PIPELINE + toast
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
 const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list vs which record)
@@ -10082,6 +11105,15 @@ function render() {
     // no listbar, so the slot stays empty (CSS hides it).
     const lb = grid.querySelector('.listbar');
     if (lb) dock.querySelector('.mdock-searchslot').appendChild(lb);
+    else {   // §M — Standard (record) view has no listbar; keep the Back/Fwd jog in the SAME
+      // bottom-dock spot List view uses, instead of letting it sit up in the card header.
+      const cardNode = grid.querySelector('.card[data-card]');
+      const dc = cardNode && cardNode.dataset.card, cs = dc && activeSession().cards[dc];
+      if (cs && cs.mode === 'standard') {
+        const jog = cardJog(dc, cs);
+        if (jog) { const bar = el('div', 'listbar mdock-jogbar'); bar.innerHTML = jog; dock.querySelector('.mdock-searchslot').appendChild(bar); }
+      }
+    }
   }
   // restore scroll by VIEW: same view → keep your spot; back to a list → return to the
   // row you left; opened a record → top of Standard view (a targeted link scrolls itself after).
@@ -10092,17 +11124,8 @@ function render() {
     else b.scrollTop = 0;
   });
   document.documentElement.setAttribute('data-theme', state.theme);
-  // the rental-window picker floats above the grid, anchored to its trigger (§12.2);
-  // on phones it becomes a bottom sheet (§M3) with a tap-to-close backdrop instead.
-  if (state.winpicker) {
-    const wr = IDX.rental.get(state.winpicker.rentalId);
-    if (wr) {
-      const phone = document.body.classList.contains('is-phone');
-      if (phone) { const bd = el('div', 'sheet-backdrop'); bd.dataset.sheetclose = 'win'; $('#app').appendChild(bd); }
-      const fl = el('div', 'winpicker-float'); fl.innerHTML = winPickerEl(wr); $('#app').appendChild(fl);
-      if (!phone) positionWinPicker(fl);   // phone: CSS pins it to the bottom edge, so skip the JS anchor
-    } else state.winpicker = null;
-  }
+  // §inline — the rental-window calendar is rendered INLINE in the rental detail
+  // (popup retired, Jac 2026-06-25); no float here anymore.
   // §5.4d — the standalone date-search picker floats under the search bar (phone: bottom sheet)
   if (state.datesearch) {
     const phone = document.body.classList.contains('is-phone');
@@ -10111,7 +11134,7 @@ function render() {
     if (!phone) positionDateSearch(fl);
   }
   // §M3 — lock the column scroll behind any open sheet/overlay/dock on phones
-  document.body.classList.toggle('sheet-open', !!(state.overlay || state.winpicker || state.datesearch || state.chat.open || state.wrangler.open));
+  document.body.classList.toggle('sheet-open', !!(state.overlay || state.datesearch || state.chat.open || state.wrangler.open));
   syncBackGuard();   // §M3 — keep the Android back-button guard in step with what's open
   // §17 — the internal team dock floats bottom-right above the bar when open
   if (state.chat.open) { const d = el('div', 'chat-dock', ''); d.dataset.drop = 'chat'; d.innerHTML = chatDockEl(); $('#app').appendChild(d); }
@@ -10125,7 +11148,7 @@ function render() {
   applyTitles();   // full text on hover wherever we truncate (custom ~0.5s tooltip)
   drawDispatchArrows();   // §2.3 — paint free-form route legs over the dispatch run (needs live geometry)
   scoreTick();     // §11 gamification — pop +X over any ring whose metric just rose
-  if (DRAG.active) reapplyDragDecor();   // §15c — re-stamp drop targets after ANY mid-drag rebuild (the card swap IS a render)
+  if (DRAG.active) { reapplyDragDecor(); buildZipZones(); }   // §15c — re-stamp drop targets + rebuild the §M2 zip rails after ANY mid-drag rebuild (the card swap IS a render)
   const dt = performance.now() - t0;
   renderCount++;
   if (dt > CFG.PERF_BUDGET_MS) console.warn(`[perf] render ${renderCount} took ${dt.toFixed(1)}ms (budget ${CFG.PERF_BUDGET_MS}ms)`);
@@ -10169,11 +11192,11 @@ function toast(msg) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §15 EVENT HANDLERS — onClick/onInput/onChange (single listener tree)
+   APP-32 · §15 EVENT HANDLERS — onClick/onInput/onChange (single listener tree)
    ⚠ §16 ACTIONS/MUTATIONS interleave from here to §17 — see the SPEC v8 map
    ════════════════════════════════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════════
-   §15c DRAG & DROP LINK ENGINE (DRAGDROP-DESIGN.md) — custom pointer engine.
+   APP-33 · §15c DRAG & DROP LINK ENGINE (DRAGDROP-DESIGN.md) — custom pointer engine.
    Native HTML5 DnD rejected: the mid-drag column swap re-renders the source
    row, which silently kills native drags (and draggable breaks inline-edit).
    Everything drag-critical (ghost chip + cancel arc) lives in #drag-layer on
@@ -10182,11 +11205,11 @@ function toast(msg) {
    Drops dispatch into the EXISTING §16 mutations — no money/safety logic here.
    Wave 2: pick mode is GONE — drag (+ customer quick-add-link) IS the link path.
    ════════════════════════════════════════════════════════════════════════ */
-const DRAG = { active: false, armed: null, payload: null, point: { x: 0, y: 0 }, ghost: null, suppressClick: false, raf: null, hot: null };
+const DRAG = { active: false, armed: null, payload: null, point: { x: 0, y: 0 }, ghost: null, suppressClick: false, raf: null, hot: null, zipHot: null };
 // units/rentals/customers/invoices link via DROP_MATRIX; categories + serviceOrders are
 // drag sources ONLY for chat-tagging (they're not in DROP_MATRIX, so no record links). §17
 const DRAG_SOURCES = new Set(['units', 'rentals', 'customers', 'invoices', 'categories', 'serviceOrders']);
-let dragLayer = null, dragArc = null, chatDropPad = null, dragEdgeDwell = null;
+let dragLayer = null, dragArc = null, chatDropPad = null, zipZones = null, zipDwell = null, zipCooldown = false;
 
 /* DROP_MATRIX — payload entity → { target entity: validator(srcRec, tgtRec) }.
    Validators are the cheap VISUAL gate (which rows/cards glow .drop-ok); the
@@ -10255,6 +11278,10 @@ function initDrag() {
   // spin up a brand-new chat seeded with that thing.
   chatDropPad = el('div', 'chat-drop', '<div class="cd-inner"><svg class="cd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg><span class="cd-label">Drop to start a chat</span></div>');
   dragLayer.appendChild(chatDropPad);
+  // §M2 — phone "zip zones": edge rails of valid drop-target cards. Dragging onto one
+  // jumps to that card's column mid-drag (drag stays live), then you drop on the row.
+  zipZones = el('div'); zipZones.id = 'zip-zones';
+  dragLayer.appendChild(zipZones);
   document.body.appendChild(dragLayer);
   document.addEventListener('pointerdown', dragDown);
   document.addEventListener('pointermove', dragMove);
@@ -10287,12 +11314,12 @@ function initDrag() {
 // move lifts a drag. A quick horizontal flick (before this fires) is a Back/Forward swipe
 // instead (see the grid swipe tracker in boot). Frees the horizontal axis for navigation.
 function armReadyTimer(arm) { return setTimeout(() => { if (DRAG.armed === arm) arm.ready = true; }, 300); }
-function armMenuTimer(arm) {   // §M3 — touch hold-still opens the context menu (not a drag)
+function armMenuTimer(arm) {   // §M3 — hold-still opens the context menu: touch long-press OR mouse click-and-hold (the right-click equivalent)
   return setTimeout(() => {
     if (DRAG.armed !== arm) return;
     const t = document.elementFromPoint(arm.x, arm.y);
     DRAG.armed = null;
-    if (t) { DRAG.suppressClick = true; lastTouchCtx = performance.now(); openCtxMenuAt(t, arm.x, arm.y); }
+    if (t) { DRAG.suppressClick = true; if (arm.touch) lastTouchCtx = performance.now(); openCtxMenuAt(t, arm.x, arm.y); }   // lastTouchCtx guards the trailing native contextmenu — touch only
   }, 500);
 }
 function dragDown(e) {
@@ -10307,7 +11334,8 @@ function dragDown(e) {
   if (chatEl) {
     DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;
     const arm = { chatEl: chatElPayload(chatEl), x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType === 'touch', lp: null, rdy: null, ready: e.pointerType !== 'touch' };
-    if (arm.touch) { arm.lp = armMenuTimer(arm); arm.rdy = armReadyTimer(arm); }
+    arm.lp = armMenuTimer(arm);                          // §M3 — hold still → context menu (mouse + touch)
+    if (arm.touch) arm.rdy = armReadyTimer(arm);         // touch only: a hold must precede a horizontal drag (mouse drags immediately)
     DRAG.armed = arm; return;
   }
   const bail = e.target.closest('.inline-edit, .inline-input, input, textarea, select, button, .x, .pill, .seg, .add-field, .linkname, .flag, .jnode, .dropdown-menu, .overlay, .hover-preview, .winpicker-float, .ctx-menu');
@@ -10318,7 +11346,8 @@ function dragDown(e) {
   if (!src) return;
   DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;                    // seed the ghost/hit-test point — a touch long-press may fire with NO move first
   const armed = { card: src.card, rec: src.rec, x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType === 'touch', lp: null, rdy: null, ready: e.pointerType !== 'touch' };
-  if (armed.touch) { armed.lp = armMenuTimer(armed); armed.rdy = armReadyTimer(armed); }
+  armed.lp = armMenuTimer(armed);                        // §M3 — hold still → context menu (mouse + touch)
+  if (armed.touch) armed.rdy = armReadyTimer(armed);     // touch only: a hold must precede a horizontal drag (mouse drags immediately)
   DRAG.armed = armed;
 }
 /* Resolve what a press grabs, in priority order:
@@ -10326,6 +11355,11 @@ function dragDown(e) {
    2. a list ROW of a draggable entity;
    3. empty space on a STANDARD-view card (Task 2) → that card's open record. */
 function dragSourceAt(target) {
+  const tab = target.closest('.tab[data-tab]');                              // §M2 — an open-record item tab is a draggable record: navigate freely, then carry the tab to the target (no sustained cross-column hold). WO tabs included (DROP_MATRIX gate), so workOrders→invoice works even though WO isn't in DRAG_SOURCES.
+  if (tab) {
+    const t = (state.tabs || []).find((x) => x.id === tab.dataset.tab);
+    if (t) { const ent = entityCardOf(t.card, t.recType); if (DROP_MATRIX[ent]) return { card: ent, rec: t.recId }; }
+  }
   const upill = target.closest('[data-pill-card="units"]');                  // a unit pill drags as that unit → link to a rental (Jac B4)
   if (upill && upill.dataset.pillRec) return { card: 'units', rec: upill.dataset.pillRec };
   const woSect = target.closest('.section[data-wo]');
@@ -10407,6 +11441,7 @@ function startDrag() {
   // links (e.g. customer↔invoice, which share the right column) use the reverse
   // drag direction (the DROP_MATRIX is bidirectional).
   reapplyDragDecor();
+  buildZipZones();   // §M2 — phone edge rails of valid target cards
   dragFrameLoop();
 }
 
@@ -10519,19 +11554,71 @@ function dragFrameLoop() {
   };
   DRAG.raf = requestAnimationFrame(step);
 }
-// §M2 — while dragging on a phone, holding the pointer at the left/right screen edge
-// switches to the adjacent column (one column per dwell), so an item can be carried
-// across columns. The bottom edge is the chat zone (handled by the drop-pad, §17).
+// §M2 ZIP ZONES (phone) — the valid drop-target cards for the dragged item appear as
+// edge rails. Dragging onto a zone jumps to that card's column (drag stays live), then
+// you drop on the exact row. Replaces the old blind 350ms/30px edge-dwell.
+// Hazard-stripe tint per card so you aim by colour (transient drag overlay only — the
+// persistent UI keeps the one-orange rule). No status meaning is encoded here.
+const ZIP_HUE = { units: 'brown', categories: 'brown', rentals: 'blue', invoices: 'green', customers: 'purple', workOrders: 'accent', serviceOrders: 'accent', inspections: 'accent', shop: 'accent' };
+function zipTargetsFor(entity) {
+  const accept = DROP_MATRIX[entity] || {}, s = activeSession();
+  return Object.keys(accept).map((tgt) => {
+    const idx = COLUMNS.findIndex((c) => c.id === COLUMN_OF[tgt]);
+    return { entity: tgt, idx, label: MEMBER_TITLE[tgt] || tgt, icon: CARD_ICON[tgt] || '', hue: ZIP_HUE[tgt] || 'accent' };
+  }).filter((z) => {
+    if (z.idx < 0) return false;
+    const colId = COLUMNS[z.idx].id, cur = (s.cols && s.cols[colId]) || COLUMNS[z.idx].default;
+    const showing = z.idx === state.mobileCol && (cur === z.entity || (SHOP_TYPES.includes(z.entity) && SHOP_TYPES.includes(cur)));
+    return !showing;   // no zone for the card already on screen
+  });
+}
+// (re)build the edge rails for the current drag source + visible column. Phone only.
+function buildZipZones() {
+  if (!zipZones) return;
+  zipZones.innerHTML = ''; DRAG.zipHot = null; zipDwell = null;
+  if (!DRAG.active || !document.body.classList.contains('is-phone')) return;
+  const targets = zipTargetsFor(DRAG.payload.entity);
+  if (!targets.length) return;
+  const railL = el('div', 'zz-rail zz-rail-left'), railR = el('div', 'zz-rail zz-rail-right');
+  targets.forEach((z) => {
+    const left = z.idx < state.mobileCol || (z.idx === state.mobileCol && COLUMNS[z.idx].id === 'left');   // column to the left → left edge; same-column member-switch sits on its home side
+    const b = el('div', `zip-zone zip-${left ? 'left' : 'right'}`);
+    b.dataset.zip = z.entity;
+    b.style.setProperty('--zip-hue', `var(--${z.hue})`);
+    b.innerHTML = `<span class="zz-ico">${z.icon}</span><span class="zz-lbl">${esc(z.label)}</span>`;
+    (left ? railL : railR).appendChild(b);
+  });
+  if (railL.children.length) zipZones.appendChild(railL);
+  if (railR.children.length) zipZones.appendChild(railR);
+}
+// jump the phone to a target card's column (keeping the drag live) so its rows are droppable.
+function zipToCard(entity) {
+  const s = activeSession(), idx = COLUMNS.findIndex((c) => c.id === COLUMN_OF[entity]);
+  if (idx < 0) return;
+  if (s.cols) s.cols[COLUMNS[idx].id] = entity;
+  state.mobileCol = idx;
+  const mc = s.cards[SHOP_TYPES.includes(entity) ? 'shop' : entity];
+  if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; }   // list mode → rows to drop on
+  render();   // §15c hook re-stamps drop decor + rebuilds the zip rails for the new column
+}
 function phoneDragEdge() {
-  const EDGE = 30, DWELL = 350, w = window.innerWidth, x = DRAG.point.x;
-  const side = x <= EDGE ? -1 : x >= w - EDGE ? 1 : 0;
-  if (!side) { dragEdgeDwell = null; return; }
+  if (!zipZones) return;
+  const DWELL = 150;
+  let over = null;
+  for (const z of zipZones.querySelectorAll('.zip-zone')) {
+    const r = z.getBoundingClientRect();
+    if (DRAG.point.x >= r.left && DRAG.point.x <= r.right && DRAG.point.y >= r.top && DRAG.point.y <= r.bottom) { over = z; break; }
+  }
+  if (zipCooldown) { if (!over) zipCooldown = false; if (DRAG.zipHot) { DRAG.zipHot.classList.remove('hot'); DRAG.zipHot = null; } return; }   // after a zip, must leave the edge before another can arm (no accidental chain-zip)
+  if (DRAG.zipHot && DRAG.zipHot !== over) DRAG.zipHot.classList.remove('hot');
+  if (over && DRAG.zipHot !== over) { over.classList.add('hot'); haptic(8); }   // §M-touch — tick when a zip zone arms
+  DRAG.zipHot = over;
+  if (!over) { zipDwell = null; return; }
   const now = performance.now();
-  if (!dragEdgeDwell || dragEdgeDwell.side !== side) { dragEdgeDwell = { side, at: now }; return; }
-  if (now - dragEdgeDwell.at < DWELL) return;
-  const next = Math.max(0, Math.min(2, state.mobileCol + side));
-  dragEdgeDwell.at = now;                                    // re-arm the dwell for a possible further hop
-  if (next !== state.mobileCol) { state.mobileCol = next; render(); }   // render re-stamps drop targets mid-drag (§15c) + restores scroll to the new column
+  if (!zipDwell || zipDwell.el !== over) { zipDwell = { el: over, at: now }; return; }
+  if (now - zipDwell.at < DWELL) return;
+  zipDwell = null; zipCooldown = true;
+  zipToCard(over.dataset.zip);   // render rebuilds the rails; the rAF loop continues for the new context
 }
 
 /* ── release / cancel ───────────────────────────────────────────────────── */
@@ -10553,11 +11640,12 @@ function endDrag({ rerender } = {}) {
   if (DRAG.ghost) DRAG.ghost.remove();
   dragArc.classList.remove('show', 'hot');
   chatDropPad.classList.remove('show', 'hot');
+  if (zipZones) zipZones.innerHTML = '';   // §M2 — tear down the edge rails
   const arcLbl = dragArc.querySelector('.ca-label'); if (arcLbl) arcLbl.textContent = 'Cancel';   // reset copy so the next drag opens idle, not "Release to cancel"
   document.querySelectorAll('.drop-ok, .drop-hot').forEach((n) => n.classList.remove('drop-ok', 'drop-hot'));
   document.body.classList.remove('dragging');
   delete document.body.dataset.drag;
-  DRAG.active = false; DRAG.payload = null; DRAG.ghost = null; DRAG.hot = null; DRAG.armed = null; dragEdgeDwell = null;
+  DRAG.active = false; DRAG.payload = null; DRAG.ghost = null; DRAG.hot = null; DRAG.armed = null; DRAG.zipHot = null; zipDwell = null; zipCooldown = false;
   DRAG.suppressClick = true;   // the trailing click is swallowed once; the NEXT pointerdown clears it (no timer — see dragDown)
   if (rerender) render();
 }
@@ -10692,70 +11780,71 @@ function onClick(e) {
   // picker stays open until true dead space. (Both floats render from state and re-render,
   // and self-hide if their anchor scrolls off; the global search bar lives in `.header` and
   // the per-card search/date chips live in `.card`, so the old datesearch exclusions hold.)
-  if (state.datesearch || state.winpicker) {
-    const onPicker = !!(closest('.winpicker') || closest('.winpicker-float'));
+  // §5.4d — the standalone date-search float still dismisses on a dead-space click.
+  // (The rental-window editor is INLINE now — no click-away dismissal.)
+  if (state.datesearch) {
+    const onPicker = !!closest('.winpicker') || !!closest('.datesearch-float');
     const pickerDeadSpace = !closest('.card') && !closest('.header') && !closest('.bottombar') && !onPicker;
-    if (state.datesearch && pickerDeadSpace) { state.datesearch = null; render(); return; }
-    // Rental-window picker dismisses on a click anywhere OUTSIDE the picker, its trigger, and
-    // the availability cards you browse while picking (units/categories/customers). #263 had
-    // narrowed this to dead-space-only, so over the full-screen 3-column grid an outside click
-    // almost always landed on a card and the picker never closed ("does not close"). Never
-    // SWALLOW an interactive click (#265): drop the float DOM in place — keeping the clicked
-    // anchor attached so a downstream menu still positions correctly — and fall THROUGH so the
-    // click still fires; only a pure dead-space click renders + returns. Discards a fragile
-    // rental's staged change, as before.
-    if (state.winpicker && !onPicker && !closest('.js-open-winpicker') && !closest('[data-sheetclose]')
-        && !closest('.card[data-card="units"]') && !closest('.card[data-card="categories"]') && !closest('.card[data-card="customers"]')) {
-      state.winpicker = null;
-      document.querySelector('.winpicker-float')?.remove();
-      if (pickerDeadSpace) { render(); return; }
-    }
+    if (pickerDeadSpace) { state.datesearch = null; render(); return; }
   }
 
   // header / chrome
   if (closest('.js-logo')) return openLogoMenu(closest('.js-logo'));
   if (closest('.js-switch-user')) { e.stopPropagation(); return switchUser(); }
   if (closest('.js-open-settings')) { e.stopPropagation(); return openSettings(); }
-  if (closest('.js-set-reveal')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); o.revealPw = !o.revealPw; renderOverlay(); } return; }   // toggle masked role passwords
+  if (closest('.js-set-reveal')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); o.revealPw = !o.revealPw; reSettings(); } return; }   // toggle masked role passwords
+  if (closest('.js-role-tier')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); const b = closest('.js-role-tier'); const meta = draftRoleMeta(o); (meta[b.dataset.role] || (meta[b.dataset.role] = {})).tier = b.dataset.tier; o.error = null; reSettings(); } return; }   // pick a role's permission tier
+  if (closest('.js-role-del')) { e.stopPropagation(); const o = state.overlay; if (!o) return; const id = closest('.js-role-del').dataset.role; if (PROTECTED_ROLE_IDS.includes(String(id).toLowerCase())) { o.error = 'That built-in role can’t be removed.'; reSettings(); return; } captureLoginEdits(o); delete o.config.roles[id]; delete draftRoleMeta(o)[id]; o.error = null; reSettings(); return; }   // remove a role
+  if (closest('.js-role-add')) { e.stopPropagation(); const o = state.overlay; if (!o) return; captureLoginEdits(o); o.config.roles = o.config.roles || {}; let n = Object.keys(o.config.roles).length + 1, id = 'role' + n; while (o.config.roles[id] != null) { n++; id = 'role' + n; } o.config.roles[id] = ''; draftRoleMeta(o)[id] = { label: 'New Role', tier: 'staff' }; o.error = null; reSettings(); return; }   // add a custom role
   if (closest('.js-settings-save')) { e.stopPropagation(); return saveSettings(); }
   if (closest('.js-settings-resetpage')) { e.stopPropagation(); return resetPageSettings(); }   // gentle: default just this tab
-  if (closest('.js-settings-reset')) { e.stopPropagation(); const o = state.overlay; if (!o) return; if (o.resetArm) return resetAllSettings(); o.resetArm = true; renderOverlay(); return; }   // armed two-click confirm
+  if (closest('.js-settings-reset')) { e.stopPropagation(); const o = state.overlay; if (!o) return; if (o.resetArm) return resetAllSettings(); o.resetArm = true; reSettings(); return; }   // armed two-click confirm
   if (closest('.js-settings-undo')) { e.stopPropagation(); return undoLastSettings(); }
-  if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); renderOverlay(); return; }
-  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); renderOverlay(); return; }   // §M-touch — toggle + a sample buzz when turning ON
+  if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); reSettings(); return; }
+  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); reSettings(); return; }   // §M-touch — toggle + a sample buzz when turning ON
   // Settings Board — tab rail + Statuses & Icons editing
-  if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; renderOverlay(); } return; }
-  if (closest('.js-set-pick')) { e.stopPropagation(); const o = state.overlay; if (o) { o.setSel = closest('.js-set-pick').dataset.set; o.iconFor = null; renderOverlay(); } return; }
-  if (closest('.js-set-color')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-color'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { color: b.dataset.color }); renderOverlay(); } return; }
-  if (closest('.js-set-icon-open')) { e.stopPropagation(); const o = state.overlay, k = closest('.js-set-icon-open').dataset.key; if (o) { o.iconFor = o.iconFor === k ? null : k; renderOverlay(); } return; }
-  if (closest('.js-set-icon')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-icon'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { icon: b.dataset.icon || '' }); o.iconFor = null; renderOverlay(); } return; }
-  if (closest('.js-set-reset')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-reset'); if (o && o.draftSettings && o.draftSettings.status && o.draftSettings.status[b.dataset.set]) { delete o.draftSettings.status[b.dataset.set][b.dataset.val]; renderOverlay(); } return; }
+  if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; reSettings(); } return; }
+  if (closest('.js-set-pick')) { e.stopPropagation(); const o = state.overlay; if (o) { o.setSel = closest('.js-set-pick').dataset.set; o.iconFor = null; reSettings(); } return; }
+  if (closest('.js-set-color')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-color'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { color: b.dataset.color }); reSettings(); } return; }
+  if (closest('.js-set-icon-open')) { e.stopPropagation(); const o = state.overlay, k = closest('.js-set-icon-open').dataset.key; if (o) { o.iconFor = o.iconFor === k ? null : k; reSettings(); } return; }
+  if (closest('.js-set-icon')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-icon'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { icon: b.dataset.icon || '' }); o.iconFor = null; reSettings(); } return; }
+  if (closest('.js-set-reset')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-reset'); if (o && o.draftSettings && o.draftSettings.status && o.draftSettings.status[b.dataset.set]) { delete o.draftSettings.status[b.dataset.set][b.dataset.val]; reSettings(); } return; }
   // KPIs & Rings tab
-  if (closest('.js-kpi-role')) { e.stopPropagation(); const o = state.overlay; if (o) { o.kpiRole = closest('.js-kpi-role').dataset.role; renderOverlay(); } return; }
-  if (closest('.js-kpi-band')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-kpi-band'); if (o) { const rings = ensureKpiDraft(o, b.dataset.role); rings[Number(b.dataset.i)].band = b.dataset.band; renderOverlay(); } return; }
-  if (closest('.js-kpi-reset')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-kpi-reset'); if (o) { const rings = ensureKpiDraft(o, b.dataset.role); rings[Number(b.dataset.i)] = JSON.parse(JSON.stringify((KPI_DEFAULTS[b.dataset.role] || [])[Number(b.dataset.i)] || {})); renderOverlay(); } return; }
+  if (closest('.js-kpi-role')) { e.stopPropagation(); const o = state.overlay; if (o) { o.kpiRole = closest('.js-kpi-role').dataset.role; reSettings(); } return; }
+  if (closest('.js-kpi-band')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-kpi-band'); if (o) { const rings = ensureKpiDraft(o, b.dataset.role); rings[Number(b.dataset.i)].band = b.dataset.band; reSettings(); } return; }
+  if (closest('.js-kpi-reset')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-kpi-reset'); if (o) { const rings = ensureKpiDraft(o, b.dataset.role); rings[Number(b.dataset.i)] = JSON.parse(JSON.stringify((KPI_DEFAULTS[b.dataset.role] || [])[Number(b.dataset.i)] || {})); reSettings(); } return; }
   if (closest('.js-kpi-refine')) { e.stopPropagation(); const b = closest('.js-kpi-refine'); openWranglerForKpi(b.dataset.role, Number(b.dataset.i)); return; }
   // Rental Rules tab
-  if (closest('.js-rule-set')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-rule-set'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.rentalRules = o.draftSettings.rentalRules || { ...((state.settings && state.settings.rentalRules) || {}) }; o.draftSettings.rentalRules[b.dataset.rule] = b.dataset.val === 'required' ? 'required' : 'off'; renderOverlay(); } return; }
+  if (closest('.js-rule-set')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-rule-set'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.rentalRules = o.draftSettings.rentalRules || { ...((state.settings && state.settings.rentalRules) || {}) }; o.draftSettings.rentalRules[b.dataset.rule] = b.dataset.val === 'required' ? 'required' : 'off'; reSettings(); } return; }
+  if (closest('.js-retro-set')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-retro-set'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.company = o.draftSettings.company || { ...((state.settings && state.settings.company) || {}) }; o.draftSettings.company.retroactivePricing = b.dataset.val === 'on'; reSettings(); } return; }
   // Custom Fields tab
-  if (closest('.js-cf-entity')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfEntity = closest('.js-cf-entity').dataset.ent; renderOverlay(); } return; }
-  if (closest('.js-cf-type')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), type: closest('.js-cf-type').dataset.type }; renderOverlay(); } return; }
-  if (closest('.js-cf-req')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), required: closest('.js-cf-req').dataset.v === '1' }; renderOverlay(); } return; }
-  if (closest('.js-cf-add')) { e.stopPropagation(); const o = state.overlay; if (!o) return; const lblEl = document.querySelector('.settings-popup .js-cf-label'); const label = (o.cfDraft && o.cfDraft.label || (lblEl ? lblEl.value : '')).trim(); if (!label) { if (lblEl) { lblEl.focus(); } toast('Give the field a label first.'); return; } const fields = ensureCfDraft(o, o.cfEntity || 'customers'); fields.push({ id: cfSlug(label), label, type: (o.cfDraft && o.cfDraft.type) || 'text', required: !!(o.cfDraft && o.cfDraft.required) }); o.cfDraft = { label: '', type: 'text', required: false }; renderOverlay(); return; }
-  if (closest('.js-cf-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-cf-remove'); if (o) { const fields = ensureCfDraft(o, b.dataset.ent); const i = fields.findIndex((f) => f.id === b.dataset.id); if (i >= 0) fields.splice(i, 1); renderOverlay(); } return; }
+  if (closest('.js-cf-entity')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfEntity = closest('.js-cf-entity').dataset.ent; reSettings(); } return; }
+  if (closest('.js-cf-type')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), type: closest('.js-cf-type').dataset.type }; reSettings(); } return; }
+  if (closest('.js-cf-req')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), required: closest('.js-cf-req').dataset.v === '1' }; reSettings(); } return; }
+  if (closest('.js-cf-add')) { e.stopPropagation(); const o = state.overlay; if (!o) return; const lblEl = document.querySelector('.settings-popup .js-cf-label'); const label = (o.cfDraft && o.cfDraft.label || (lblEl ? lblEl.value : '')).trim(); if (!label) { if (lblEl) { lblEl.focus(); } toast('Give the field a label first.'); return; } const fields = ensureCfDraft(o, o.cfEntity || 'customers'); fields.push({ id: cfSlug(label), label, type: (o.cfDraft && o.cfDraft.type) || 'text', required: !!(o.cfDraft && o.cfDraft.required) }); o.cfDraft = { label: '', type: 'text', required: false }; reSettings(); return; }
+  if (closest('.js-cf-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-cf-remove'); if (o) { const fields = ensureCfDraft(o, b.dataset.ent); const i = fields.findIndex((f) => f.id === b.dataset.id); if (i >= 0) fields.splice(i, 1); reSettings(); } return; }
   // Inspections tab
-  if (closest('.js-insp-cat')) { e.stopPropagation(); const o = state.overlay; if (o) { o.inspFam = closest('.js-insp-cat').dataset.cat; renderOverlay(); } return; }
-  if (closest('.js-insp-req')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-req'); if (o) { ensureInspDraft(o, b.dataset.cat).required = b.dataset.v === '1'; renderOverlay(); } return; }
-  if (closest('.js-insp-type')) { e.stopPropagation(); const o=state.overlay; if(o){ o.inspDraft={...(o.inspDraft||{label:'',required:false,options:[]}), type: closest('.js-insp-type').dataset.type}; if(o.inspDraft.type!=='select'){} renderOverlay(); } return; }
-  if (closest('.js-insp-itemreq')) { e.stopPropagation(); const o=state.overlay; if(o){ o.inspDraft={...(o.inspDraft||{}), required: closest('.js-insp-itemreq').dataset.v==='1'}; renderOverlay(); } return; }
-  if (closest('.js-insp-opt-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const inp=document.querySelector('.settings-popup .js-insp-opt-label'); const lbl=((o.inspDraft&&o.inspDraft.optLabel)|| (inp?inp.value:'')).trim(); if(!lbl){ if(inp)inp.focus(); toast('Type an option first.'); return; } o.inspDraft.options=o.inspDraft.options||[]; o.inspDraft.options.push({label:lbl, fail:false}); o.inspDraft.optLabel=''; renderOverlay(); return; }
-  if (closest('.js-insp-opt-remove')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-opt-remove'); if(o&&o.inspDraft&&o.inspDraft.options){ o.inspDraft.options.splice(Number(b.dataset.i),1); renderOverlay(); } return; }
-  if (closest('.js-insp-opt-fail')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-opt-fail'); if(o&&o.inspDraft&&o.inspDraft.options){ const op=o.inspDraft.options[Number(b.dataset.i)]; if(op) op.fail = b.dataset.v==='1'; renderOverlay(); } return; }
-  if (closest('.js-insp-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const d=o.inspDraft||{label:'',type:'toggle',required:false,options:[]}; const el2=document.querySelector('.settings-popup .js-insp-label'); const label=((d.label!=null?d.label:(el2?el2.value:''))||'').trim(); if(!label){ if(el2)el2.focus(); toast('Type a checklist item first.'); return; } const type=d.type||'toggle'; if(type==='select' && !((d.options||[]).length)){ toast('Add at least one dropdown option.'); return; } const cfg=ensureInspDraft(o, o.inspFam); cfg.items=cfg.items||[]; const item={ id:'ck_'+(label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')||'item')+'_'+Math.random().toString(36).slice(2,5), label, type }; if(type!=='toggle') item.required=!!d.required; if(type==='select') item.options=(d.options||[]).map((op)=>({label:op.label, fail:!!op.fail})); cfg.items.push(item); o.inspDraft={label:'',type:'toggle',required:false,options:[]}; renderOverlay(); return; }
-  if (closest('.js-insp-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-remove'); if (o) { const cfg = ensureInspDraft(o, b.dataset.cat); cfg.items = (cfg.items || []).filter((it) => it.id !== b.dataset.id); renderOverlay(); } return; }
+  if (closest('.js-insp-cat')) { e.stopPropagation(); const o = state.overlay; if (o) { o.inspFam = closest('.js-insp-cat').dataset.cat; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-req')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-req'); if (o) { ensureInspDraft(o, b.dataset.cat).required = b.dataset.v === '1'; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-walk')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-walk'); if (o) { ensureInspDraft(o, b.dataset.cat).walkaround = b.dataset.v; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-type')) { e.stopPropagation(); const o=state.overlay; if(o){ const type=closest('.js-insp-type').dataset.type; o.inspDraft={...(o.inspDraft||{label:'',options:[]}), type, fail: inspFailDefault(type)}; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-failwhen')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-failwhen'); if(o){ o.inspDraft=o.inspDraft||{}; o.inspDraft.fail={...(o.inspDraft.fail||{}), failWhen:b.dataset.v}; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-failop')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-failop'); if(o){ o.inspDraft=o.inspDraft||{}; o.inspDraft.fail={...(o.inspDraft.fail||{}), op:b.dataset.v}; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-dateref')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-dateref'); if(o){ o.inspDraft=o.inspDraft||{}; const f={...(o.inspDraft.fail||{})}; f.ref = b.dataset.v==='today' ? 'today' : ((f.ref && f.ref!=='today') ? f.ref : TODAY_ISO); o.inspDraft.fail=f; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-opt-na')) { e.stopPropagation(); const o=state.overlay; if(o){ o.inspDraft=o.inspDraft||{}; o.inspDraft.options=o.inspDraft.options||[]; if(!o.inspDraft.options.some((op)=>op.label==='N/A')) o.inspDraft.options.push({label:'N/A', fail:false}); rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-ev')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-ev'); if(o){ o.inspDraft=o.inspDraft||{}; o.inspDraft.evidence=b.dataset.v; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-edit')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-edit'); if(o){ const cfg=ensureInspDraft(o, o.inspFam); const it=(cfg.items||[]).find((x)=>x.id===b.dataset.id); if(it){ const type=it.type||'toggle'; o.inspEditId=it.id; o.inspDraft={ label:it.label, type, fail: it.fail ? JSON.parse(JSON.stringify(it.fail)) : inspFailDefault(type), options: it.options ? JSON.parse(JSON.stringify(it.options)) : [], evidence: it.evidence || 'none', optLabel:'' }; rerenderSettingsPane(); } } return; }
+  if (closest('.js-insp-editcancel')) { e.stopPropagation(); const o=state.overlay; if(o){ o.inspEditId=null; o.inspDraft={label:'',type:'toggle',options:[],fail:inspFailDefault('toggle')}; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-editsave')) { e.stopPropagation(); const o=state.overlay; if(!o||!o.inspEditId)return; const el2=document.querySelector('.settings-popup .js-insp-label'); const d=o.inspDraft||{}; const label=((d.label!=null?d.label:(el2?el2.value:''))||'').trim(); if(!label){ if(el2)el2.focus(); toast('Item needs a label.'); return; } const type=d.type||'toggle'; if(type==='select' && !((d.options||[]).length)){ toast('Add at least one dropdown option.'); return; } const cfg=ensureInspDraft(o, o.inspFam); const it=(cfg.items||[]).find((x)=>x.id===o.inspEditId); if(it){ it.label=label; it.type=type; delete it.required; if(type==='select'){ it.options=(d.options||[]).map((op)=>({label:op.label, fail:!!op.fail})); delete it.fail; } else if(type==='file'){ delete it.fail; delete it.options; } else { it.fail=d.fail||inspFailDefault(type); delete it.options; } if(type!=='file' && d.evidence && d.evidence!=='none') it.evidence=d.evidence; else delete it.evidence; } o.inspEditId=null; o.inspDraft={label:'',type:'toggle',options:[],fail:inspFailDefault('toggle')}; rerenderSettingsPane(); return; }
+  if (closest('.js-insp-opt-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const inp=document.querySelector('.settings-popup .js-insp-opt-label'); const lbl=((o.inspDraft&&o.inspDraft.optLabel)|| (inp?inp.value:'')).trim(); if(!lbl){ if(inp)inp.focus(); toast('Type an option first.'); return; } o.inspDraft.options=o.inspDraft.options||[]; o.inspDraft.options.push({label:lbl, fail:false}); o.inspDraft.optLabel=''; rerenderSettingsPane(); return; }
+  if (closest('.js-insp-opt-remove')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-opt-remove'); if(o&&o.inspDraft&&o.inspDraft.options){ o.inspDraft.options.splice(Number(b.dataset.i),1); rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-opt-fail')) { e.stopPropagation(); const o=state.overlay, b=closest('.js-insp-opt-fail'); if(o&&o.inspDraft&&o.inspDraft.options){ const op=o.inspDraft.options[Number(b.dataset.i)]; if(op) op.fail = b.dataset.v==='1'; rerenderSettingsPane(); } return; }
+  if (closest('.js-insp-add')) { e.stopPropagation(); const o=state.overlay; if(!o)return; const d=o.inspDraft||{label:'',type:'toggle',options:[]}; const el2=document.querySelector('.settings-popup .js-insp-label'); const label=((d.label!=null?d.label:(el2?el2.value:''))||'').trim(); if(!label){ if(el2)el2.focus(); toast('Type a checklist item first.'); return; } const type=d.type||'toggle'; if(type==='select' && !((d.options||[]).length)){ toast('Add at least one dropdown option.'); return; } const cfg=ensureInspDraft(o, o.inspFam); cfg.items=cfg.items||[]; const item={ id:'ck_'+(label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')||'item')+'_'+Math.random().toString(36).slice(2,5), label, type }; if(type==='select') item.options=(d.options||[]).map((op)=>({label:op.label, fail:!!op.fail})); else if(type!=='file') item.fail = d.fail || inspFailDefault(type); if(type!=='file' && d.evidence && d.evidence!=='none') item.evidence=d.evidence; cfg.items.push(item); o.inspDraft={label:'',type:'toggle',options:[],fail:inspFailDefault('toggle')}; rerenderSettingsPane(); return; }
+  if (closest('.js-insp-remove')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-insp-remove'); if (o) { const cfg = ensureInspDraft(o, b.dataset.cat); cfg.items = (cfg.items || []).filter((it) => it.id !== b.dataset.id); rerenderSettingsPane(); } return; }
   if (closest('.js-nc-save')) { e.stopPropagation(); return saveNewCustomer(); }
   if (closest('.js-nc-acct')) { const b = closest('.js-nc-acct'); e.stopPropagation(); ncSyncInputs(); state.overlay.draft.accountType = b.dataset.val; renderOverlay(); return; }
   if (closest('.js-nc-po')) { e.stopPropagation(); ncSyncInputs(); const o = state.overlay; o.draft.requiresPO = (o.draft.requiresPO === true) ? false : true; if (o.editId) { const c = IDX.customer.get(o.editId); if (c) { c.requiresPO = o.draft.requiresPO; reindex('customers', c); } } renderOverlay(); return; }
+  if (closest('.js-nc-rp')) { e.stopPropagation(); ncSyncInputs(); const o = state.overlay; o.draft.rentalProtection = (o.draft.rentalProtection === true) ? false : true; if (o.editId) { const c = IDX.customer.get(o.editId); if (c) { c.rentalProtection = o.draft.rentalProtection; reindex('customers', c); } } renderOverlay(); return; }   // F4 — Rental Protection account toggle (mirrors PO)
   // §7.1b card-bound agreements: tab rail + per-card signing
   if (closest('.js-nc-tab')) { e.stopPropagation(); ncSyncInputs(); state.overlay.tab = closest('.js-nc-tab').dataset.tab; state.overlay.signRead = null; renderOverlay(); return; }
   if (closest('.js-ncsign-read')) { e.stopPropagation(); const id = closest('.js-ncsign-read').dataset.card; state.overlay.signRead = (state.overlay.signRead === id) ? null : id; renderOverlay(); return; }
@@ -10780,8 +11869,18 @@ function onClick(e) {
   if (closest('.js-edit-customer')) { e.stopPropagation(); return openCustomerForm(closest('.js-edit-customer').dataset.rec); }
   if (closest('.js-view-agreement')) { e.stopPropagation(); const cust = IDX.customer.get(closest('.js-view-agreement').dataset.rec); if (cust) openOverlay({ kind: 'agreement', recId: cust.customerId }); return; }
   if (closest('.js-print-magreement')) { e.stopPropagation(); openMembershipAgreementPdf(closest('.js-print-magreement').dataset.rec); return; }
+  // F5 — membership enroll / cancel / reactivate + the enrollment dialog controls
+  if (closest('.js-mem-enroll')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return openMembershipEnroll(closest('.js-mem-enroll').dataset.rec); }
+  if (closest('.js-mem-cancel')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return membershipCancel(closest('.js-mem-cancel').dataset.rec); }
+  if (closest('.js-mem-paycxl')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return membershipReactivate(closest('.js-mem-paycxl').dataset.rec); }
+  if (closest('.js-me-plan')) { e.stopPropagation(); const o = state.overlay; if (o) { o.plan = closest('.js-me-plan').dataset.val; renderOverlay(); } return; }
+  if (closest('.js-me-transport')) { e.stopPropagation(); const o = state.overlay; if (o) { o.addOns.transport = closest('.js-me-transport').dataset.val === '1'; renderOverlay(); } return; }
+  if (closest('.js-me-protection')) { e.stopPropagation(); const o = state.overlay; if (o) { o.addOns.protection = closest('.js-me-protection').dataset.val === '1'; renderOverlay(); } return; }
+  if (closest('.js-me-autorenew')) { e.stopPropagation(); const o = state.overlay; if (o) { o.autoRenew = closest('.js-me-autorenew').dataset.val === '1'; renderOverlay(); } return; }
+  if (closest('.js-me-commit')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return membershipEnrollCommit(); }
   if (closest('.js-add-card')) {
     e.stopPropagation();
+    if (!canMoney()) { toast('Cards on file are Office/Admin only.'); return; }   // §14 card-on-file is Office/Admin only — same gate as Pay/Charge/Refund (canMoney)
     const rec = closest('.js-add-card').dataset.rec;
     // From the onboarding form: persist the draft (incl. signature/selfie) first, add the card,
     // then RETURN to the form (card now on file) — no save-close-reopen. Elsewhere: normal add.
@@ -10820,6 +11919,7 @@ function onClick(e) {
   if (closest('.js-lock-invoice')) { e.stopPropagation(); return lockInvoiceFlow(closest('.js-lock-invoice').dataset.rec, true); }
   if (closest('.js-unlock-invoice')) { e.stopPropagation(); return lockInvoiceFlow(closest('.js-unlock-invoice').dataset.rec, false); }
   if (closest('.js-ring')) return openOverlay({ kind: 'role', role: closest('.js-ring').dataset.role });
+  if (closest('.js-roadmap')) return openOverlay({ kind: 'roadmap' });
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-theme')) { state.theme = (THEME_NEXT[state.theme] || THEME_NEXT.dark).next; try { localStorage.setItem('jactec.theme', state.theme); } catch (e) {} if (state.overlay && state.overlay.kind !== 'addCard') renderOverlay(); render(); return; }
   if (closest('.js-qr')) return shareSession();
@@ -10919,6 +12019,9 @@ function onClick(e) {
   if (closest('[data-wrc-open]')) { e.stopPropagation(); return wranglerRailOpen(closest('[data-wrc-open]').dataset.wrcOpen); }   // §18g rail: reopen a stored conversation
   if (closest('.js-notifications')) { e.stopPropagation(); openOverlay({ kind: 'notifications' }); markNotifsSeen(); refreshWranglerNotifications(); return; }   // §18f notification bell — in-app resolved-fix feed
   if (closest('.js-notif-refresh')) { e.stopPropagation(); return refreshWranglerNotifications(); }
+  if (closest('.js-notif-dismiss')) { e.stopPropagation(); return dismissNotif(Number(closest('.js-notif-dismiss').dataset.num)); }   // §246 clear one
+  if (closest('.js-notif-dismissall')) { e.stopPropagation(); return dismissAllNotifs(); }   // §246 clear all
+  if (closest('.js-notif-mute')) { e.stopPropagation(); return toggleNotifsMuted(); }   // §246 mute/unmute the badge
   if (closest('.js-requests')) { e.stopPropagation(); openOverlay({ kind: 'requests' }); refreshWranglerRequests(); return; }   // §18e approval inbox
   if (closest('.js-req-refresh')) { e.stopPropagation(); return refreshWranglerRequests(); }
   if (closest('.js-req-chat')) { e.stopPropagation(); return openWranglerFromRequest(Number(closest('.js-req-chat').dataset.n)); }   // §18e continue the conversation
@@ -10953,13 +12056,11 @@ function onClick(e) {
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
   if (closest('.js-coltab')) {
     const ct = closest('.js-coltab'); e.stopPropagation();
-    // A1 — the Services (heart) tab filters the Units list to service-due as a removable
-    // pill, instead of switching to a stuck Service view you can't clear. (Jac 2026-06-15)
-    if (ct.dataset.member === 'serviceOrders') { const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list'; s.cards.units.recId = null; s.cards.units.recType = null; addColFilter('units', '__svc', 'due'); return; }
     const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member;
+    if (ct.dataset.member === 'shop') { const sc = cs.cards.shop; if (sc) { sc.segment = 'all'; sc.graphView = true; sc.mode = 'list'; sc.recId = null; sc.recType = null; } }   // wrench Shop → the combined 3-bar graph front page
     // §M1 — on phones the footer toggle is the primary nav (no in-card List button): tapping a
     // card shows its LIST (the back chevron returns from a record). Desktop keeps per-member state.
-    if (document.body.classList.contains('is-phone')) { const mc = cs.cards[ct.dataset.member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
+    else if (document.body.classList.contains('is-phone')) { const mc = cs.cards[ct.dataset.member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
     return render();
   }
   // §2.3 dispatch timeline — day nav + open a stop's rental (Phase 6)
@@ -10990,7 +12091,9 @@ function onClick(e) {
   if (closest('.js-ft-neg')) { const b = closest('.js-ft-neg'); e.stopPropagation(); return toggleFilterNeg(b.dataset.scope, Number(b.dataset.i)); }
   if (closest('.js-date-edit')) { const b = closest('.js-date-edit'); e.stopPropagation(); return openDateSearch(b.dataset.scope, Number(b.dataset.i)); }   // §5.4d re-open the picker to change the date
   if (closest('.js-ft-x')) { const b = closest('.js-ft-x'); e.stopPropagation(); return removeFilterTerm(b.dataset.scope, Number(b.dataset.i)); }
-  if (closest('.js-closeall')) return closeAll();
+  if (closest('.js-closeall-menu')) { e.stopPropagation(); return openCloseAllMenu(closest('.js-closeall-menu')); }
+  if (closest('.js-closeall')) { document.querySelectorAll('.dropdown-menu').forEach((m) => m.remove()); return closeAll(); }
+  if (closest('.js-closeothers')) { document.querySelectorAll('.dropdown-menu').forEach((m) => m.remove()); return closeOthers(); }
   if (closest('.js-closetab')) { e.stopPropagation(); return closeTab(closest('.js-closetab').dataset.tab); }
   if (closest('.js-uncascade')) { e.stopPropagation(); const cs = activeSession().cards[closest('.js-uncascade').dataset.card]; if (cs) cs.released = true; return render(); }
   if (closest('.js-tab')) return switchTab(closest('.js-tab').dataset.tab);
@@ -11010,10 +12113,11 @@ function onClick(e) {
     return;
   }
   if (closest('.js-clear-unitpick')) { e.stopPropagation(); state.unitPick = null; render(); return; }
+  if (closest('.js-clear-paymethod')) { e.stopPropagation(); activeSession().cards.invoices.payMethod = 'all'; render(); return; }   // §337
   if (closest('.js-addcat')) { const b = closest('.js-addcat'); e.stopPropagation(); return openIntCatDropdown(b.dataset.rec, b); }
   if (closest('.js-setintcat')) { const b = closest('.js-setintcat'); e.stopPropagation(); return addInterestedCategory(b.dataset.rec, b.dataset.val); }
   if (closest('.js-act-open')) { const b = closest('.js-act-open'); e.stopPropagation(); state.actMode = b.dataset.val; state.actOpen = b.dataset.rec; const rec = b.dataset.rec; render(); document.querySelector(`.js-act-in[data-rec="${rec}"]`)?.focus(); return; }
-  if (closest('.js-schedule-save')) { const b = closest('.js-schedule-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup-body'); const c = IDX.customer.get(b.dataset.rec); const date = o?.when, time = o?.whenTime || '09:00'; const note = (root.querySelector('.js-sch-note')?.value || '').trim(); if (!c || !date) { flashOr('.datefield', 'Pick a date first.'); return; } c.activityLog = c.activityLog || []; c.activityLog.push({ when: date, text: `Scheduled: ${note || 'follow-up'} @ ${date} ${to12(time)}` }); reindex('customers', c); toast('Scheduled — added to the Activity Log.'); state.datepick = null; closeOverlay(); render(); }
+  if (closest('.js-schedule-save')) { const b = closest('.js-schedule-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup'); const c = IDX.customer.get(b.dataset.rec); const date = o?.when, time = o?.whenTime || '09:00'; const note = (root.querySelector('.js-sch-note')?.value || '').trim(); if (!c || !date) { flashOr('.datefield', 'Pick a date first.'); return; } c.activityLog = c.activityLog || []; c.activityLog.push({ when: date, text: `Scheduled: ${note || 'follow-up'} @ ${date} ${to12(time)}` }); reindex('customers', c); toast('Scheduled — added to the Activity Log.'); state.datepick = null; closeOverlay(); render(); }
   // Wave 2 — empty slots on a Quote/invoice: the UNIT slot points you at the
   // Units list (drag IS the link path); the CUSTOMER slot opens quick-add-link.
   if (closest('.js-slot-unit')) {
@@ -11036,7 +12140,7 @@ function onClick(e) {
   if (closest('.js-bill-wo')) { e.stopPropagation(); return billWOToInvoice(closest('.js-bill-wo').dataset.rec); }
   if (closest('.js-wo-bill')) { const b = closest('.js-wo-bill'); e.stopPropagation(); const w = IDX.wo.get(b.dataset.rec); if (w) { w.billCustomer = w.billCustomer === 'Yes' ? 'No' : 'Yes'; reindex('workOrders', w); logAction(w, `Bill customer → ${w.billCustomer}`); render(); } return; }
   if (closest('.js-svc-complete')) { const b = closest('.js-svc-complete'); e.stopPropagation(); state.svcPhoto = null; return openOverlay({ kind: 'service', unitId: b.dataset.unit, taskId: b.dataset.task }); }
-  if (closest('.js-svc-save')) { const b = closest('.js-svc-save'); e.stopPropagation(); if (!state.svcPhoto) { flashOr('.overlay .insp-photo, .overlay .insp-rephoto, .overlay .cap-drop', 'Photo proof is required to complete a service.'); return; } const root = b.closest('.popup-body'); return recordServiceCompletion(b.dataset.unit, b.dataset.task, root.querySelector('.js-svc-hours')?.value, root.querySelector('.js-svc-date')?.value, root.querySelector('.js-svc-notes')?.value, state.svcPhoto); }
+  if (closest('.js-svc-save')) { const b = closest('.js-svc-save'); e.stopPropagation(); if (!state.svcPhoto) { flashOr('.overlay .insp-photo, .overlay .insp-rephoto, .overlay .cap-drop', 'Photo proof is required to complete a service.'); return; } const root = b.closest('.popup'); return recordServiceCompletion(b.dataset.unit, b.dataset.task, root.querySelector('.js-svc-hours')?.value, root.querySelector('.js-svc-date')?.value, root.querySelector('.js-svc-notes')?.value, state.svcPhoto); }
   // invoice line-item add buttons → point at the card to DRAG FROM (Wave 2)
   if (closest('.js-add-line')) {
     const b = closest('.js-add-line'); e.stopPropagation();
@@ -11083,6 +12187,8 @@ function onClick(e) {
   if (closest('.js-cond')) { const b = closest('.js-cond'); return setUnitCondition(b.dataset.rec, b.dataset.val); }
   if (closest('.js-open-checklist')) { e.stopPropagation(); return openChecklist(closest('.js-open-checklist').dataset.rec); }
   if (closest('.js-ck-item')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-item'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n) { n.items = n.items || {}; n.items[b.dataset.id] = b.dataset.val; renderOverlay(); } } return; }
+  if (closest('.js-ck-evrm')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-evrm'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n && n.itemEvidence && n.itemEvidence[b.dataset.id]) { n.itemEvidence[b.dataset.id].splice(Number(b.dataset.i), 1); saveSoon(); renderOverlay(); } } return; }
+  if (closest('.js-ck-walkrm')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-walkrm'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n && n.evidence) { n.evidence.splice(Number(b.dataset.i), 1); saveSoon(); renderOverlay(); } } return; }
   if (closest('.js-ck-complete')) { e.stopPropagation(); return completeChecklist(); }
   if (closest('.js-ck-pending')) { e.stopPropagation(); closeOverlay(); toast('Inspection kept as pending — resume it anytime.'); return; }
   if (closest('.js-washseg')) { const b = closest('.js-washseg'); return setUnitWash(b.dataset.rec, b.dataset.val); }
@@ -11152,9 +12258,9 @@ function onClick(e) {
   if (closest('.js-wp-prev')) { e.stopPropagation(); return winPickMonth(-1); }
   if (closest('.js-wp-next')) { e.stopPropagation(); return winPickMonth(1); }
   if (closest('.js-wp-clear')) { e.stopPropagation(); return winPickClear(); }
+  if (closest('.js-wp-cancel')) { e.stopPropagation(); return winPickCancel(); }
   if (closest('.js-wp-save')) { e.stopPropagation(); return winPickSave(); }
   if (closest('.js-wp-today')) { e.stopPropagation(); return winPickToday(); }
-  if (closest('.js-wp-done')) { e.stopPropagation(); return closeWinPicker(); }
   // §5.4d date-search picker
   if (closest('.js-ds-day')) { e.stopPropagation(); return dsPickDay(closest('.js-ds-day').dataset.iso); }
   if (closest('.js-ds-prev')) { e.stopPropagation(); return dsMonth(-1); }
@@ -11163,8 +12269,8 @@ function onClick(e) {
   if (closest('.js-ds-clear')) { e.stopPropagation(); return dsClear(); }
   if (closest('.js-ds-done')) { e.stopPropagation(); return dsDone(); }
   if (closest('.js-tl-blocker')) { e.stopPropagation(); const st = document.querySelector('.stalls'); if (st) st.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); attnFlash('.stall .pill.dvd'); return; }
-  if (closest('.js-open-winpicker')) { e.stopPropagation(); const rec = closest('.js-open-winpicker').dataset.rec; return state.winpicker?.rentalId === rec ? closeWinPicker() : openWinPicker(rec); }
-  if (closest('[data-sheetclose]')) { e.stopPropagation(); return closest('[data-sheetclose]').dataset.sheetclose === 'date' ? closeDateSearch() : closeWinPicker(); }   // §M3 — tap the phone sheet backdrop to dismiss the picker
+  // §inline — the rental-window calendar is edited in place; no popup to open.
+  if (closest('[data-sheetclose]')) { e.stopPropagation(); return closeDateSearch(); }   // §M3 — tap the phone sheet backdrop to dismiss the date-search picker
 
   // sort menu + direction toggle
   if (closest('.js-sortmenu')) { const b = closest('.js-sortmenu'); return openViewMenu(b.dataset.card, b); }
@@ -11172,6 +12278,7 @@ function onClick(e) {
   if (closest('.js-applyview')) { const b = closest('.js-applyview'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return applyView(b.dataset.card, loadViews(b.dataset.card)[Number(b.dataset.idx)]); }
   if (closest('.js-addview')) { if (!adminUnlocked()) { document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return; } const b = closest('.js-addview'); const card = b.dataset.card; const cs = activeSession().cards[card]; const search = (cs.search || '').trim(); const terms = (cs.filterTerms || []).map((t) => ({ ...t })); const suggested = viewLabel(search, terms); const name = (typeof prompt === 'function' ? prompt('Name this view:', suggested) : suggested); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (name && name.trim()) { const views = loadViews(card); if (!views.some((v) => v.name.toLowerCase() === name.trim().toLowerCase())) { views.push({ name: name.trim(), search, terms }); saveViews(card, views); } } render(); return; }
   if (closest('.js-sortfield')) { const b = closest('.js-sortfield'); const cs = activeSession().cards[b.dataset.card]; const f = SORT_FIELDS[b.dataset.card].find((x) => x.field === b.dataset.field); if (f) { cs.sort = { ...f }; saveSort(b.dataset.card, cs.sort); } document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); render(); return; }
+  if (closest('.js-paymethod')) { const cs = activeSession().cards.invoices; cs.payMethod = closest('.js-paymethod').dataset.method; document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); render(); return; }   // §337
   if (closest('.js-sortdir')) { const card = closest('.js-sortdir').dataset.card; const cs = activeSession().cards[card]; cs.sort.dir = cs.sort.dir === 'asc' ? 'desc' : 'asc'; saveSort(card, cs.sort); render(); return; }
 
   // inline edit (click a value → input)
@@ -11206,6 +12313,9 @@ function onClick(e) {
 
   if (closest('.js-showmore')) { const b = closest('.js-showmore'); e.stopPropagation(); const cs = activeSession().cards[b.dataset.card]; if (cs) { cs.listLimit = (cs.listLimit || VIRT_CAP) + SHOW_MORE_BATCH; render(); } return; }
   if (closest('.js-tolist')) { e.stopPropagation(); return cardToList(closest('.card').dataset.card); }
+  // a category mini-card's Availability pill → jump to the Units card, narrowed to
+  // that category's units (Jac 2026-06-25 — replaces the clunkier availability hop)
+  if (closest('.js-cat-avail')) { e.stopPropagation(); return showCategoryUnits(closest('.js-cat-avail').dataset.cat); }
 
   // a flag naming a section WITHOUT a nav target scrolls within its own card
   // (e.g. "No Card" → Cards on File — Jac 2026-06-12)
@@ -11389,18 +12499,36 @@ function startInlineEdit(span) {
 
 const BOOKING_STATUSES = ['On Rent', 'Reserved', 'Today', 'Tomorrow'];
 
-/* ADMIN TOOLS GATE (Jac 2026-06-22) — the dev/design tools (R-Rulebook, Design
-   Inspector, Design Lint) show ONLY for an Admin/Owner login. The old obfuscated
-   passphrase unlock was dropped (Jac): the admin login is the only thing that
-   should see these, so a normal account gets nothing — no lock toggle, no peek.
-   Settings is intentionally NOT gated here (Jac: "you don't need to hide it").
-   (requireAdmin below — the backend-verified card/price override — is separate
-   and untouched.) */
-function adminUnlocked() { return currentRole === 'Admin' || currentRole === 'Owner'; }
+/* ROLE TIERS (role-system redesign 2026-06-26) — roles are customizable, so
+   permissions key off a TIER, never a role name. `roleTier` resolves whatever
+   string the backend's `auth` returned for `currentRole` (id or label, any case)
+   to a rank 0..5 via `settings.roleMeta` (synced to every user in loadFromBackend)
+   with a fallback to BUILTIN_ROLE_TIERS. Spec: docs/superpowers/specs/
+   2026-06-26-role-system-redesign-design.md */
+function roleMetaMap() { return (state.settings && state.settings.roleMeta) || {}; }
+function roleTier(role) {
+  const id = String(role || '').trim().toLowerCase();
+  if (!id) return 0;
+  const meta = roleMetaMap();
+  const key = Object.keys(meta).find((k) => k.toLowerCase() === id);   // case-insensitive
+  if (key && meta[key] && meta[key].tier) return tierRank(meta[key].tier);
+  if (BUILTIN_ROLE_TIERS[id]) return tierRank(BUILTIN_ROLE_TIERS[id]);
+  return 0;
+}
+
+/* ADMIN TOOLS GATE (Jac 2026-06-22; tiers 2026-06-26) — business-admin actions
+   (Settings, category/pricing edits, migrations, curating shared sets) require
+   tier ≥ admin. The DEV/design tools (R-Rulebook, Inspector, Lint) moved UP to
+   `devUnlocked` (tier ≥ developer) — a business Admin no longer sees raw dev
+   tools. (requireAdmin below — the backend-verified card/price override — is
+   separate.) */
+function adminUnlocked() { return roleTier(currentRole) >= tierRank('admin'); }
+/** Dev/design tools (Lint / Inspector / Rulebook) — Developer tier only. */
+function devUnlocked() { return roleTier(currentRole) >= tierRank('developer'); }
 
 /** Verify an Admin password (reuses the Settings gate), then run onOk. Demo/offline → allowed. */
 async function requireAdmin(reason, onOk) {
-  const pw = (currentRole === 'Admin' || currentRole === 'Owner') ? backendPassword
+  const pw = adminUnlocked() ? backendPassword
     : (window.prompt((reason ? reason + '\n\n' : '') + 'Enter an Admin password to override:') || '');
   if (!pw && backendPassword) return;
   if (!backendPassword) { onOk(); return; }          // demo: no backend to verify against
@@ -11463,6 +12591,7 @@ function setRentalStatus(rentalId, val) {
   if (val === 'On Rent' && cust) {
     if (cust.requiresPO && !IDX.invoice.get(r.invoiceId)?.po) warn = '⚠ PO required for this customer — add it before sending.';
     else if (!cust.stripeId) warn = '⚠ No card on file for this customer.';
+    else if (!cust.rentalProtection) warn = '⚠ Rental Protection not enabled on this account.';   // F4 — mirrors the PO advisory
   }
   toast(warn || `Status → ${getStatus('rentalStatus', val).label}`);
   render();
@@ -11500,15 +12629,15 @@ function unitLinePaid(r, unitId) {
    not billed. A line carrying an assigned payment is kept (refund first); stable
    li.lid keys mean removing a line never disturbs other lines' allocations. */
 function removeUnitInvoiceLine(r, unitId) {
-  const inv = IDX.invoice.get(r.invoiceId); if (!inv) return;
-  const before = (inv.lineItems || []).length;
-  inv.lineItems = (inv.lineItems || []).filter((li) => {
-    const mine = (li.kind === 'rental' || li.kind === 'transport') && li.ref === r.rentalId && li.unitId === unitId;
-    return !mine || itemPaid(inv, li) > 0;   // keep non-matching lines and any paid matching line
+  rentalInvoices(r).forEach((inv) => {   // §28cap — sweep the whole billing series, not just the primary
+    const before = (inv.lineItems || []).length;
+    inv.lineItems = (inv.lineItems || []).filter((li) => {
+      const mine = (li.kind === 'rental' || li.kind === 'transport' || li.kind === 'extension') && li.ref === r.rentalId && li.unitId === unitId;
+      return !mine || itemPaid(inv, li) > 0;   // keep non-matching lines and any paid matching line
+    });
+    if ((inv.lineItems || []).length !== before) { reindex('invoices', inv); logAction(inv, `${IDX.unit.get(unitId)?.name || unitId} line(s) removed — No Show / Cancel (not billed)`); }
   });
-  if ((inv.lineItems || []).length === before) return;
-  reindex('invoices', inv);
-  logAction(inv, `${IDX.unit.get(unitId)?.name || unitId} line(s) removed — No Show / Cancel (not billed)`);
+  syncProtectionLine(r);   // F4b — a removed unit shrinks the rental subtotal → reprice protection across the series
 }
 function openUnitStatusDropdown(rentalId, unitId, anchorEl) {
   const r = IDX.rental.get(rentalId); const eu = r && unitEntry(r, unitId);
@@ -11537,7 +12666,7 @@ function clearFieldCall(rentalId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §16 ACTIONS / MUTATIONS — every state change funnels through here
+   APP-34 · §16 ACTIONS / MUTATIONS — every state change funnels through here
    (status setters, drag links, Quotes, captures, site, WO/invoice lines, +New)
    ════════════════════════════════════════════════════════════════════════ */
 /* ── v2 BUILD actions: condition/wash segs · yard captures · site popup · WO complete ── */
@@ -11578,8 +12707,9 @@ function completeChecklist() {
   const u = IDX.unit.get(o.unitId); const cfg = u && checklistFor(u); const n = IDX.insp.get(o.inspId);
   if (!u || !cfg || !n) { closeOverlay(); return; }
   const items = cfg.items || [];
-  const left = items.filter((it) => inspItemUnanswered(it, n.items[it.id])).length;
-  if (left) { toast(`Mark every item first — ${left} left.`); return; }
+  const left = items.filter((it) => inspItemUnanswered(it, n.items[it.id]) || inspEvidenceMissing(it, n.items[it.id], (n.itemEvidence && n.itemEvidence[it.id]) || [])).length;
+  if (left) { toast(`Finish every item first — ${left} left (some may need a photo).`); return; }
+  if (cfg.walkaround === 'required' && !((n.evidence || []).length)) { toast('Capture the walkaround before completing.'); return; }
   const failed = items.filter((it) => inspItemFails(it, n.items[it.id]));
   if (failed.length) n.description = 'Failed checklist: ' + failed.map((it) => inspItemType(it)==='select' ? (it.label + ': ' + (n.items[it.id]||'')) : it.label).join(', ');
   state.overlay = null;                                   // close the takeover; a Fail re-opens the photo/notes popup
@@ -12024,12 +13154,17 @@ function onChange(e) {
     const f = e.target.dataset.f, raw = e.target.value.trim();
     if (f === 'revenueGoal') { const n = Number(raw.replace(/[^0-9.]/g, '')); o.draftSettings.company.revenueGoal = (raw && isFinite(n) && n > 0) ? n : undefined; }
     else if (f === 'maxNetDays') { const n = Math.round(Number(raw.replace(/[^0-9.]/g, ''))); o.draftSettings.company.maxNetDays = (raw && isFinite(n) && n >= 0) ? n : undefined; }
+    else if (/^mem[A-Z]/.test(f)) { const n = Number(raw.replace(/[^0-9.]/g, '')); o.draftSettings.company[f] = (raw && isFinite(n) && n >= 0) ? n : undefined; }   // membership pricing — numeric, Owner-settable (spec §2)
     else o.draftSettings.company[f] = raw || undefined;
     renderOverlay(); return;
   }
   // Settings Board — KPI ring label / target (commit on blur)
-  if (e.target.classList.contains('js-insp-label')) { const o = state.overlay; if (o) { if (o.inspDraft && typeof o.inspDraft === 'object') o.inspDraft.label = e.target.value; else o.inspDraft = { label: e.target.value, type:'toggle', required:false, options:[] }; } return; }
+  if (e.target.classList.contains('js-insp-label')) { const o = state.overlay; if (o) { if (o.inspDraft && typeof o.inspDraft === 'object') o.inspDraft.label = e.target.value; else o.inspDraft = { label: e.target.value, type:'toggle', fail: inspFailDefault('toggle'), options:[] }; } return; }
   if (e.target.classList.contains('js-insp-opt-label')) { const o = state.overlay; if (o && o.inspDraft) o.inspDraft.optLabel = e.target.value; return; }
+  if (e.target.classList.contains('js-insp-faila')) { const o = state.overlay; if (o) { o.inspDraft = o.inspDraft || {}; o.inspDraft.fail = { ...(o.inspDraft.fail || {}), a: e.target.value }; } return; }
+  if (e.target.classList.contains('js-insp-failb')) { const o = state.overlay; if (o) { o.inspDraft = o.inspDraft || {}; o.inspDraft.fail = { ...(o.inspDraft.fail || {}), b: e.target.value }; } return; }
+  if (e.target.classList.contains('js-insp-failval')) { const o = state.overlay; if (o) { o.inspDraft = o.inspDraft || {}; o.inspDraft.fail = { ...(o.inspDraft.fail || {}), value: e.target.value }; } return; }
+  if (e.target.classList.contains('js-insp-datev')) { const o = state.overlay; if (o) { o.inspDraft = o.inspDraft || {}; o.inspDraft.fail = { ...(o.inspDraft.fail || {}), ref: e.target.value }; } return; }
   if (e.target.classList.contains('js-ck-input')) { const o = state.overlay; if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n) { n.items = n.items || {}; n.items[e.target.dataset.id] = e.target.value; } } return; }
   if (e.target.classList.contains('js-kpi-lbl')) { const o = state.overlay; if (!o) return; const rings = ensureKpiDraft(o, e.target.dataset.role); rings[Number(e.target.dataset.i)].label = e.target.value.trim(); renderOverlay(); return; }
   if (e.target.classList.contains('js-kpi-tgt')) { const o = state.overlay; if (!o) return; const rings = ensureKpiDraft(o, e.target.dataset.role); const n = Number(e.target.value); rings[Number(e.target.dataset.i)].target = isFinite(n) && e.target.value.trim() ? n : undefined; renderOverlay(); return; }
@@ -12156,6 +13291,12 @@ function onChange(e) {
   }
   if (e.target.classList.contains('js-insp-desc')) { const n = IDX.insp.get(e.target.dataset.rec); if (n) { n.description = e.target.value; render(); } return; }
   if (e.target.classList.contains('js-ck-file')) { const file = e.target.files && e.target.files[0]; if (!file) return; if ((file.type||'').startsWith('video/')) { toast('Videos can’t be stored — attach a photo instead.'); return; } const id = e.target.dataset.id; const reader = new FileReader(); reader.onload = () => { downscaleImage(reader.result, 600, 0.5, (out) => { if (!out) { toast('Could not read that image.'); return; } const o = state.overlay; if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n) { n.items = n.items || {}; n.items[id] = out; saveSoon(); renderOverlay(); } } }); }; reader.onerror = () => toast('Could not read that image.'); reader.readAsDataURL(file); return; }
+  // Per-item photo EVIDENCE (Jac 2026-06-26) — image-only, downscaled, stored inline on the
+  // record (n.itemEvidence[id]); mirrors js-ck-file. No Drive offload (inherits the inline pattern).
+  if (e.target.classList.contains('js-ck-evid')) { const file = e.target.files && e.target.files[0]; if (!file) return; if ((file.type||'').startsWith('video/')) { toast('Per-item evidence is photo-only — use the walkaround for video.'); return; } const id = e.target.dataset.id; const reader = new FileReader(); reader.onload = () => { downscaleImage(reader.result, 800, 0.6, (out) => { if (!out) { toast('Could not read that image.'); return; } const o = state.overlay; if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n) { n.itemEvidence = n.itemEvidence || {}; (n.itemEvidence[id] = n.itemEvidence[id] || []).push({ kind: 'image', url: out }); logAction(n, 'Evidence photo attached'); saveSoon(); renderOverlay(); } } }); }; reader.onerror = () => toast('Could not read that image.'); reader.readAsDataURL(file); return; }
+  // Unit-level WALKAROUND evidence (Jac 2026-06-26) — image OR video, kept inline on n.evidence
+  // (video uncompressed, like the §12.8 failure report). Off by default per family.
+  if (e.target.classList.contains('js-ck-walk')) { const file = e.target.files && e.target.files[0]; if (!file) return; const o = state.overlay; if (!o || o.kind !== 'checklist') return; const isVid = (file.type||'').startsWith('video/'); const reader = new FileReader(); reader.onload = () => { const store = (url) => { const n = IDX.insp.get(o.inspId); if (n) { n.evidence = n.evidence || []; n.evidence.push({ kind: isVid ? 'video' : 'image', url }); logAction(n, isVid ? 'Walkaround video attached' : 'Walkaround photo attached'); saveSoon(); renderOverlay(); } }; if (isVid) store(reader.result); else downscaleImage(reader.result, 1000, 0.6, (out) => store(out || reader.result)); }; reader.onerror = () => toast('Could not read that file.'); reader.readAsDataURL(file); return; }
   if (e.target.classList.contains('js-svc-photo')) {
     const file = e.target.files && e.target.files[0]; if (!file) return;
     if ((file.type || '').startsWith('video/')) { toast('Videos can’t be stored on the record — attach a photo instead.'); return; }
@@ -12182,7 +13323,7 @@ function openLogoMenu(anchorEl) {
   const team = `<div class="menu-sep"></div><div class="menu-team"><div class="menu-team-head">Team KPIs</div><div class="menu-team-ring">${ringsSVG(roleScores, ROLES.map((r) => r.color), { size: 104 })}</div><div class="kpi-list"><div class="kpi-line"><span class="k-name">Sulphur Team</span><span class="k-val" style="color:var(--${tbd.color})">${teamScore}%</span></div></div></div>`;
   const userLine = `<div class="menu-user"><span class="mu-name">${esc(currentUser || 'Signed in')}</span>${currentRole ? `<span class="mu-role">${esc(currentRole)}</span>` : ''}</div>
     <button class="dd-item js-switch-user"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.back}</span>Switch user</button>
-    <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${(currentRole === 'Admin' || currentRole === 'Owner') ? '' : ' <span class="muted" style="font-size:10px;margin-left:2px">Admin</span>'}</button>
+    <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${adminUnlocked() ? '' : ' <span class="muted" style="font-size:10px;margin-left:2px">Admin</span>'}</button>
     <div class="menu-sep"></div>`;
   openDropdown(anchorEl, userLine + boards + team);
 }
@@ -12197,7 +13338,7 @@ function switchUser() {
 // admin password; a staff role must enter it. Loads the live config, then opens the editor.
 async function openSettings() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
-  const adminPw = (currentRole === 'Admin' || currentRole === 'Owner') ? backendPassword : (window.prompt('Settings is Admin-only.\nEnter the Admin password:') || '');
+  const adminPw = adminUnlocked() ? backendPassword : (window.prompt('Settings is Admin-only.\nEnter the Admin password:') || '');
   if (!adminPw) return;
   // Open the shell immediately in a loading state so the wait is visible, not a frozen UI.
   openOverlay({ kind: 'settings', loading: true, adminPw });
@@ -12218,7 +13359,13 @@ async function saveSettings() {
   if (haveLogins) {
     roles = {}; root.querySelectorAll('.set-input[data-role]').forEach((i) => { roles[i.dataset.role] = i.value.trim(); });
     admin = root.querySelector('.set-input[data-admin]')?.value.trim() || '';
+    // Labels + tiers ride in settings.roleMeta — capture the typed labels, then
+    // prune meta for any role that was removed so it can't linger.
+    const meta = draftRoleMeta(o);
+    root.querySelectorAll('.set-input[data-rolelabel]').forEach((i) => { const id = i.dataset.rolelabel; (meta[id] || (meta[id] = {})).label = i.value.trim(); });
+    Object.keys(meta).forEach((id) => { if (!(id in roles)) delete meta[id]; });
     if (!admin || Object.values(roles).some((v) => !v)) { o.error = 'Passwords can\'t be empty.'; o.tab = 'logins'; renderOverlay(); return; }
+    if (Object.keys(roles).some((id) => !(meta[id] && meta[id].label))) { o.error = 'Role names can\'t be empty.'; o.tab = 'logins'; renderOverlay(); return; }
   }
   const settings = o.draftSettings || state.settings || {};
   // Inputs are read above; now flip to the Saving… state so the button doesn't look frozen.
@@ -12227,7 +13374,7 @@ async function saveSettings() {
     const r = await backendCall('setConfig', { password: o.adminPw, config: { roles, admin, settings } });
     o.saving = false;
     if (r && r.ok) {
-      if (haveLogins && (currentRole === 'Admin' || currentRole === 'Owner')) { const myNew = currentRole === 'Admin' ? admin : (roles[currentRole] || o.adminPw); backendPassword = myNew; sessionStorage.setItem('jactec.pw', myNew); o.adminPw = myNew; }
+      if (haveLogins && adminUnlocked()) { const myNew = currentRole === 'Admin' ? admin : (roles[currentRole] || o.adminPw); backendPassword = myNew; sessionStorage.setItem('jactec.pw', myNew); o.adminPw = myNew; }
       o.config.roles = roles; o.config.admin = admin; o.config.settings = settings;
       persistAdminSettings(settings);   // mirror locally + apply the status overrides live
       closeOverlay(); toast('Settings saved.'); render();
@@ -12263,7 +13410,7 @@ function parseQuickCustomer(q) {
 function quickAddCustomerFromSearch(value) {
   const p = parseQuickCustomer(value); if (!p) return false;
   const id = nextCustomerId();
-  const c = { customerId: id, firstName: p.firstName, lastName: p.lastName, name: `${p.firstName} ${p.lastName}`.trim(), company: '', phone: p.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName: p.firstName, lastName: p.lastName, name: `${p.firstName} ${p.lastName}`.trim(), company: '', phone: p.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
   logAction(c, 'Customer quick-added');
   const s = activeSession();
@@ -12324,7 +13471,7 @@ function openCustomerForm(editId, prefill, linkTo) {
   openOverlay({ kind: 'newCustomer', error: '', editId: editId || null, linkTo: (!editId && linkTo) || null, draft: {
     firstName: f('firstName'), lastName: f('lastName'), company: f('company'), phone: f('phone'),
     email: f('email'), industry: f('industry'), accountType: f('accountType', 'Non-Business'),
-    requiresPO: c ? !!c.requiresPO : undefined, accountNotes: f('accountNotes'), selfie: f('selfie'), signature: f('signature'),
+    requiresPO: c ? !!c.requiresPO : undefined, rentalProtection: c ? !!c.rentalProtection : undefined, accountNotes: f('accountNotes'), selfie: f('selfie'), signature: f('signature'),
     agreementType: f('agreementType'), agreementSignedAt: f('agreementSignedAt'),
     idNumber: f('idNumber'), netDays: f('netDays'), custom: (c && c.custom) ? { ...c.custom } : {},
   } });
@@ -12361,7 +13508,7 @@ function quickSaveCustomer(o) {
     customerId: id, firstName: d.firstName, lastName: d.lastName, name: `${d.firstName} ${d.lastName}`.trim(),
     company: d.company, phone: d.phone, email: d.email, address: '',
     industry: d.industry, accountType: d.accountType || 'Non-Business', payStatus: 'New Customer',
-    requiresPO: !!d.requiresPO, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
+    requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
     idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
     interestedCategoryIds: [], activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
@@ -12411,10 +13558,11 @@ function saveNewCustomer() {
   const missingCf = customFieldsFor('customers').find((f) => f.required && !(o.draft.custom[f.id] || '').trim());
   if (missingCf) { o.error = `“${missingCf.label}” is required.`; renderOverlay(); document.querySelector(`.overlay [data-cf="${missingCf.id}"]`)?.focus(); return; }
   if (o.draft.requiresPO !== true && o.draft.requiresPO !== false) { o.error = ''; o.tab = 'account'; renderOverlay(); flashOr('.overlay .js-nc-po', 'Choose PO — Yes or No before saving.'); return; }   // force the PO answer
+  if (o.draft.rentalProtection !== true && o.draft.rentalProtection !== false) { o.error = ''; o.tab = 'account'; renderOverlay(); flashOr('.overlay .js-nc-rp', 'Choose Rental Protection — Yes or No before saving.'); return; }   // F4 — force the protection answer (mirrors PO)
   const d = o.draft;
   if (o.editId) {                                   // ── editing / completing an existing customer ──
     const c = IDX.customer.get(o.editId); if (!c) { closeOverlay(); return; }
-    Object.assign(c, { firstName: d.firstName, lastName: d.lastName, company: d.company, phone: d.phone, email: d.email, industry: d.industry, accountType: d.accountType || 'Non-Business', requiresPO: !!d.requiresPO, accountNotes: d.accountNotes, idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {} });   // §7.1b signature/agreement live on the card
+    Object.assign(c, { firstName: d.firstName, lastName: d.lastName, company: d.company, phone: d.phone, email: d.email, industry: d.industry, accountType: d.accountType || 'Non-Business', requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {} });   // §7.1b signature/agreement live on the card
     if (!c.accountNotes) c.accountNotesColor = '';   // popup has no dot picker — don't leave a stale tag on a cleared note
     c.name = `${d.firstName} ${d.lastName}`.trim() || c.name;
     reindex('customers', c);
@@ -12431,7 +13579,7 @@ function saveNewCustomer() {
     customerId: id, firstName: d.firstName, lastName: d.lastName, name: `${d.firstName} ${d.lastName}`.trim(),
     company: d.company, phone: d.phone, email: d.email, address: '',
     industry: d.industry, accountType: d.accountType || 'Non-Business', payStatus: 'New Customer',
-    requiresPO: !!d.requiresPO, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
+    requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
     idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
     interestedCategoryIds: [], activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
@@ -12446,7 +13594,7 @@ function saveNewCustomer() {
   else { anchorRecord('customers', id); toast(`${c.name} added.`); }
 }
 /* ════════════════════════════════════════════════════════════════════════
- * §17 STRIPE / PAYMENTS — card-on-file + invoice charging (client side).
+ * APP-35 · §17 STRIPE / PAYMENTS — card-on-file + invoice charging (client side).
  * Card data is entered ONLY in Stripe's iframe (Card Element) and tokenized in
  * the browser; raw PAN/CVC never touches our code or the backend. The backend
  * owns the money math — the client never sends an amount.
@@ -12469,7 +13617,7 @@ function getStripe() {
   return _stripe;
 }
 // Only Office/Admin take payments. In #local demo (no role) we still show the UI.
-const canMoney = () => !currentRole || currentRole === 'Admin' || currentRole === 'Owner' || currentRole === 'Office';
+const canMoney = () => !currentRole || roleTier(currentRole) >= tierRank('money');
 const brandName = (b) => (b || 'Card').replace(/^./, (m) => m.toUpperCase());
 const hasCardOnFile = (c) => customerCards(c).length > 0;
 /* §12.1 rapid action entry (Jac 2026-06-12): commit per the R14 mode toggle —
@@ -12510,7 +13658,7 @@ function friendlyPayErr(r) {
   })[code] || 'Payment failed — try again or use another card.';
 }
 
-async function openAddCard(customerId, opts) { await ensurePubKey(); openOverlay({ kind: 'addCard', customerId, returnTo: (opts && opts.returnTo) || '', invoiceId: (opts && opts.invoiceId) || '' }); }
+async function openAddCard(customerId, opts) { if (!canMoney()) { toast('Cards on file are Office/Admin only.'); return; } await ensurePubKey(); openOverlay({ kind: 'addCard', customerId, returnTo: (opts && opts.returnTo) || '', invoiceId: (opts && opts.invoiceId) || '' }); }
 async function openAddBank(customerId, opts) { await ensurePubKey(); openOverlay({ kind: 'addAch', customerId, returnTo: (opts && opts.returnTo) || '', invoiceId: (opts && opts.invoiceId) || '' }); }
 async function openVerifyBank(customerId, bankId) { await ensurePubKey(); openOverlay({ kind: 'verifyAch', customerId, bankId }); }
 async function openPayInvoice(invoiceId) { await ensurePubKey(); openOverlay({ kind: 'payment', invoiceId, busy: false, error: '' }); }
@@ -12994,6 +14142,8 @@ function printInvoice(invoiceId) {
         <div><span class="pr-k">Date</span><span class="pr-v">${esc(fmtShortDate(inv.date) || '—')}</span></div>
         <div><span class="pr-k">Due</span><span class="pr-v">${esc(inv.dueDate ? fmtShortDate(inv.dueDate) : '—')}</span></div>
         ${inv.po ? `<div><span class="pr-k">PO</span><span class="pr-v">${esc(inv.po)}</span></div>` : ''}
+        ${inv.covStart && inv.covEnd ? `<div><span class="pr-k">Rental period</span><span class="pr-v">${esc(fmtShortDate(inv.covStart))} – ${esc(fmtShortDate(inv.covEnd))}</span></div>` : ''}
+        ${inv.contOf ? `<div><span class="pr-k">Continuation of</span><span class="pr-v">${esc(invoiceShort(inv.contOf))} (28-day billing split)</span></div>` : ''}
       </div>
       <table class="pr-lines"><thead><tr><th>Description</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="pr-tot">
@@ -13156,15 +14306,26 @@ function createInvoiceForRental(rentalId) {
   if (!r.customerId) { flashOr('[data-slot="customer"]', 'The Quote needs a customer first — drag one on (or quick-add).'); return; }
   if (!r.startDate || !r.endDate) { flashOr('.rdcal, .timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   if (!rentalUnitIds(r).length) { flashOr('.stall-empty, [data-slot="unit"]', 'Add at least one unit before invoicing.'); return; }
-  const id = nextInvoiceId();
-  const inv = { invoiceId: id, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: dueForCustomer(r.customerId), po: '', amountPaid: 0, lineItems: [], mock: true };
-  rentalLineItems(r).forEach((li) => inv.lineItems.push(li));      // one rental line per unit (§20)
-  transportLineItems(r).forEach((li) => inv.lineItems.push(li));   // one transport line per unit (§20)
-  DATA.invoices.push(inv); IDX.invoice.set(id, inv); reindex('invoices', inv);
-  r.invoiceId = id;
-  logAction(inv, `Created for ${rentalUnitsLabel(r) || 'rental'}`);
-  logAction(r, `Invoice ${invoiceShort(id)} created`);
-  toast(`Invoice ${invoiceShort(id)} created and linked.`);
+  // §28cap — chunk the window into ≤28-day invoices (a long rental → a billing series).
+  // ≤28 days = exactly one invoice, lines built exactly as before (the common path).
+  const chunks = invoiceChunks(r.startDate, r.endDate);
+  let id = null;
+  chunks.forEach((ch) => {
+    const cid = nextInvoiceId();
+    const inv = { invoiceId: cid, customerId: r.customerId, rentalIds: [rentalId], date: TODAY_ISO, dueDate: dueForCustomer(r.customerId), po: '', amountPaid: 0, lineItems: [], covOf: rentalId, covStart: ch.start, covEnd: ch.end, mock: true };
+    if (ch.idx === 0) { id = cid; r.invoiceId = cid; }
+    else inv.contOf = id;
+    if (chunks.length === 1) { rentalLineItems(r).forEach((li) => inv.lineItems.push(li)); }   // unchanged single-invoice path
+    else billChunkUnits(inv, r, ch.start, ch.end, ch.start, retroPricingOn(), 'rental', ch.idx === 0 ? null : id);   // per-chunk rental line(s)
+    if (ch.idx === 0) {   // transport + Rental Protection surcharge (F4b) billed once, on the primary chunk
+      transportLineItems(r).forEach((li) => inv.lineItems.push(li));
+      protectionLineItems(r).forEach((li) => inv.lineItems.push(li));
+    }
+    DATA.invoices.push(inv); IDX.invoice.set(cid, inv); reindex('invoices', inv);
+    logAction(inv, ch.idx === 0 ? `Created for ${rentalUnitsLabel(r) || 'rental'}` : `Continuation (days ${ch.idx * INV_CAP_DAYS + 1}+) — ext of ${invoiceShort(id)}`);
+  });
+  logAction(r, `Invoice ${invoiceShort(id)} created${chunks.length > 1 ? ` + ${chunks.length - 1} continuation${chunks.length > 2 ? 's' : ''} (28-day cap)` : ''}`);
+  toast(`Invoice ${invoiceShort(id)} created and linked${chunks.length > 1 ? ` — split into ${chunks.length} (28-day cap)` : ''}.`);
   // #8 — open the new invoice ON the Invoice card (Jac 2026-06-13)
   const session = activeSession();
   if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -13180,7 +14341,10 @@ function setDraftDate(rentalId, which, val) {
   logAction(r, `${which === 'start' ? 'Start' : 'End'} date → ${val ? fmtShortDate(val) : 'cleared'}`);   // #1 — was unlogged
   reanchorRender();
 }
-const reanchorRender = () => { const s = activeSession(); if (s.anchor) setAnchor(s, s.anchor.card, s.anchor.recId, s.anchor.recType); render(); };
+// §264 — refresh the cascade after an in-place action WITHOUT collapsing the sibling
+// cards (preserve their open record, typed search/filter, and history). A fresh anchor
+// still goes through the full setAnchor reset; only this refresh path preserves views.
+const reanchorRender = () => { const s = activeSession(); if (s.anchor) setAnchor(s, s.anchor.card, s.anchor.recId, s.anchor.recType, { preserve: true }); render(); };
 /** Append a timestamped action to a record's log (surfaced in its History section). */
 let actionSeq = 0;
 // Audit trail: who's signed in on this device (remembered across sessions). Every
@@ -13255,43 +14419,34 @@ function to12(hhmm) { if (!hhmm) return ''; const [H, M] = hhmm.split(':').map(N
 // dispatch consequences) → it STAGES + requires an explicit Save; everything else
 // commits live and closes on click-away, no Save needed (Jac 2026-06-13).
 function rentalFragile(r) { return !!r && (!!r.invoiceId || ['On Rent', 'End Rent', 'Off Rent', 'Returned'].includes(r.status)); }
-function winTarget() { const wp = state.winpicker; if (!wp) return null; return wp.staged || IDX.rental.get(wp.rentalId); }
+function winTarget() { const wp = state.winEdit; if (!wp) return null; return wp.staged || IDX.rental.get(wp.rentalId); }
 function winStagedChanged() {
-  const wp = state.winpicker; if (!wp || !wp.staged) return false;
+  const wp = state.winEdit; if (!wp || !wp.staged) return false;
   const r = IDX.rental.get(wp.rentalId); if (!r) return false;
   return wp.staged.startDate !== (r.startDate || '') || wp.staged.endDate !== (r.endDate || '') || wp.staged.startTime !== (r.startTime || '');
 }
-function openWinPicker(rentalId) {
-  const r = IDX.rental.get(rentalId); if (!r) return;
-  if (!r.startTime) r.startTime = nowHourLabel();   // default to the current hour (user spec)
-  state.winpicker = { rentalId, monthISO: firstOfMonthISO(r.startDate || TODAY_ISO), anchor: null };
-  if (rentalFragile(r)) state.winpicker.staged = { rentalId, startDate: r.startDate || '', endDate: r.endDate || '', startTime: r.startTime || '' };
-  // Task C — only pivot the left column to Categories when the Rental Standard View is already
-  // open for this rental AND dates are set (so clicking the mini-calendar on a list-view row
-  // doesn't clobber whatever the operator had open on the left).
-  // Availability lens fires for both trigger paths whenever dates exist.
-  const s = activeSession();
-  const rs = s.cards.rentals;
-  if (rs && rs.mode === 'standard' && rs.recId === rentalId && r.startDate && r.endDate) {
-    if (s.cols) s.cols.left = 'categories';
-    const cc = s.cards.categories; if (cc) { cc.mode = 'list'; cc.recId = null; cc.listLimit = undefined; }
-  }
-  if (!rentalFragile(r) && r.startDate && r.endDate) enterAvailabilitySearch(r);
-  render();
-}
 function winPickSave() {
-  const wp = state.winpicker; if (!wp) return;
+  const wp = state.winEdit; if (!wp) return;
   const r = IDX.rental.get(wp.rentalId);
   if (r && wp.staged) {
+    const prevEnd = r.endDate || '', prevStart = r.startDate || '';
     r.startDate = wp.staged.startDate; r.endDate = wp.staged.endDate; r.startTime = wp.staged.startTime;
     if (r.startDate && r.endDate && r.status === 'Quote') r.status = 'Reserved';
     logAction(r, `Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}`);
+    const ext = billExtension(r, prevEnd, prevStart);   // bill the lengthened window (either end) across the ≤28-day invoice series
+    if (ext) {
+      const basis = ext.retro ? 'retroactive' : 'added days';
+      const up = ext.subtotalDelta >= 0;
+      const amt = money(Math.abs(ext.subtotalDelta));
+      const newN = ext.newInvoices ? ` · ${ext.newInvoices} new invoice${ext.newInvoices > 1 ? 's' : ''}` : '';
+      logAction(r, `Extension ${up ? 'billed' : 're-priced −'} (${basis}) — ${up ? '+' : '−'}${amt}${newN}`);
+      toast(`Extension ${up ? 'billed +' : 're-priced − '}${amt} (${basis})${ext.newInvoices ? ` — opened ${ext.newInvoices} continuation invoice${ext.newInvoices > 1 ? 's' : ''} (28-day cap)` : ''}.`);
+    }
   }
-  state.winpicker = null; render();
+  state.winEdit = null; render();
 }
-function closeWinPicker() { state.winpicker = null; render(); }
 function winPickMonth(delta) {
-  const wp = state.winpicker; if (!wp) return;
+  const wp = state.winEdit; if (!wp) return;
   const d = parseISO(wp.monthISO); d.setMonth(d.getMonth() + delta);
   wp.monthISO = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; render();
 }
@@ -13326,7 +14481,7 @@ function exitAvailabilitySearch() {
   if (seed && DATA.categories.some((c) => (c.name || '').toLowerCase() === seed)) us.search = '';
 }
 function winPickDay(iso) {
-  const wp = state.winpicker; if (!wp) return;
+  const wp = state.winEdit; if (!wp) return;
   const r = IDX.rental.get(wp.rentalId); if (!r) return;
   const t = winTarget();                                 // staged (fragile) or the rental itself (live)
   const subject = winPickSubject();
@@ -13347,9 +14502,12 @@ function winPickDay(iso) {
   }
   reanchorRender();
 }
-function setWinTime(hhmm) { const wp = state.winpicker; if (!wp) return; const t = winTarget(); if (!t) return; t.startTime = to12(hhmm); reanchorRender(); }
-function winPickClear() { const wp = state.winpicker; if (!wp) return; const t = winTarget(); if (t) { t.startDate = ''; t.endDate = ''; wp.anchor = null; } if (!wp.staged) exitAvailabilitySearch(); reanchorRender(); }
-function winPickToday() { const wp = state.winpicker; if (!wp) return; wp.monthISO = firstOfMonthISO(TODAY_ISO); const t = winTarget(); if (t) { t.startDate = TODAY_ISO; t.endDate = ''; wp.anchor = TODAY_ISO; } reanchorRender(); }
+function setWinTime(hhmm) { const wp = state.winEdit; if (!wp) return; const t = winTarget(); if (!t) return; t.startTime = to12(hhmm); reanchorRender(); }
+function winPickClear() { const wp = state.winEdit; if (!wp) return; const t = winTarget(); if (t) { t.startDate = ''; t.endDate = ''; wp.anchor = null; } if (!wp.staged) exitAvailabilitySearch(); reanchorRender(); }
+/** §inline — Cancel the staged window edit on a fragile rental: revert the staged copy to
+ *  the rental's real dates (the confirm card disappears, nothing is billed). */
+function winPickCancel() { const wp = state.winEdit; if (!wp || !wp.staged) return; const r = IDX.rental.get(wp.rentalId); if (!r) return; wp.staged = { rentalId: wp.rentalId, startDate: r.startDate || '', endDate: r.endDate || '', startTime: r.startTime || '' }; wp.anchor = null; reanchorRender(); }
+function winPickToday() { const wp = state.winEdit; if (!wp) return; wp.monthISO = firstOfMonthISO(TODAY_ISO); const t = winTarget(); if (t) { t.startDate = TODAY_ISO; t.endDate = ''; wp.anchor = TODAY_ISO; } reanchorRender(); }
 
 /* ── R22 DATE PICKER — single date/datetime, reuses the .wp-* calendar styling.
    state.datepick = { field, withTime, monthISO }; writes state.overlay[field]
@@ -13400,7 +14558,7 @@ function dayBlocked(subject, iso, selfId) {
 }
 /** Render the inline calendar popup for the rental whose picker is open. */
 function winPickerEl(r) {
-  const wp = state.winpicker;
+  const wp = state.winEdit;
   const md = parseISO(wp.monthISO); const y = md.getFullYear(), m = md.getMonth();
   const startDow = new Date(y, m, 1).getDay();
   const daysIn = new Date(y, m + 1, 0).getDate();
@@ -13425,31 +14583,47 @@ function winPickerEl(r) {
   }
   const subjName = subject && (subject.kind === 'unit' ? IDX.unit.get(subject.id)?.name : IDX.category.get(subject.id)?.name);
   const dows = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => `<span class="wp-dow">${d}</span>`).join('');
+  // §ext — live extension preview: a lengthened fragile-rental window re-prices the
+  // whole window and shows the increment (added charge + tax + new balance) before commit.
+  const ext = wp.staged ? extensionPreview(IDX.rental.get(wp.rentalId), wp.staged.startDate, wp.staged.endDate) : null;
+  const billing = !!(ext && ext.subtotalDelta > 0.005);
+  const reducing = !!(ext && ext.subtotalDelta < -0.005);   // retro down-reblend: extending unlocks the cheaper 4-Week rate
+  const changing = billing || reducing;
+  const extHtml = changing
+    ? `<div class="wp-ext${reducing ? ' wp-ext-down' : ''}">
+        <div class="wp-ext-cap"><span class="wp-ext-kick">${reducing ? 'Re-price' : 'Extension'}</span><span class="wp-ext-days">${ext.daysDelta >= 0 ? '+' : ''}${ext.daysDelta} day${Math.abs(ext.daysDelta) !== 1 ? 's' : ''} · ${esc(fmtShortDate(ext.newStart))} → ${esc(fmtShortDate(ext.newEnd))}</span></div>
+        <div class="wp-ext-row"><span>${reducing ? 'Invoice credit' : 'Added charge'}</span><b>${reducing ? '−' : ''}${money2(Math.abs(ext.subtotalDelta))}</b></div>
+        ${ext.taxDelta ? `<div class="wp-ext-row"><span>Tax (${(TAX_RATE * 100).toFixed(2)}%)</span><b>${reducing ? '−' : ''}${money2(Math.abs(ext.taxDelta))}</b></div>` : ''}
+        <div class="wp-ext-row wp-ext-bal"><span>New balance</span><b>${money2(ext.newBalance)}</b></div>
+        <div class="wp-ext-basis">${reducing ? 'Extending unlocks the cheaper 4-Week rate — the bill drops.' : ext.retro ? 'Cheapest price for all rental days — prior charges count toward it.' : 'Billed as a fresh rental of the added days.'}</div>
+      </div>`
+    : '';
+  // §inline confirm — a FRAGILE (invoiced/out) rental stages its edit; once the window
+  // actually changes, a "Confirm new rental window?" panel drops in INLINE below the calendar
+  // (above the Today/Clear foot) with the money preview + a blue Save. The calendar stays fully
+  // editable behind it — no blocking popup. Non-fragile rentals commit live (no staging).
+  const stagedChanged = !!(wp.staged && winStagedChanged());
+  const saveLabel = billing ? 'Bill Extension' : reducing ? 'Re-price ↓' : 'Confirm window';
+  const confirmCard = stagedChanged
+    ? `<div class="wp-confirm">
+        <div class="wp-confirm-h">Confirm new rental window?</div>
+        ${changing ? extHtml : '<div class="wp-ext-basis" style="margin:0">New window — no change to billing.</div>'}
+        <div class="wp-confirm-foot">${ghostPill('Cancel', { js: 'js-wp-cancel' })}${actionPill(billing ? 'money' : 'commit', saveLabel, { js: 'js-wp-save' })}</div>
+      </div>`
+    : '';
   return `<div class="winpicker">
     <div class="wp-time"><label>Pickup time</label><input type="time" class="js-wp-time" value="${esc(to24(t.startTime) || '09:00')}"></div>
     <div class="wp-head"><span class="wp-month">${MONTH_NAMES[m]} ${y}</span>
       <span class="wp-nav"><button class="js-wp-prev" data-tip="Previous month">‹</button><button class="js-wp-next" data-tip="Next month">›</button></span></div>
     <div class="wp-grid">${dows}${cells}</div>
     ${subjName ? `<div class="wp-blocknote">Greyed days are ${state.overbookOn ? 'booked' : 'unavailable'} for <b>${esc(subjName)}</b>${state.overbookOn ? ' — overbooking is on, pick to force' : ''}</div>` : ''}
-    <div class="wp-foot"><button class="pill ghost js-wp-today" data-r="R18">Today</button>${wp.staged && winStagedChanged() ? actionPill('commit', 'Save', { js: 'js-wp-save' }) : ''}${actionPill('commit', 'Clear', { js: 'js-wp-clear' })}</div>
+    ${confirmCard}
+    <div class="wp-foot"><button class="pill ghost js-wp-today" data-r="R18">Today</button>${actionPill('commit', 'Clear', { js: 'js-wp-clear' })}</div>
   </div>`;
-}
-/** Float the picker anchored to the TOP of its trigger button (opens upward so the
- *  guide popup below it isn't blocked); drops below only if there's no room above. */
-function positionWinPicker(fl) {
-  const trigger = document.querySelector(`.js-open-winpicker[data-rec="${state.winpicker.rentalId}"]`);
-  if (!trigger) { fl.style.display = 'none'; return; }       // detail not visible → hide
-  const tr = trigger.getBoundingClientRect();
-  const pw = fl.offsetWidth || 300, ph = fl.offsetHeight || 360;
-  let left = Math.max(10, Math.min(tr.left + tr.width / 2 - pw / 2, window.innerWidth - pw - 10));   // centered on the button
-  let top = tr.top - ph - 6;                                  // ANCHORED ABOVE the button
-  if (top < 10) top = Math.min(tr.bottom + 6, window.innerHeight - ph - 10);   // no room above → drop below
-  fl.style.left = Math.round(left) + 'px';
-  fl.style.top = Math.round(top) + 'px';
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §5.4d — DATE SEARCH PICKER. A standalone calendar that REUSES the rental
+   APP-36 · §5.4d — DATE SEARCH PICKER. A standalone calendar that REUSES the rental
    window-picker's look (.winpicker/.wp-*) but none of its rental/availability
    coupling. Type "date"/"dates"→Enter (or click a date chip) to open; tap one
    day or two to set a range; Done pins a `__date` filter term on the scope.
@@ -13588,8 +14762,14 @@ function setInspBill(id, val) {
 function autoWOFromInspection(n) {
   const id = 'WO-INS' + (state.seq++);
   const u = IDX.unit.get(n.unitId);
-  const wo = { woId: id, unitId: n.unitId, inspectionId: n.inspectionId, customerId: n.billCustomer === 'Yes' ? n.customerId : null, woReport: 'From failed inspection', woType: 'Failed', description: `Auto-created from inspection ${n.inspectionId}.`, phase: 'Part Needed?', billCustomer: n.billCustomer || 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  // Enrich the report with the failed-item summary (n.description is set by completeChecklist before
+  // the cascade fires). The WO references the inspection's LIVE evidence via wo.inspectionId, so any
+  // photo added during the inspection (or later in the §12.8 report) surfaces on the WO automatically.
+  const desc = n.description ? `Auto-created from inspection ${n.inspectionId}. ${n.description}` : `Auto-created from inspection ${n.inspectionId}.`;
+  const evCount = n.itemEvidence ? Object.values(n.itemEvidence).reduce((a, arr) => a + ((arr && arr.length) || 0), 0) : 0;
+  const wo = { woId: id, unitId: n.unitId, inspectionId: n.inspectionId, customerId: n.billCustomer === 'Yes' ? n.customerId : null, woReport: 'From failed inspection', woType: 'Failed', description: desc, phase: 'Part Needed?', billCustomer: n.billCustomer || 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(wo); IDX.wo.set(id, wo); reindex('workOrders', wo);
+  if (evCount) logAction(wo, `Inherited ${evCount} inspection evidence photo${evCount === 1 ? '' : 's'}`);
   n.woId = id;
   return wo;
 }
@@ -13823,6 +15003,7 @@ function addRentalLineToInvoice(invoiceId, rentalId) {
   const total = lines.reduce((a, li) => a + (Number(li.amount) || 0), 0);
   transportLineItems(r).forEach((li) => inv.lineItems.push(li));   // one transport line per unit (§20)
   if (!r.invoiceId) r.invoiceId = invoiceId;
+  protectionLineItems(r).forEach((li) => inv.lineItems.push(li));  // F4b — this rental's protection surcharge (one line per rental, ref=rentalId)
   if (!inv.rentalIds.includes(rentalId)) inv.rentalIds.push(rentalId);
   logAction(inv, `Added rental: ${rentalUnitsLabel(r) || 'Rental'} (${money(total)})`);
   logAction(r, `Added to invoice ${invoiceShort(invoiceId)}`);
@@ -13889,10 +15070,10 @@ function mergeInvoiceInto(keepId, absorbId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   §18 PERSISTENCE & BOOT
+   APP-37 · §18 PERSISTENCE & BOOT
    ════════════════════════════════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════════
-   §18b BACKEND SYNC — Google Sheets via the Apps Script web app
+   APP-38 · §18b BACKEND SYNC — Google Sheets via the Apps Script web app
    ════════════════════════════════════════════════════════════════════════
    The app loads its data from the Sheet on sign-in, seeds the Sheet from the
    demo data on first run, and auto-saves (debounced) after every change.
@@ -13975,7 +15156,7 @@ const IDX_MAP = { categories: 'category', units: 'unit', customers: 'customer', 
 let refreshing = false, refreshTimer = null;
 async function refreshFromBackend() {
   if (refreshing || booting || !backendPassword || saving || savePending || !lastSaved) return;
-  if (document.hidden || DRAG.active || DRAG.armed || state.winpicker || state.overlay || hoverNode) return;   // don't disrupt active work
+  if (document.hidden || DRAG.active || DRAG.armed || state.winEdit || state.overlay || hoverNode) return;   // don't disrupt active work
   const ae = document.activeElement;
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;              // mid-typing
   refreshing = true;
@@ -14310,6 +15491,16 @@ async function shareSession() {
     caption: tabs.length ? `Scan to open your ${tabs.length} open tab${tabs.length === 1 ? '' : 's'} on another device — sign in with the shared password.`
       : 'Scan to open Rental Wrangler on another device — sign in with the shared password.' });
 }
+// Shop roles (Mechanic / M.Tech) get the Shop card + its 3-bar graph as the landing view
+// — quick access to the crew's worklist. A default only; they can navigate anywhere after.
+function applyShopRoleLanding() {
+  if (currentRole !== 'mechanic' && currentRole !== 'mtech') return;
+  const s = activeSession(); if (!s) return;
+  if (s.cols) s.cols.left = 'shop';
+  const sc = s.cards.shop; if (sc) { sc.segment = 'all'; sc.graphView = true; sc.mode = 'list'; sc.recId = null; sc.recType = null; }
+  const li = COLUMNS.findIndex((c) => c.id === 'left'); if (li >= 0) state.mobileCol = li;   // phone: make the Shop column the active one
+  render();
+}
 async function attemptLogin() {
   const name = (document.getElementById('login-name')?.value || '').trim();
   const pw = document.getElementById('login-pw')?.value || '';
@@ -14337,6 +15528,7 @@ async function attemptLogin() {
     sessionStorage.setItem('jactec.pw', pw);
     await loadFromBackend();
     finishLoad();
+    applyShopRoleLanding();   // shop roles (Mechanic / M.Tech) land on the Shop graph
   } catch (e) {
     backendPassword = ''; sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
     renderLogin(/unauthorized/i.test(String(e && e.message)) ? 'That password wasn’t recognized.' : "Couldn't reach the database. Check your connection and try again.");
@@ -14521,13 +15713,13 @@ function boot() {
     if (e.key === 'Escape') dismissTopSheet();
   });
   // mouse hotkeys (§0.1): double-click a row = anchor; right-click = Back
-  const hotkeyGuard = (e) => e.target.closest('.inline-edit, input, textarea, select, .pill, button, .x') || state.winpicker;
+  const hotkeyGuard = (e) => e.target.closest('.inline-edit, input, textarea, select, .pill, button, .x') || state.winEdit;
   document.addEventListener('dblclick', (e) => {
     if (hotkeyGuard(e)) return;
     if (e.target.closest('.row')) return;                 // rows are handled by the click discriminator (#10)
-    const r = cardRecordAt(e.target); if (!r) return;     // dbl-click on a card's open detail → anchor it
+    const r = cardRecordAt(e.target); if (!r) return;     // dbl-click on a card's open detail → anchor it (or un-anchor if it's already the anchor)
     e.preventDefault(); window.getSelection()?.removeAllRanges();
-    anchorRecord(r.card, r.recId, r.recType);
+    anchorOrToggle(r.card, r.recId, r.recType);
   });
   // right-click = send the card to its List View; double right-click = drop the anchor.
   document.addEventListener('contextmenu', (e) => {
@@ -14553,7 +15745,7 @@ function boot() {
     // The row EYE is the one button that IS a preview trigger.
     if (!e.target.closest('.js-roweye') && (e.target.closest('.pill.gate, .js-status-pill, button, .x, .seg, .add-field, .dropdown-menu') || document.querySelector('.dropdown-menu'))) { clearTimeout(hoverTimer); return; }
     const t = hoverTarget(e.target);
-    if (!t || state.overlay || state.winpicker) return;
+    if (!t || state.overlay || state.winEdit) return;
     clearTimeout(hoverGrace);            // re-entering a row cancels a pending close
     if (t === hoverEl) return;
     hoverEl = t; hideHoverPreview();
@@ -14639,16 +15831,16 @@ function exposeTestApi() {
   try {
     window.__rw = { DATA, IDX, TODAY_ISO, itemPaid, lineKey, rentalUnits, unitEntry, isPrimaryUnit,
       unitStatus, rentalUnitStatuses, unitsUniform, rentalStatusDisplay, rentalMirrorStatus, rentalDisplayStatus,
-      allUnitsTerminal, unitTerminal, unitVoided, rentalLineItems, transportLineItems, syncRentalPrimary,
+      allUnitsTerminal, unitTerminal, unitVoided, rentalLineItems, transportLineItems, extensionPreview, billExtension, unitBilledRental, unitBilledSeries, retroPricingOn, rentalInvoices, rentalActiveInvoice, invoiceChunks, createInvoiceForRental, syncRentalPrimary,
       addUnitToRental, removeUnitFromRental, removeUnitInvoiceLine, unitLinePaid, invoiceTotals, allocLines,
-      rentalAllocated, itemRefunded, itemRefundable, lineRefunded, lineFullyRefunded, refundLines, rentalLineRefund, applyPayment, unitRentalPrice, rentalDisplayName, setWoLinePhase, setWoPhase, woBottleneck,
+      rentalAllocated, itemRefunded, itemRefundable, lineRefunded, lineFullyRefunded, refundLines, rentalLineRefund, applyPayment, unitRentalPrice, rentalPrice, rentalDisplayName, setWoLinePhase, setWoPhase, woBottleneck,
       cleanUnitName, planUnitMigration, applyUnitMigration, openMigrationPreview,
       computeTransportPrice, isFueledType, unitTransport, rentalTransport,
       wrValidatePlan, applyWranglerData, wrFunnel, invoiceMergeable, mergeInvoiceInto, parseWranglerAction, stripWranglerAction, parseCsvFile, wrFindAttachedCsv,
       latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails,
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, setRole: (r) => { currentRole = r || ''; render(); },
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, addMonthsISO, openMembershipEnroll, membershipEnrollCommit, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, setRole: (r) => { currentRole = r || ''; render(); },
       openCustomerForm, renderOverlay, render, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature, __state: state };   // UI drivers for headless screenshot/e2e tests
 
   } catch (e) { /* no window (non-browser) */ }
