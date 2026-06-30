@@ -850,10 +850,16 @@ function rentalPrice(r) {
     || (sd === 6 && ed === 1 && days === 2);                   // Sat → Mon
   if (weekendWindow) return { price: cat.weekend, rate: 'WKND', days };
 
+  // Cheapest blend — tile the window with 4-Week + 7-Day blocks + a 1-Day remainder, AND
+  // allow rounding the remainder UP to one more whole block when that block is cheaper than
+  // the days it replaces. So a 6-day rental caps at the 7-Day rate (not 6×daily), and 3 weeks
+  // + 6 days caps at the 4-Week rate: we never bill MORE for fewer days than the next tier
+  // costs. The ceil bounds (vs floor) are what let a higher tier cover a partial sub-tier.
   let best = null;
-  for (let mm = 0; mm <= Math.floor(days / 28); mm++) {
-    for (let ww = 0; ww <= Math.floor((days - 28 * mm) / 7); ww++) {
-      const dd = days - 28 * mm - 7 * ww;
+  for (let mm = 0; mm <= Math.ceil(days / 28); mm++) {
+    const wkCeil = Math.max(0, Math.ceil((days - 28 * mm) / 7));
+    for (let ww = 0; ww <= wkCeil; ww++) {
+      const dd = Math.max(0, days - 28 * mm - 7 * ww);
       const total = mm * cat.rate4Wk + ww * cat.rate7Day + dd * cat.rate1Day;
       if (best == null || total < best.total) best = { total, mm, ww, dd };
     }
@@ -2054,7 +2060,16 @@ function closeTab(id) {
   if (state.activeTabId === id) state.activeTabId = state.tabs.length ? state.tabs[Math.max(0, i - 1)].id : null;
   render();
 }
-function closeAll() { state.tabs = []; state.activeTabId = null; state.searchMode = false; state.query = ''; state.winEdit = null; state.datesearch = null; render(); }
+function closeAll() {
+  state.tabs = []; state.activeTabId = null;
+  // Clearing the item-tab rail returns to a clean slate, so the search bars must
+  // go with it — both the global one (query + pinned filter pills) and every
+  // per-card mini-search on the now-active default session (these stayed filled).
+  state.searchMode = false; state.query = ''; state.filterTerms = [];
+  for (const c of GRID_CARDS) { const ccs = state.defaultSession.cards[c.id]; if (ccs) { ccs.search = ''; ccs.filterTerms = []; ccs.listLimit = undefined; } }
+  state.winEdit = null; state.datesearch = null;
+  render();
+}
 // §313 — keep only the active tab; with none active, fall back to a full close.
 function closeOthers() { if (!state.activeTabId) { closeAll(); return; } state.tabs = state.tabs.filter((t) => t.id === state.activeTabId); render(); }
 // §313 — Close-all trigger. 1–2 tabs close immediately; >2 ask first (a quick popover).
@@ -2399,9 +2414,20 @@ function rowMatches(card, rec, query, terms) {
   for (const col in byCol) { if (!byCol[col].some((v) => totColMatch(card, rec, col, v))) return false; }
   return blobMatches(IDX.search.get(card + ':' + idOf(card, rec)), q2, terms2b.filter((t) => !t.col));
 }
+// §11 transport-leg filter — mirrors the Office dispatch grid (dispatchEvents):
+// a rental has the 'delivery' leg when ANY unit ships Delivery/Round-Trip, the
+// 'pickup' leg when ANY unit ships Recovery/Round-Trip. Round-Trip has both legs,
+// Self has neither — so the operator's "Delivery vs Pickup" lens lines up with
+// the trucks that actually roll. The stored field calls a pickup 'Recovery'.
+const TRANSPORT_LEG_TYPES = { delivery: ['Delivery', 'Round-Trip'], pickup: ['Round-Trip', 'Recovery'] };
+function rentalHasLeg(r, leg) {
+  const types = TRANSPORT_LEG_TYPES[leg];
+  return !!types && rentalUnits(r).some((eu) => eu.transportType && types.includes(eu.transportType));
+}
 // A1 — exact match for a filter term's {col, value}, per record.
 function totColMatch(card, rec, col, value) {
   if (col === '__date') return dateTermHits(card, rec, value);   // §5.4d date-picker filter term
+  if (col === '__transport') return card === 'rentals' && rentalHasLeg(rec, value);   // §11 Delivery/Pickup leg filter
   if (col === '__wo') return DATA.workOrders.some((w) => w.unitId === rec.unitId && w.phase !== 'Complete' && !w.cancelled && (value === 'open' || w.phase === 'Part Ordered' || (w.lineItems || []).some((l) => l.phase === 'Part Ordered')));
   if (col === '__cond') return rec.inspectionStatus === value;
   if (col === '__svc') { const s = topServiceForUnit(rec); return !!rec.washRequested || !!(s && s.remaining < 0); }   // service-due: overdue service or wash requested
@@ -2479,6 +2505,17 @@ function addFilterTerm(scope, raw) {
   if (v === 'date' || v === 'dates') {   // §5.4d — the keyword opens the date/range picker instead of pinning the word
     if (scope === 'global') state.query = ''; else activeSession().cards[scope].search = '';
     return openDateSearch(scope);
+  }
+  // §11 — on the Rentals board, "delivery"/"pickup" pin a leg-scoped chip (mirrors the
+  // Office dispatch grid) instead of a blob word, so "pickup" actually filters (the stored
+  // type is 'Recovery') and "delivery" also catches Round-Trips. Pinnable/clearable like a
+  // status chip, and ANDs with them. Left as plain text in global search (other cards).
+  const leg = scope === 'rentals' ? ({ delivery: 'delivery', deliveries: 'delivery', pickup: 'pickup', pickups: 'pickup', 'pick up': 'pickup' })[v] : null;
+  if (leg) {
+    const arr = termsFor(scope);
+    if (!arr.some((ft) => ft.col === '__transport' && ft.value === leg)) arr.push({ t: leg, col: '__transport', value: leg, neg: false });
+    activeSession().cards[scope].search = '';
+    return afterFilterChange(scope);
   }
   const arr = termsFor(scope);
   if (!arr.some((ft) => ft.t === v)) arr.push({ t: v, neg: false });
@@ -4197,6 +4234,7 @@ function flashOr(sel, msg) {
  *  Replace opens the inline editor · Add Comment logs to History ·
  *  Ask Mr. Wrangler copies a debug reference for Claude. */
 let ctxTarget = null;
+let ctxRecord = null;   // §17b — the record the menu opened on ({card, recId}), for the "+ Target" link actions
 // §13.4 graph-chrome right-click menu — tracks which card it was opened on so runCtxAction can act without
 // the ctxOutside closer; the chosen state persists per device, per card (loadGvChrome).
 let ctxGvCard = null;
@@ -4222,10 +4260,16 @@ function closeCtxMenu() { const m = document.getElementById('rw-ctx'); if (m) m.
 function openCtxMenu(e, hit) {
   closeCtxMenu();
   ctxTarget = hit;
+  // §17b — resolve the pressed record → its menu-driven LINK actions ("+ Target").
+  const rr = hit && hit.el ? cardRecordAt(hit.el) : null;
+  const ent = rr ? entityCardOf(rr.card, rr.recType) : null;
+  ctxRecord = ent ? { card: ent, recId: rr.recId } : null;
+  const linkItems = ctxRecord ? linkActionsFor(ctxRecord.card, recOf(ctxRecord.card, ctxRecord.recId)) : [];
   const m = document.createElement('div');
   m.className = 'ctx-menu'; m.id = 'rw-ctx';
   const item = (act, label) => `<button class="dd-item" data-ctx="${act}">${label}</button>`;
-  m.innerHTML = [
+  const linkSec = linkItems.length ? linkItems.map((a) => `<button class="dd-item" data-ctx="link:${a.target}">${CARD_ICON[a.target] || ''}${esc(a.label)}</button>`).join('') + '<div class="menu-sep"></div>' : '';
+  m.innerHTML = linkSec + [
     item('cut', '✂️ Cut'), item('copy', '📋 Copy'), item('paste', '📥 Paste'), item('clear', '🧹 Clear'),
     '<div class="menu-sep"></div>',
     item('search', '🔎 Search'), item('gsearch', '🌐 Global Search'), item('replace', '✏️ Replace'),
@@ -4259,6 +4303,14 @@ function openCtxMenuAt(target, x, y) {
   const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
   if (hit) return openCtxMenu({ clientX: x, clientY: y }, hit);
   if (!card) return;
+  // §17b PHONE: a long-press on EMPTY space (row gaps, an open standard card) still opens
+  // the menu on the record there, so linking works from ANYWHERE on a row/card — not just
+  // a leaf. The right-click "go Back / clear anchor" on empty space stays a DESKTOP-only
+  // convention; a phone long-press must never silently navigate Back. (Jac, 2026-06-30)
+  if (document.body.classList.contains('is-phone')) {
+    if (cardRecordAt(target)) return openCtxMenu({ clientX: x, clientY: y }, { r: null, el: target });
+    return;   // truly empty list space → do nothing (never Back on a phone long-press)
+  }
   const dc = card.dataset.card, now = performance.now();
   if (now - lastCtx.t < 450 && lastCtx.card === dc) { lastCtx = { t: 0, card: null }; return clearAnchor(); }   // double right-click
   lastCtx = { t: now, card: dc };
@@ -4277,6 +4329,13 @@ function runCtxAction(act) {
     else if (act === 'gv-sort') saveGvChrome(card, { sort: !gvSortHidden(card) });
     else if (act === 'gv-reset') saveGvChrome(card, { pills: false, sort: false });
     return render();
+  }
+  if (act.startsWith('link:')) {   // §17b — menu-driven linking
+    const target = act.slice(5); const rec = ctxRecord;
+    closeCtxMenu(); document.removeEventListener('mousedown', ctxOutside); ctxRecord = null;
+    if (!rec) return;
+    if (rec.card === 'units' && target === 'workOrders') return startUnitWorkOrder(rec.recId);   // §4a create-WO → land on the unit
+    return enterLinking(rec.card, rec.recId, target);
   }
   const tg = ctxTarget; closeCtxMenu(); document.removeEventListener('mousedown', ctxOutside);
   if (!tg) return;
@@ -5545,7 +5604,7 @@ function allocLines(inv) {
    sending a partial now would over-refund real money. With this false the Refund button keeps
    today's safe full-invoice behavior untouched. Flip to true ONLY after deploying the
    partial-refund backend (docs/handoffs/partial-refunds-backend.md). */
-const PARTIAL_REFUNDS_ENABLED = false;
+const PARTIAL_REFUNDS_ENABLED = true;
 function itemRefunded(inv, li) {
   if (!inv || !inv.refundAllocations) return 0;
   return Math.min(Number(inv.refundAllocations[lineKey(li)]) || 0, itemPaid(inv, li));
@@ -6733,6 +6792,7 @@ function cardEl(cardDef, session) {
   } else {
     body.appendChild(listView(cardDef, session));
   }
+  const lb = linkBanner(card); if (lb) { const w = el('div'); w.innerHTML = lb; if (w.firstElementChild) node.appendChild(w.firstElementChild); }   // §17b — linking-mode banner above the list
   node.appendChild(body);
   return node;
 }
@@ -7470,11 +7530,11 @@ function commsRailEl() {
   // the live chat first if it's a brand-new one not yet snapshotted onto the rail
   let liveTab = '';
   if (wrOpen && state.wrangler.id && !state.wrangler.reqNumber && !snaps.some((c) => c.id === state.wrangler.id) && (state.wrangler.messages || []).length) {
-    liveTab = `<button class="crail-tab is-active" data-wrc-open="${esc(state.wrangler.id)}" role="tab" aria-selected="true" data-tip="Current chat with Mr. Wrangler"><span class="crail-dot"></span><span class="crail-t">${trim(wranglerConvoTitle(state.wrangler) || 'New chat')}</span></button>`;
+    liveTab = `<button class="crail-tab is-active" data-wrc-open="${esc(state.wrangler.id)}" role="tab" aria-selected="true" data-tip="Current chat with Mr. Wrangler"><span class="crail-dot"></span><span class="crail-t">${trim(wranglerConvoTitle(state.wrangler) || 'New chat')}</span><span class="crail-x js-wrc-remove" data-wrc-rm="${esc(state.wrangler.id)}" aria-label="Remove this chat" data-tip="Remove this chat">×</span></button>`;
   }
   const snapTabs = snaps.map((c) => {
     const active = wrOpen && state.wrangler.id === c.id;
-    return `<button class="crail-tab${active ? ' is-active' : ''}" data-wrc-open="${esc(c.id)}" role="tab" aria-selected="${active}" data-tip="Reopen this chat with Mr. Wrangler"><span class="crail-dot"></span><span class="crail-t">${trim(c.title || 'Chat')}</span></button>`;
+    return `<button class="crail-tab${active ? ' is-active' : ''}" data-wrc-open="${esc(c.id)}" role="tab" aria-selected="${active}" data-tip="Reopen this chat with Mr. Wrangler"><span class="crail-dot"></span><span class="crail-t">${trim(c.title || 'Chat')}</span><span class="crail-x js-wrc-remove" data-wrc-rm="${esc(c.id)}" aria-label="Remove this chat" data-tip="Remove this chat">×</span></button>`;
   }).join('');
   const wrTabs = reqTabs + liveTab + snapTabs;
   // ── 💬 TEAM ──
@@ -7664,13 +7724,30 @@ function wranglerDockEl() {
         const ask = (m.askOptions && m.askOptions.length && o.ask) ? `<div class="wr-ask">${m.askOptions.map((opt) => `<button class="wr-askbtn js-wr-ask" data-ans="${esc(opt)}">${esc(opt)}</button>`).join('')}</div>` : '';
         return `<div class="wr-msg ${m.role}">${m.role === 'assistant' ? '<span class="wr-av">🤠</span>' : ''}<div class="wr-bub">${imgs}${files}${txt}${act}${ask}</div></div>`;
       }).join('')
-    : '<div class="wr-empty">Ask about this record or the whole yard — service due, balances, what needs attention… or just tell me what’s broken (paste or attach a screenshot) and I’ll get it fixed.</div>';
+    : (o.reqNumber
+        ? '<div class="wr-empty">That’s the request up top. Reply here to talk it over with Mr. Wrangler, or use the buttons above to Approve or Dismiss it.</div>'
+        : '<div class="wr-empty">Ask about this record or the whole yard — service due, balances, what needs attention… or just tell me what’s broken (paste or attach a screenshot) and I’ll get it fixed.</div>');
   const attachRow = ((o.attach && o.attach.length) || (o.files && o.files.length))
     ? `<div class="wr-attach-row">${(o.attach || []).map((s, i) => `<div class="wr-thumb"><img src="${esc(s)}" alt="attachment"><button class="wr-thumb-x js-wr-unattach" data-i="${i}" aria-label="Remove">×</button></div>`).join('')}${(o.files || []).map((f, i) => `<div class="wr-fileatt"><span class="wr-fileatt-n">${I.paperclip || '📎'}<span class="wr-file-n">${esc(f.name)}</span></span><button class="wr-thumb-x wr-fileatt-x js-wr-unfile" data-i="${i}" aria-label="Remove">×</button></div>`).join('')}</div>`
     : '';
-  const reqBar = o.reqNumber
-    ? `<div class="wr-reqbar"><span class="wr-reqnum">Request #${o.reqNumber}</span>${o.reqTitle ? `<span class="wr-reqttl">${esc(o.reqTitle)}</span>` : ''}<span class="spacer"></span>${canApproveRequests() ? `<button class="pill ghost js-req-dismiss" data-r="R18" data-n="${o.reqNumber}">Dismiss</button><button class="pill c-commit js-req-approve" data-r="R17" data-n="${o.reqNumber}">✓ Approve</button>` : ''}</div>`
-    : '';
+  // The request header on the dock — readable in full, never truncated. A stamped #id + a
+  // live status pill + GitHub link sit on the top row; the FULL ask wraps below; the actions
+  // (matching the approval inbox) sit on their own row. Fixes "I can't see what it's asking".
+  const reqBar = (() => {
+    if (!o.reqNumber) return '';
+    const rq = (wranglerRequests || []).find((x) => x.number === o.reqNumber);
+    const st = rq ? wrReqState(rq) : null;
+    const statusPill = st ? `<span class="pill c-${st.color} req-state" data-r="R3b">${st.label}</span>` : '';
+    const ghLink = (rq && rq.url) ? `<a class="wr-reqlink" href="${esc(rq.url)}" target="_blank" rel="noopener" data-tip="Open the full request on GitHub">GitHub ↗</a>` : '';
+    const building = st && st.key === 'building';
+    const acts = (canApproveRequests() && !building)
+      ? `<div class="wr-reqacts"><button class="pill ghost js-req-dismiss" data-r="R18" data-n="${o.reqNumber}">Dismiss</button>${(!st || st.key !== 'needs') ? `<button class="pill c-commit js-req-approve" data-r="R17" data-n="${o.reqNumber}">✓ Approve</button>` : ''}</div>`
+      : (building ? '<div class="wr-reqacts"><span class="req-await">Building…</span></div>' : '');
+    return `<div class="wr-reqbar">
+      <div class="wr-reqbar-head"><span class="wr-reqnum">Request #${o.reqNumber}</span>${statusPill}<span class="spacer"></span>${ghLink}</div>
+      ${o.reqTitle ? `<div class="wr-reqttl">${esc(o.reqTitle)}</div>` : ''}
+      ${acts}</div>`;
+  })();
   return `
     <div class="wr-dock-head">
       <span style="font-size:18px">🤠</span>
@@ -7874,6 +7951,19 @@ async function wrEnforceBudget() {
 /* Boot: migrate the legacy localStorage rail into IndexedDB (one-time), then load
    ALL stored chats into the in-memory rail (newest first). Keep-all retention —
    the size guarantee is enforced by the budget/offload layer, not by dropping. */
+// §18g Chat auto-janitor (Jac, 2026-06-29) — runs on every app open: silently drop plain Mr.
+// Wrangler chats older than the retention window so the rail stays self-cleaning without manual
+// ×-ing. SKIPS request-linked chats (managed via the inbox) and chats with no timestamp (legacy →
+// kept, never guessed-old). The × stays the manual escape hatch; this just stops the slow pile-up.
+const WR_CHAT_RETAIN_DAYS = 30;
+async function wrPruneOldChats() {
+  const cutoff = Date.now() - WR_CHAT_RETAIN_DAYS * 86400000;
+  const stale = (state.wranglerRail || []).filter((c) => !c.reqNumber && (c.ts || 0) > 0 && c.ts < cutoff);
+  if (!stale.length) return;
+  const ids = new Set(stale.map((c) => c.id));
+  for (const c of stale) { try { await wrStore.delChat(c.id); } catch (e) {} }
+  state.wranglerRail = state.wranglerRail.filter((c) => !ids.has(c.id));
+}
 async function wranglerRailLoad() {
   let legacy = null; try { legacy = localStorage.getItem('jactec.wranglerRail'); } catch (e) {}
   if (legacy) {
@@ -7889,6 +7979,7 @@ async function wranglerRailLoad() {
   try {
     const all = await wrStore.listChats();
     state.wranglerRail = (all || []).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    await wrPruneOldChats();   // §18g auto-janitor: drop plain chats past the retention window
     if (state.wranglerRail.length) render();
   } catch (e) { toast('⚠ Couldn’t load chat history — ' + ((e && e.message) || 'storage error')); }
   loadWranglerRail();   // cross-device: union the local rail with the role's backend rail
@@ -7913,6 +8004,17 @@ function wranglerRailSnapshot() {
 // Start a fresh conversation (snapshotting whatever was open first).
 function wranglerNewChat(seed) {
   openWranglerDock(Object.assign({ messages: [], draft: '', attach: [], files: [], card: null, recId: null, recType: null, reqNumber: null, reqTitle: null, reqUrl: null, id: wranglerNewId() }, seed || {}));
+}
+// §18g REMOVE a Mr. Wrangler conversation entirely (the × on its rail tab) — closing the dock
+// only snapshots a chat back onto the rail, so this is the only way to actually clear one. If the
+// chat is the one open in the dock, close the dock WITHOUT re-snapshotting it.
+function wrRailRemove(id) {
+  if (!id) return;
+  const o = state.wrangler;
+  if (o.id === id) { o.open = false; o.min = false; o.id = null; o.messages = []; o.reqNumber = null; o.reqTitle = null; o.reqUrl = null; }   // drop the live one; cleared so it isn't re-snapshotted on the next open
+  state.wranglerRail = (state.wranglerRail || []).filter((c) => c.id !== id);
+  try { wrStore.delChat(id); } catch (e) {}   // also from IndexedDB so it doesn't reload next boot
+  render();
 }
 // Re-open a stored conversation from the rail.
 function wranglerRailOpen(id) {
@@ -9043,6 +9145,21 @@ function buildPopupEl(o, overlay, opts = {}) {
       <div class="cmt-card-foot">${rec ? `<span class="cmt-hint">${esc(detailTitle(entityCardOf(o.card, o.recType), rec))}</span>` : '<span></span>'}<button class="cmt-post js-cmt-save">Post</button></div>`;
     overlay.appendChild(pop);
     if (!opts.preview) setTimeout(() => pop.querySelector('.cmt-input')?.focus(), 0);
+  } else if (o.kind === 'linkConfirm') {
+    // §17b — confirm a menu-driven link. PRICE only for invoice links (B2); confirm runs dispatchDrop.
+    const srcRec = recOf(o.srcCard, o.srcId), tgtRec = recOf(o.targetCard, o.targetId);
+    const srcT = srcRec ? detailTitle(o.srcCard, srcRec) : String(o.srcId);
+    const tgtT = tgtRec ? detailTitle(o.targetCard, tgtRec) : String(o.targetId);
+    const isMoney = (o.srcCard === 'invoices' || o.targetCard === 'invoices');
+    const pop = el('div', 'popup'); pop.style.width = '360px';
+    pop.innerHTML = popupShell({
+      icon: CARD_ICON[o.targetCard] || '',
+      title: `Add to ${LINK_TARGET_LABEL[o.targetCard] || o.targetCard}?`,
+      tag: 'Link · confirm',
+      body: `<div class="lc-body"><div class="lc-line">Add <b>${esc(srcT)}</b> to <b>${esc(tgtT)}</b>?</div>${linkPriceText(o.srcCard, srcRec, o.targetCard, tgtRec)}</div>`,
+      foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill(isMoney ? 'money' : 'commit', isMoney ? 'Confirm — bill it' : 'Confirm', { js: 'js-link-confirm' })}`,
+    });
+    overlay.appendChild(pop);
   } else if (o.kind === 'rulebook') {
     // THE VISUAL RULEBOOK (SPEC v8) — every example is emitted by the REAL
     // builder, so this reference can never drift from the code.
@@ -9260,12 +9377,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     // §18e the in-app approval inbox for Mr. Wrangler's "Filed for Jac's OK" requests.
     const can = canApproveRequests();
     const list = wranglerRequests;
-    const reqState = (rq) => {
-      const labels = rq.labels || (rq.label ? [rq.label] : []);
-      if (labels.includes('wrangler-needs-jac')) return { key: 'needs', label: 'Needs your answer', color: 'red' };
-      if (labels.includes('wrangler-fix')) return { key: 'building', label: 'Building', color: 'blue' };
-      return { key: 'ok', label: 'Needs your OK', color: 'yellow' };
-    };
+    const reqState = wrReqState;   // shared with the dock reqBar — one source of truth
     const reqCard = (rq) => {
       const p = parseWranglerIssue(rq.body);
       const st = reqState(rq);
@@ -9304,24 +9416,35 @@ function buildPopupEl(o, overlay, opts = {}) {
       bodyClass: 'req-wrap', body: inner });
     overlay.appendChild(pop);
   } else if (o.kind === 'notifications') {
-    // §18f Notifications — recently-RESOLVED Mr. Wrangler fixes, surfaced in-app so a reporter
-    // sees their glitch got fixed (with the verdict) without ever opening GitHub.
-    const list = visibleNotifs();   // §246 — dismissed resolved-fix chips stay cleared
+    // §18f Notifications — Mr. Wrangler updates surfaced in-app so a reporter sees the outcome
+    // without opening GitHub. TWO kinds, and they must NOT be conflated (Jac, 2026-06-28): a
+    // CLOSED/merged fix is genuinely "Resolved"; an OPEN `wrangler-needs-jac` item (backend sends
+    // kind:'needs', merged:false) still "Needs your decision". The renderer honors n.kind so an
+    // awaiting-you item never reads "Resolved" and pile up looking done.
+    const list = visibleNotifs();   // §246 — dismissed chips stay cleared
     const muted = notifsMuted();
     const inner = !backendPassword
       ? '<div class="req-empty">Sign in to see notifications.</div>'
       : (!notifLoaded && notifLoading ? '<div class="req-empty">Loading…</div>'
-        : (!list.length ? '<div class="req-empty"><span class="req-empty-ic">🔔</span><p>All clear.</p><span>Resolved fixes you reported show here. When Mr. Wrangler finishes one, refresh the app to see the change.</span></div>'
-          : list.map((n) => `<div class="req-card has-closex">
-              <div class="req-head"><span class="req-num">${n.merged ? '✅' : 'ⓘ'} #${n.number}</span><span class="req-title">${esc(n.title)}</span><span class="spacer"></span>${closeX('js-notif-dismiss', { data: { num: n.number }, hover: true })}</div>
-              ${n.verdict ? `<div class="req-text">${esc(n.verdict).replace(/\n+/g, '<br>')}</div>` : '<div class="req-text muted">Resolved — refresh the app to see the change.</div>'}
-              <div class="req-acts"><span class="req-await">${n.closedAt ? 'Resolved ' + esc(fmtShortDate(String(n.closedAt).slice(0, 10))) : 'Resolved'}</span><a class="req-link" href="${esc(n.url)}" target="_blank" rel="noopener">GitHub ↗</a></div>
-            </div>`).join('')));
+        : (!list.length ? '<div class="req-empty"><span class="req-empty-ic">🔔</span><p>All clear.</p><span>Resolved fixes and items needing your decision show here. When Mr. Wrangler finishes one, refresh the app to see the change.</span></div>'
+          : list.map((n) => {
+              // An open wrangler-needs-jac item (backend kind:'needs') NEEDS YOU — never "Resolved".
+              const needs = n.kind === 'needs';
+              const dt = n.closedAt ? ' ' + esc(fmtShortDate(String(n.closedAt).slice(0, 10))) : '';
+              const stat = needs ? { pill: 'Needs you', color: 'red', ic: 'ⓘ', foot: 'Needs your decision' }
+                : n.merged ? { pill: 'Resolved', color: 'green', ic: '✅', foot: 'Resolved' + dt }
+                  : { pill: 'Closed', color: 'gray', ic: '✓', foot: 'Closed' + dt };
+              return `<div class="req-card has-closex${needs ? ' req-needs' : ''}">
+              <div class="req-head"><span class="req-num">${stat.ic} #${n.number}</span><span class="req-title">${esc(n.title)}</span><span class="spacer"></span><span class="pill c-${stat.color} req-state" data-r="R3b">${stat.pill}</span>${closeX('js-notif-dismiss', { data: { num: n.number }, hover: true })}</div>
+              ${n.verdict ? `<div class="req-text">${esc(n.verdict).replace(/\n+/g, '<br>')}</div>` : `<div class="req-text muted">${needs ? 'Mr. Wrangler needs your call on this one.' : 'Resolved — refresh the app to see the change.'}</div>`}
+              <div class="req-acts"><span class="req-await">${stat.foot}</span><a class="req-link" href="${esc(n.url)}" target="_blank" rel="noopener">GitHub ↗</a></div>
+            </div>`;
+            }).join('')));
     const foot = backendPassword
       ? `${list.length ? ghostPill('Dismiss all', { js: 'js-notif-dismissall', tip: 'Clear every resolved notification' }) : ''}${ghostPill(muted ? 'Unmute' : 'Mute', { js: 'js-notif-mute', tip: muted ? 'Show the unseen badge again' : 'Silence the unseen-count badge' })}`
       : '';
     const pop = el('div', 'popup'); pop.style.width = '460px';
-    pop.innerHTML = popupShell({ icon: I.bell, title: `Notifications${list.length ? ` · ${list.length}` : ''}${muted ? ' · muted' : ''}`, tag: 'Mr. Wrangler · resolved',
+    pop.innerHTML = popupShell({ icon: I.bell, title: `Notifications${list.length ? ` · ${list.length}` : ''}${muted ? ' · muted' : ''}`, tag: list.some((n) => n.kind === 'needs') ? 'Mr. Wrangler · needs you / resolved' : 'Mr. Wrangler · resolved',
       headRight: `<button class="iconbtn js-notif-refresh" data-tip="Refresh">${I.refresh || '⟳'}</button>`,
       bodyClass: 'req-wrap', body: inner, foot });
     overlay.appendChild(pop);
@@ -9797,6 +9920,7 @@ const WINDOW_CATALOG = [
   { kind: 'qr',            label: 'Share session (QR)',      tag: 'Share · session',          sample: () => ({}) },
   { kind: 'migrateUnits',  label: 'Round up missing units',  tag: 'Units · migrate',          sample: () => ({ plan: [{ name: 'Sample Unit', action: 'create', unitId: 'U000', categoryId: ((DATA.categories || [])[0] || {}).categoryId, count: 1 }] }) },
   { kind: 'comment',       label: 'Comment note',            tag: 'Note · comment',           sample: () => ({ card: 'units', recId: ((DATA.units || [])[0] || {}).unitId, recType: null, color: 'yellow' }) },
+  { kind: 'linkConfirm',   label: 'Confirm link',            tag: 'Link · confirm',           sample: () => ({ srcCard: 'rentals', srcId: ((DATA.rentals || [])[0] || {}).rentalId, targetCard: 'invoices', targetId: ((DATA.invoices || [])[0] || {}).invoiceId }) },
   { kind: 'rulebook',      label: 'The R-Rulebook',          tag: 'SPEC v8 · design system',  sample: () => ({}) },
   { kind: 'partform',      label: 'Add / Edit Part · Task',  tag: 'Work order · line',         sample: () => ({ woId: ((DATA.workOrders || [])[0] || {}).woId }) },
   { kind: 'receiptform',   label: 'New / Edit Receipt',      tag: 'Expense · receipt',         sample: () => ({}) },
@@ -10979,6 +11103,14 @@ function parseWranglerIssue(body) {
 }
 /* Re-open the Mr. Wrangler chat seeded from a filed request, so Jac can keep
    talking it through (same live AI). Each new turn syncs back to the issue. */
+// The state of a Mr. Wrangler request (shared by the approval inbox AND the dock reqBar so
+// they never disagree): needs-your-answer (red) · building (blue) · needs-your-OK (yellow).
+function wrReqState(rq) {
+  const labels = (rq && rq.labels) || (rq && rq.label ? [rq.label] : []);
+  if (labels.includes('wrangler-needs-jac')) return { key: 'needs', label: 'Needs your answer', color: 'red' };
+  if (labels.includes('wrangler-fix')) return { key: 'building', label: 'Building', color: 'blue' };
+  return { key: 'ok', label: 'Needs your OK', color: 'yellow' };
+}
 function openWranglerFromRequest(n) {
   const rq = wranglerRequests.find((x) => x.number === n); if (!rq) return;
   const { report, messages } = parseWranglerIssue(rq.body);
@@ -11799,6 +11931,104 @@ function invoiceUnitIds(inv) {
   return [...ids];
 }
 
+/* ── §17b — MENU-DRIVEN LINKING: the "+ Target" actions for the R20 context menu
+   (2026-06-29, replaces mobile drag). The set is DROP_MATRIX[src] ∩ the acting
+   role's capability, minus targets that can't apply to THIS source right now. The
+   menu omission is UX only — dispatchDrop re-fires every hard gate on confirm. ── */
+const LINK_TARGET_LABEL = { rentals: 'Rental', invoices: 'Invoice', customers: 'Customer', units: 'Unit', workOrders: 'Work Order' };
+/* §10-B1 role gate: any link that touches an INVOICE is billing → money tier; any
+   link that touches a CUSTOMER is PII/CRM → above ops-only 'staff' (money tier+ in
+   the shipped ladder). Operational links (units↔rentals, unit→WO) stay open to staff. */
+function linkRoleAllows(srcCard, tgt) {
+  if (tgt === 'invoices' || srcCard === 'invoices') return canMoney();
+  if (tgt === 'customers' || srcCard === 'customers') return canMoney();
+  return true;
+}
+/* Source-level preconditions — omit an action that can't possibly apply to this
+   record now (the per-target instance gate still dims rows on the target card). */
+function linkActionPossible(srcCard, rec, tgt) {
+  if (srcCard === 'units' && tgt === 'invoices') return !!unbilledOpenWOForUnit(rec.unitId);   // §7.6 needs a billable open WO
+  if (srcCard === 'rentals' && tgt === 'invoices') return !rec.invoiceId;                       // already invoiced → nothing to add
+  if (srcCard === 'invoices') return !rec.locked;                                               // a locked invoice takes no new links
+  if (srcCard === 'workOrders' && tgt === 'invoices') return woBillable(rec) > 0;
+  return true;
+}
+/* The ordered "+ Target" actions for a pressed record. `create:true` = a NEW record
+   on the target card (not a DROP_MATRIX link): only the unit "+ Work Order" today. */
+function linkActionsFor(srcCard, rec) {
+  if (!srcCard || !rec) return [];
+  const out = [];
+  const targets = DROP_MATRIX[srcCard];
+  if (targets) for (const tgt of Object.keys(targets)) {
+    if (!linkActionPossible(srcCard, rec, tgt)) continue;
+    if (!linkRoleAllows(srcCard, tgt)) continue;
+    out.push({ target: tgt, label: '+ ' + (LINK_TARGET_LABEL[tgt] || tgt) });
+  }
+  if (srcCard === 'units' && linkRoleAllows('units', 'workOrders')) out.push({ target: 'workOrders', create: true, label: '+ Work Order' });   // a WO is CREATED for a unit → lands on the unit (§4a)
+  return out;
+}
+
+/* ── §17b — LINKING MODE: a "+ Target" menu action navigates to the target card in
+   list+search; tapping a target there opens the confirm popup; confirm runs the
+   existing dispatchDrop (reuses every §7.5/§7.6 hard gate + History). ── */
+function enterLinking(srcCard, srcId, targetCard) {
+  state.linking = { srcCard, srcId, targetCard };
+  const sess = activeSession();
+  const col = COLUMN_OF[targetCard];
+  if (sess.cols && col) { sess.cols[col] = targetCard; const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx; }   // §M1 reveal + flip the phone column
+  const cs = sess.cards[targetCard];
+  if (cs) { cs.mode = 'list'; cs.recId = null; cs.recType = null; cs.search = ''; cs.listLimit = undefined; }
+  render();
+  setTimeout(() => { try { document.querySelector(`.card[data-card="${targetCard}"] .card-search, .card[data-card="${targetCard}"] input`)?.focus(); } catch (e) {} }, 40);
+}
+function cancelLinking() { if (state.linking) { state.linking = null; render(); } }
+function startUnitWorkOrder(unitId) { pillTo('units', unitId); }   // §4a — "+ Work Order" just lands on the unit (WO creation lives on the unit's card)
+/* The hazard-stripe banner shown atop the target card while linking. */
+function linkBanner(card) {
+  const L = state.linking; if (!L || L.targetCard !== card) return '';
+  const srcRec = recOf(L.srcCard, L.srcId);
+  const srcT = srcRec ? detailTitle(L.srcCard, srcRec) : String(L.srcId);
+  const tgt = LINK_TARGET_LABEL[L.targetCard] || L.targetCard;
+  return `<div class="link-banner"><span class="lb-txt">Linking <b>${esc(srcT)}</b> → pick a ${esc(tgt)} <span class="lb-sub">(or +New)</span></span>${ghostPill('Cancel', { js: 'js-link-cancel' })}</div>`;
+}
+/* Customer-facing PRICE only (B2) — shown when a link bills onto an invoice. */
+function linkPriceText(srcCard, srcRec, targetCard, tgtRec) {
+  if (srcCard !== 'invoices' && targetCard !== 'invoices') return '';
+  const billCard = srcCard === 'invoices' ? targetCard : srcCard;
+  const billRec = srcCard === 'invoices' ? tgtRec : srcRec;
+  let amt = null;
+  try {
+    if (billCard === 'rentals') amt = rentalPrice(billRec);
+    else if (billCard === 'workOrders') amt = woBillable(billRec);
+    else if (billCard === 'units') { const w = unbilledOpenWOForUnit(billRec.unitId); amt = w ? woBillable(w) : null; }
+  } catch (e) {}
+  return amt != null ? `<div class="lc-price">Bills <b>${money(amt)}</b> onto the invoice.</div>` : `<div class="lc-price muted">The amount is set on the invoice.</div>`;
+}
+function openLinkConfirm(targetId) {
+  const L = state.linking; if (!L) return;
+  if (!recOf(L.srcCard, L.srcId) || !recOf(L.targetCard, targetId)) return;
+  openOverlay({ kind: 'linkConfirm', srcCard: L.srcCard, srcId: L.srcId, targetCard: L.targetCard, targetId });
+}
+function doLinkConfirm() {
+  const o = state.overlay; if (!o || o.kind !== 'linkConfirm') return;
+  const srcRec = recOf(o.srcCard, o.srcId), tgtRec = recOf(o.targetCard, o.targetId);
+  closeOverlay(); state.linking = null;
+  if (!srcRec || !tgtRec) return;
+  dispatchDrop({ entity: o.srcCard, id: o.srcId, rec: srcRec }, { entity: o.targetCard, rec: tgtRec });   // reuses every hard gate + History; toasts its own failures
+}
+/* §17b — +New AUTO-LINK: tapping +New on the target card while linking creates the
+   record AND links the source straight to it — no confirm tap (creating it IS the
+   intent; "auto-linked as the details open", Jac). Called at the end of each immediate
+   create path (rental/invoice/unit); a no-op unless we're linking to that target. The
+   create fn already anchored/opened the new record, so dispatchDrop just adds the link. */
+function maybeAutoLink(targetCard, newId) {
+  const L = state.linking; if (!L || L.targetCard !== targetCard) return;
+  const srcRec = recOf(L.srcCard, L.srcId), tgtRec = recOf(targetCard, newId);
+  state.linking = null;
+  if (!srcRec || !tgtRec) return;
+  dispatchDrop({ entity: L.srcCard, id: L.srcId, rec: srcRec }, { entity: targetCard, rec: tgtRec });   // reuses every hard gate + History
+}
+
 /** §M-touch — haptic reinforcement for a COMMITTED gesture (one pulse, never on
  *  scroll/hover). Best-effort: Android/Chrome only — iOS Safari has no Vibration
  *  API, so this is reinforcement, never the sole signal. Gated on the per-device
@@ -11858,7 +12088,7 @@ function initDrag() {
 // move lifts a drag. A quick horizontal flick (before this fires) is a Back/Forward swipe
 // instead (see the grid swipe tracker in boot). Frees the horizontal axis for navigation.
 function armReadyTimer(arm) { return setTimeout(() => { if (DRAG.armed === arm) arm.ready = true; }, 300); }
-function armMenuTimer(arm) {   // §M3 — hold-still opens the context menu: touch long-press OR mouse click-and-hold (the right-click equivalent)
+function armMenuTimer(arm) {   // §M3 — hold-still opens the context menu: touch long-press OR mouse click-and-hold (the right-click equivalent). On phones this is now the PRIMARY linking entry (menu-driven linking replaced drag, 2026-06-29).
   return setTimeout(() => {
     if (DRAG.armed !== arm) return;
     const t = document.elementFromPoint(arm.x, arm.y);
@@ -11872,6 +12102,20 @@ function dragDown(e) {
   if (state.overlay) return;                                             // overlays own their clicks; the winpicker is non-modal (Task E — drag to select)
   if (e.target.closest('.tedit')) return;                                // the inline transport editor owns its pointers — let Google pan the map + drag the site pin (never arm an app/chat drag here)
   if (e.target.closest('.dispm')) return;                                // §2.3 the dispatch cockpit map owns its pointers too — Google handles pan/zoom, never the app drag engine
+  // §M3 — PHONE: drag-to-link is RETIRED on phones (2026-06-29). A long-press now opens
+  // the R20 context menu, which carries the menu-driven LINKING actions (+ Rental / +
+  // Invoice / …). Arm a MENU-ONLY long-press: no drag is ever lifted on a phone. A move
+  // before the timer cancels it (native scroll / Back-Forward swipe stay intact); a quick
+  // tap releases before the timer (its click fires normally). The interactive-control
+  // skip keeps inputs/buttons native; selection-suppression (style.css, .is-phone .grid)
+  // stops iOS from starting text-selection before the long-press registers.
+  if (e.pointerType === 'touch' && document.body.classList.contains('is-phone')
+      && !e.target.closest('input, textarea, select, button, .x, .inline-edit, .inline-input, .dropdown-menu, .ctx-menu')) {
+    DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;
+    const arm = { menuOnly: true, x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: true, lp: null, rdy: null, ready: false };
+    arm.lp = armMenuTimer(arm);                             // hold ~500ms still → openCtxMenuAt (the R20 menu)
+    DRAG.armed = arm; return;
+  }
   // §17 — a granular element marked [data-chat-el] (a pill/price/line/person) arms a
   // CHAT-TAG drag (tap still does its own thing; drag/long-press tags it into a chat).
   const chatEl = e.target.closest('[data-chat-el]');
@@ -11936,12 +12180,11 @@ function dragMove(e) {
     const a = DRAG.armed; if (!a || e.pointerId !== a.pointerId) return;
     DRAG.point.x = e.clientX; DRAG.point.y = e.clientY;
     const dist = Math.hypot(e.clientX - a.x, e.clientY - a.y);
-    if (a.touch) {                                                       // §M3 — direction decides: horizontal lifts a drag, vertical lets the list scroll
+    if (a.touch) {                                                       // §M3 — the long-press DECIDES: before it fires, direction is navigation (vertical=scroll, horizontal=swipe); after it fires, ANY direction lifts the drag
       const adx = Math.abs(e.clientX - a.x), ady = Math.abs(e.clientY - a.y);
       if (adx < 8 && ady < 8) return;                                    // still inside the slop — a hold here becomes the menu
-      if (ady >= adx) { disarmDrag(); return; }                         // vertical intent → native scroll
-      if (!a.ready) { disarmDrag(); return; }                            // §M3 horizontal move BEFORE the long-press = a Back/Forward swipe (handled on pointerup), not a drag
-      return startDrag();                                                // held long enough → horizontal drag-to-link
+      if (a.ready) return startDrag();                                   // §M3 held long enough → grab now, in WHATEVER direction the finger moves (a real drag is rarely pure-horizontal). The direction gate below is only for the PRE-hold phase.
+      disarmDrag(); return;                                              // §M3 a move BEFORE the long-press is navigation, not a drag: vertical → native scroll, horizontal → a Back/Forward swipe (handled on pointerup)
     }
     if (dist > 6) startDrag();
     return;
@@ -11972,6 +12215,7 @@ function startDrag() {
   }
   DRAG.ghost.style.transform = `translate(${DRAG.point.x + 12}px, ${DRAG.point.y - 14}px)`;
   dragLayer.appendChild(DRAG.ghost);
+  haptic([18, 28]);                                                     // §M-touch — firm pickup tick: "you've got it." iOS has NO Vibration API, so the chip ALSO pops in (the .drag-ghost lift animation) as the visible cue.
   try { dragLayer.setPointerCapture(a.pointerId); } catch (err) {}       // the stream survives the source row re-rendering away (sig-pad precedent)
   document.body.classList.add('dragging');
   document.body.dataset.drag = a.card || 'chatel';
@@ -12561,6 +12805,7 @@ function onClick(e) {
   if (closest('.js-wr-unattach')) { e.stopPropagation(); const o = state.wrangler; if (o.open && o.attach) { o.attach.splice(Number(closest('.js-wr-unattach').dataset.i), 1); render(); } return; }   // §18d drop a pending image attachment
   if (closest('.js-wr-unfile')) { e.stopPropagation(); const o = state.wrangler; if (o.open && o.files) { o.files.splice(Number(closest('.js-wr-unfile').dataset.i), 1); render(); } return; }   // §18d drop a pending file attachment
   if (closest('.js-wrangler')) { e.stopPropagation(); if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; return render(); } return wranglerNewChat(); }   // §18 toggle Mr. Wrangler dock — opening always starts a fresh chat (the last one waits on the §18g rail)
+  if (closest('.js-wrc-remove')) { e.stopPropagation(); return wrRailRemove(closest('.js-wrc-remove').dataset.wrcRm); }   // §18g rail: the × on a chat tab → REMOVE that conversation (not just close it)
   if (closest('[data-wrc-needs]')) { e.stopPropagation(); return openWranglerFromRequest(Number(closest('[data-wrc-needs]').dataset.wrcNeeds)); }   // §18g rail: a flashing "needs you" chat → reopen it seeded from the request
   if (closest('[data-wrc-open]')) { e.stopPropagation(); return wranglerRailOpen(closest('[data-wrc-open]').dataset.wrcOpen); }   // §18g rail: reopen a stored conversation
   if (closest('.js-notifications')) { e.stopPropagation(); openOverlay({ kind: 'notifications' }); markNotifsSeen(); refreshWranglerNotifications(); return; }   // §18f notification bell — in-app resolved-fix feed
@@ -12872,6 +13117,19 @@ function onClick(e) {
     if (host) scrollToSect(host.dataset.card, sectEl.dataset.sect);
     return;
   }
+
+  // §17b — LINKING MODE: Cancel the banner, or tap a target-card row/pill to pick the
+  // link target → confirm popup (pre-empts normal row/pill navigation).
+  if (state.linking) {
+    if (closest('.js-link-cancel')) { e.stopPropagation(); return cancelLinking(); }
+    const lrow = closest('.row[data-rec]'), lpill = closest('[data-pill-card]');
+    if (lrow || lpill) {
+      const pc = lrow ? entityCardOf(lrow.dataset.card, lrow.dataset.type) : entityCardOf(lpill.dataset.pillCard, null);
+      const pid = lrow ? lrow.dataset.rec : lpill.dataset.pillRec;
+      if (pc === state.linking.targetCard && pid != null) { e.stopPropagation(); e.preventDefault(); return openLinkConfirm(pid); }
+    }
+  }
+  if (closest('.js-link-confirm')) { e.stopPropagation(); return doLinkConfirm(); }
 
   // universal pill rule — single-click navigates; double-click anchors; ctrl+click = new
   // tab (handled by the early hotkey branch). Same discriminator as rows (#1).
@@ -13983,6 +14241,7 @@ function quickAddUnitFromSearch(value) {
   const cs = activeSession().cards.units; cs.search = ''; cs.filterTerms = [];
   openStandard('units', id);
   toast(`${name} added — set its category, hours, and inspection.`);
+  maybeAutoLink('units', id);   // §17b — if a "+ Unit" link was in progress, link the source to this new unit
   return true;
 }
 function nextCategoryId() {
@@ -14818,6 +15077,7 @@ function startNewInvoice(customerId) {
   if (!cust) { const s = activeSession(); if (s.cols) s.cols.right = 'customers'; }
   toast(cust ? `New invoice for ${cust.name} — drag rentals onto it.` : 'New invoice — drag a customer and rentals onto it.');
   render();
+  maybeAutoLink('invoices', id);   // §17b — if a "+ Invoice" link was in progress, bill the source onto this new invoice
 }
 
 function startNewRental(customerId) {
@@ -14834,6 +15094,7 @@ function startNewRental(customerId) {
   const s = activeSession(); if (s.cols) { s.cols.left = 'units'; s.cols.right = 'customers'; }
   toast(cust ? `New Quote for ${cust.name} — drag a unit onto it, then pick the window.` : 'New Quote — drag a unit and a customer onto it, then pick the window.');
   render();
+  maybeAutoLink('rentals', id);   // §17b — if a "+ Rental" link was in progress, link the source to this new Quote
 }
 
 /* ── Wave 2 (Jac 2026-06-12): pick mode is DEAD. Linking happens by DRAG (§15c
@@ -16385,14 +16646,14 @@ function seedDemoRequests() {
    the backend-backed production path. */
 function exposeTestApi() {
   try {
-    window.__rw = { DATA, IDX, TODAY_ISO, itemPaid, lineKey, rentalUnits, unitEntry, isPrimaryUnit,
+    window.__rw = { DATA, IDX, TODAY_ISO, itemPaid, lineKey, rentalUnits, unitEntry, isPrimaryUnit, linkActionsFor, linkActionPossible, DROP_MATRIX,
       unitStatus, rentalUnitStatuses, unitsUniform, rentalStatusDisplay, rentalMirrorStatus, rentalDisplayStatus,
       allUnitsTerminal, unitTerminal, unitVoided, rentalLineItems, transportLineItems, extensionPreview, billExtension, unitBilledRental, unitBilledSeries, retroPricingOn, rentalInvoices, rentalActiveInvoice, invoiceChunks, createInvoiceForRental, syncRentalPrimary,
       addUnitToRental, removeUnitFromRental, removeUnitInvoiceLine, unitLinePaid, invoiceTotals, allocLines,
       rentalAllocated, itemRefunded, itemRefundable, lineRefunded, lineFullyRefunded, refundLines, rentalLineRefund, applyPayment, unitRentalPrice, rentalPrice, rentalDisplayName, setWoLinePhase, setWoPhase, woBottleneck,
       cleanUnitName, planUnitMigration, applyUnitMigration, openMigrationPreview,
       computeTransportPrice, isFueledType, unitTransport, rentalTransport,
-      wrValidatePlan, applyWranglerData, wrPlanNeedsApply, wrPlanSummary, wrFunnel, wrResolveCustomer, wrResolveUnit, wrResolveCategory, wrResolveVendor, wrResolvePart, wrResolveRental, wrChatFormat, wrFocusRecord, wrRecLabel, activeSession, invoiceMergeable, mergeInvoiceInto, parseWranglerAction, stripWranglerAction, parseCsvFile, wrFindAttachedCsv, wrRunAgent, wrApplyChangesTool, wranglerDigest, WR_TOOL_IMPL, WR_TOOLS,
+      wrValidatePlan, applyWranglerData, wrPlanNeedsApply, wrPlanSummary, wrFunnel, wrResolveCustomer, wrResolveUnit, wrResolveCategory, wrResolveVendor, wrResolvePart, wrResolveRental, wrChatFormat, wrFocusRecord, wrRecLabel, activeSession, invoiceMergeable, mergeInvoiceInto, parseWranglerAction, stripWranglerAction, parseCsvFile, wrFindAttachedCsv, wrRunAgent, wrApplyChangesTool, wranglerDigest, wrPruneOldChats, WR_CHAT_RETAIN_DAYS, WR_TOOL_IMPL, WR_TOOLS,
       latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails,
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
