@@ -4060,7 +4060,7 @@ function getEntityColor(entityType, rec) {
  *  flag-colored; secondary sets like unitInspectionStatus keep their registry color). */
 const PRIMARY_SET_ENTITY = { rentalStatus: 'rentals', unitFleetStatus: 'units', woPhase: 'workOrders', invoiceStatus: 'invoices', customerPayStatus: 'customers' };
 
-function statusPill(set, value, { card, recId, x, truck, previewColor, previewIcon, previewLabel, flag } = {}) {
+function statusPill(set, value, { card, recId, x, truck, previewColor, previewIcon, previewLabel, flag, focal } = {}) {
   const st = getStatus(set, value);
   // Color: Settings-Board preview override wins; else a PRIMARY status set computes
   // its flag-driven color from the record (R/Y/G/gray); else the registry color.
@@ -4080,7 +4080,7 @@ function statusPill(set, value, { card, recId, x, truck, previewColor, previewIc
   const crec = card ? recOf(card, recId) : null;
   const chatLbl = st.label + (crec ? ' — ' + (detailTitle(card, crec) || recId) : '');
   const chat = card ? ` data-chat-el data-chat-label="${esc(chatLbl)}" data-chat-color="${esc(st.color)}" data-chat-card="${esc(card)}" data-chat-rec="${esc(recId)}"` : '';
-  return `<span class="pill c-${color}${truck ? ' truck' : ''}" data-r="R3" data-badge${data}${chat}>${tk}${ic}<span class="t">${esc(label)}</span>${xb}</span>`;
+  return `<span class="pill c-${color}${truck ? ' truck' : ''}${focal ? ' focal' : ''}" data-r="R3" data-badge${data}${chat}>${tk}${ic}<span class="t">${esc(label)}</span>${xb}</span>`;
 }
 function refPill(card, recId, label, { x, xData } = {}) {
   const xb = x ? `<span class="x" data-x="${esc(x)}"${xData != null ? ` data-id="${esc(xData)}"` : ''}>✕</span>` : '';
@@ -4708,7 +4708,7 @@ function unitRentalInspPill(u) {
   } else {
     text = insp.label; color = insp.color;            // Passed / Not Ready / Failed
   }
-  return statusPill('unitInspectionStatus', u.inspectionStatus, { card: 'units', recId: u.unitId, previewColor: color, previewLabel: text });
+  return statusPill('unitInspectionStatus', u.inspectionStatus, { card: 'units', recId: u.unitId, previewColor: color, previewLabel: text, focal: true });   // Units row headline = focal Primary
 }
 /* The unit row's WORK-ORDER+SERVICE pill (Jac): an open WO's journey bottleneck takes
    precedence (flag-colored woPhase); otherwise the nearest service order by hours. */
@@ -4870,7 +4870,7 @@ const ROWS = {
 
     // Row: name · phone·type · pay-$ ← LEFT  ·  [acct pill][funnel pill] → RIGHT.
     // Both status pills shown always; equal-width grid slots; margin-left:auto pushes them right.
-    const acctPill = statusPill('customerAccountType', c.accountType || 'Non-Business');
+    const acctPill = statusPill('customerAccountType', c.accountType || 'Non-Business', { focal: true });   // Customers row headline = focal Primary
     return `<div class="cr">
       <div class="cr-id">
         <span class="r-title cr-name${fc === 'red' ? ' ec-red' : ''}" style="color:${nameColor}">${esc(c.name)}</span>
@@ -4950,7 +4950,7 @@ const ROWS = {
     const win = winR ? fmtWindow(winR.startDate, winR.endDate) : '';
     return `<div class="row-1"><span class="r-title">${esc(i.invoiceId)}</span><span class="r-fields">
         <span>${esc(cust?.name || '')}</span><span class="r-key"><b style="color:var(--${paidColor})">${money(t.paid)}</b> / <b style="color:var(--green)">${money(t.total)}</b></span><span>${esc(fmtShortDate(i.dueDate))}</span></span></div>
-      <div class="row-2">${statusPill('invoiceStatus', t.status, { card: 'invoices', recId: i.invoiceId })}${rentalPills}${win ? `<span class="r-key">${esc(win)}</span>` : ''}</div>`;
+      <div class="row-2">${statusPill('invoiceStatus', t.status, { card: 'invoices', recId: i.invoiceId, focal: true })}${rentalPills}${win ? `<span class="r-key">${esc(win)}</span>` : ''}</div>`;
   },
 
   workOrders: (w) => {
@@ -4963,7 +4963,7 @@ const ROWS = {
         <span class="r-fields"><span>${fmtShortDate(w.date)}</span></span></div>
       <div class="row-2">
         ${badge(getStatus('woType', w.woType).label, getStatus('woType', w.woType).color)}
-        ${statusPill('woPhase', w.phase, { card: 'workOrders', recId: w.woId })}
+        ${statusPill('woPhase', w.phase, { card: 'workOrders', recId: w.woId, focal: true })}
         ${unit ? statusPill('unitInspectionStatus', unit.inspectionStatus, { card: 'units', recId: unit.unitId }) : ''}
         ${badge(getStatus('billCustomer', w.billCustomer).label, getStatus('billCustomer', w.billCustomer).color)}
         ${w.billCustomer === 'Yes' && cust ? refPill('customers', w.customerId, cust.name) : ''}
@@ -4977,7 +4977,7 @@ const ROWS = {
     const ar = unit ? activeRentalForUnit(unit.unitId) : null;
     return `<div class="row-1"><span class="r-title">${esc(`${unit?.name || '—'} — ${fmtShortDate(n.date)}`)}</span></div>
       <div class="row-2">
-        <span class="pill c-${ir.color}" data-pill-card="inspections" data-pill-rec="${esc(n.inspectionId)}">${esc(ir.label)}</span>
+        <span class="pill c-${ir.color} focal" data-pill-card="inspections" data-pill-rec="${esc(n.inspectionId)}">${esc(ir.label)}</span>
         ${badge('Wash: ' + (n.wash || 'Pending'), n.wash === 'Yes' ? 'green' : 'gray')}
         ${badge(getStatus('billCustomer', n.billCustomer).label, getStatus('billCustomer', n.billCustomer).color)}
         ${n.woId ? refPill('workOrders', n.woId, 'WO') : ''}
@@ -5546,7 +5546,7 @@ function woSectionHtml(w) {
       <span class="derived">Parts ${money(Math.max(0, billed - laborBilled))} + Hrs ${money(laborBilled)} = ${money(billed)}</span>
       ${w.cancelled
         ? `<span class="pill c-gray" style="height:26px;font-size:11px" data-tip="This work order is cancelled">Cancelled</span>${actionPill('commit', 'Reopen WO', { js: 'js-wo-reopen', h: 26, data: { rec: w.woId } })}`
-        : `${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}<button class="pill ghost js-wo-cancel" data-r="R18" data-rec="${esc(w.woId)}" style="height:26px;font-size:11px">Cancel WO</button>${actionPill('commit', 'Complete WO', { js: 'js-wo-complete', h: 26, data: { rec: w.woId } })}`}
+        : `${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}<button class="pill ghost js-wo-cancel" data-r="R18" data-rec="${esc(w.woId)}" style="height:26px;font-size:11px">Cancel WO</button>${actionPill('commit', 'Complete WO', { js: `js-wo-complete ramp${bn.color === 'green' ? ' ready' : ''}`, h: 26, data: { rec: w.woId } })}`}
     </div>
   </div>`;
 }
@@ -5827,9 +5827,8 @@ const DETAIL = {
       <div class="rd-head-r">${masterGate(r, { truck })}<div class="rd-head-bal">${invPill}${rdBal}</div></div>
     </div>`;
 
-    /* Not-Ready blocker — jumps to unit pills; sits above the calendar. */
-    const blockN = units.filter((eu) => { const bu = IDX.unit.get(eu.unitId); return bu && bu.inspectionStatus !== 'Ready' && !unitVoided(r, eu); }).length;
-    const blocker = blockN ? `<button class="tl-blocker js-tl-blocker" data-rec="${esc(r.rentalId)}" data-tip="Jump to the machines that aren't ready"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>${blockN} machine${blockN > 1 ? 's' : ''} Not Ready →</button>` : '';
+    /* Not-Ready blocker RETIRED (Jac 2026-06-30): status colors now carry the warning;
+       the dedicated red bar is redundant. (Removed from the render below too.) */
 
     /* Calendar: the INLINE editable window calendar (popup retired — Jac 2026-06-25).
        Tap a day to set start, tap another to set end; the left Categories/Units card
@@ -5878,7 +5877,7 @@ const DETAIL = {
     const canComplete = allUnitsTerminal(r);
     const crBtn = cancelish
       ? actionPill('danger', 'Cancel Rental', { js: 'js-cancel-rental', h: 26, data: { rec: r.rentalId } })
-      : actionPill('commit', 'Complete Rental', { js: `js-complete-rental${canComplete ? '' : ' locked'}`, h: 26, data: { rec: r.rentalId } });
+      : actionPill('commit', 'Complete Rental', { js: `js-complete-rental ramp${canComplete ? ' ready' : ' locked'}`, h: 26, data: { rec: r.rentalId } });   // G1: Secondary until every unit terminal → then Primary blue
     const fcRow = r.fieldCall ? actionPill('danger', 'Field Call active — clear', { js: 'js-clear-fc', data: { rec: r.rentalId } }) : '';
     // §ext — extending is now inline: tap a later end date in the calendar above; a fragile
     // (invoiced/out) rental stages it behind the Confirm card with the money preview.
@@ -5886,7 +5885,6 @@ const DETAIL = {
 
     const rentalSec = `<div class="section sec-${stColor} rentalsec">
       ${rdHead}
-      ${blocker ? `<div class="rd-blocker">${blocker}</div>` : ''}
       ${calHtml}
       <div class="stalls rd-units">${stallsHtml}</div>
       ${rdFoot}
@@ -5930,7 +5928,7 @@ const DETAIL = {
       <div class="kv"><span class="v inline-edit" data-edit="unitHours" data-rec="${u.unitId}">${num(u.currentHours)} HRS</span></div>
     </div></div>`;
     const gps = `<div class="section"><h4>GPS</h4><div class="fieldstack">
-      ${kvPills(u.gpsStatus ? statusPill('gpsStatus', u.gpsStatus) : badge('No GPS'))}
+      ${kvPills(u.gpsStatus ? statusPill('gpsStatus', u.gpsStatus, { focal: true }) : badge('No GPS'))}
       ${efld('units', u, 'unitId', 'gpsType', 'GPS unit/type')}
       ${efld('units', u, 'unitId', 'gpsPlacement', 'Placement')}
     </div></div>`;
