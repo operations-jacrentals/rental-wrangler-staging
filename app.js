@@ -1669,16 +1669,29 @@ function activeRentalForUnit(unitId) {
    same-day return frees the unit for a same-day re-rent. Computed live against
    the open rental-window calendar (winpicker) each render — §10 tinting. */
 let availWin = null;   // {start,end,time,selfId} set each render while the calendar is open
-function rentalOverlaps(r, selS, selE) {
-  const rs = parseISO(r.startDate), re = parseISO(r.endDate);
+/* §20 physically-OUT statuses — the machine is in the customer's hands until it's
+   Returned (Reserved/Today/Tomorrow = not yet picked up; Returned = back in the yard). */
+const OUT_RENTAL_STATUSES = new Set(['On Rent', 'End Rent', 'Off Rent']);
+function rentalOverlaps(r, selS, selE, endISO) {
+  const rs = parseISO(r.startDate), re = parseISO(endISO || r.endDate);
   if (!rs || !re || !selS || !selE) return false;
   return re > selS && selE > rs;   // touching boundaries do NOT conflict (same-day handoff)
 }
 function rentalsOverlappingUnit(unitId, startISO, endISO, selfId) {
   const selS = parseISO(startISO), selE = parseISO(endISO);
   if (!selS || !selE) return [];
-  return DATA.rentals.filter((r) => rentalHasUnit(r, unitId) && r.rentalId !== selfId
-    && ACTIVE_RENTAL.has(r.status) && r.status !== 'Quote' && rentalOverlaps(r, selS, selE));
+  return DATA.rentals.filter((r) => {
+    if (!rentalHasUnit(r, unitId) || r.rentalId === selfId) return false;
+    if (!ACTIVE_RENTAL.has(r.status) || r.status === 'Quote') return false;
+    // §10 a unit that is physically OUT (On/End/Off Rent) past its scheduled return is
+    // still occupying the machine until someone marks it Returned — so an OVERDUE rental
+    // keeps blocking a same-/near-window re-rent instead of "freeing" on its end date.
+    // Otherwise the availability tool double-books a unit that's still in the field, and
+    // the Units card shows a still-out unit as "Available". Judge by the unit's OWN status.
+    const eu = unitEntry(r, unitId);
+    const overdueOut = OUT_RENTAL_STATUSES.has(eu ? unitStatus(r, eu) : r.status) && r.endDate && r.endDate < TODAY_ISO;
+    return rentalOverlaps(r, selS, selE, overdueOut ? '9999-12-31' : r.endDate);
+  });
 }
 /* §10 OVERBOOKED (drag build, Jac) — DERIVED LIVE, never stored. A rental is
    overbooked when another active rental occupies its unit for an overlapping
@@ -1809,12 +1822,55 @@ function categoryMix(categoryId) {
 /* §9 RENTABLE fleet — Jac's definition, lifted verbatim from the Ready-Rate KPI: a
    unit counts as rentable when its fleetStatus isn't Inactive/Sold/For-Sale AND its
    inspection isn't Failed. Sold units have left the yard, so they're out of inventory
-   too. One source for the category mini-card's rentable/total health tally. */
+   too. Drives the mini-card's "N Avail" count + the §10 availability lens. */
 const RENTABLE_SKIP_FLEET = new Set(['Inactive', 'Sold', 'For Sale']);
 const isUnitRentable = (u) => !RENTABLE_SKIP_FLEET.has(u.fleetStatus) && u.inspectionStatus !== 'Failed';
-function categoryRentable(categoryId) {
-  const inv = DATA.units.filter((u) => u.categoryId === categoryId && u.fleetStatus !== 'Sold');   // Sold left the yard → not inventory
-  return { rentable: inv.filter(isUnitRentable).length, total: inv.length };
+const DOW3 = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];   // short weekday for the mini-card NEXT plate
+/* §10 next-available — when a category has 0 units free right now, the soonest one frees:
+   the EARLIEST rental END among the category's rentable (Active, inspection≠Failed) units,
+   plus a 4-hour yard turnaround after that rental's end time (Jac 2026-07-01). Returns
+   { unitId, iso, min } (min = minutes-into-day it's ready, or null when the ending rental
+   carries no end time) or null when nothing is out to come back. */
+function categoryNextAvailable(categoryId) {
+  const TURN_MIN = 240;   // 4-hour turnaround after a rental's end time
+  let best = null;
+  for (const u of DATA.units) {
+    if (u.categoryId !== categoryId || u.fleetStatus !== 'Active' || u.inspectionStatus === 'Failed') continue;
+    const r = activeRentalForUnit(u.unitId);
+    if (!r || !r.endDate) continue;
+    if (r.endDate < TODAY_ISO) continue;   // return date already passed (overdue) → not a real "next available"
+    let iso = r.endDate, min = null;
+    const em = timeToMin(r.endTime);
+    if (em != null) { min = em + TURN_MIN; while (min >= 1440) { min -= 1440; iso = addDays(iso, 1); } }
+    const key = iso + (min == null ? '9999' : String(min).padStart(4, '0'));   // no-time sorts last within its day
+    if (!best || key < best.key) best = { unitId: u.unitId, iso, min, key };
+  }
+  return best;
+}
+/* §10 why-none — the terse reason a category has 0 units free, for the sales lead plate
+   when there's no next-return date to show (Jac 2026-07-01). Judged on the ACTIVE fleet only
+   (so it never contradicts the PASS/NR/FAIL tally, which is also Active-only). Ordered from
+   "nothing to rent" to "out": no units (N/A) → all off-fleet, named specifically (Sold /
+   For Sale / Inactive) → every Active unit Failed → out with its return date already passed
+   (Overdue) → else out with no end date on record → "End Dates?" (a data prompt — this should
+   be impossible once end dates are entered, else a future NEXT date would have shown). */
+function categoryUnavailReason(categoryId) {
+  const units = DATA.units.filter((u) => u.categoryId === categoryId);
+  if (!units.length) return 'N/A';
+  const active = units.filter((u) => u.fleetStatus === 'Active');
+  if (!active.length) {
+    // name the actual off-fleet status (Sold / For Sale / Inactive) rather than a vague umbrella
+    const counts = {};
+    units.forEach((u) => { counts[u.fleetStatus] = (counts[u.fleetStatus] || 0) + 1; });
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || 'Off fleet';
+  }
+  if (!active.some((u) => u.inspectionStatus !== 'Failed')) return 'Failed';
+  const overdue = active.some((u) => {
+    if (u.inspectionStatus === 'Failed') return false;
+    const r = activeRentalForUnit(u.unitId);
+    return r && r.endDate && r.endDate < TODAY_ISO;   // out, and its scheduled return has passed
+  });
+  return overdue ? 'Overdue' : 'End Dates?';   // out but no end date recorded → prompt to enter it
 }
 /** A unit's current rental bucket (mirrors §12.4 Rental Status into 3 buckets). */
 function unitRentalBucket(u) {
@@ -2148,14 +2204,40 @@ function openStandard(card, recId, recType) {
 function showCategoryUnits(categoryId) {
   const cat = IDX.category.get(categoryId); if (!cat) return;
   const s = activeSession(), us = s.cards.units; if (!us) return;
-  us.search = cat.name; us.listLimit = undefined; us.mode = 'list'; us.recId = null; us.recType = null;
+  pushCardHistory(us, true);   // record the pre-jump view + column layout so Back returns to the category card (Jac 2026-07-02)
+  // Match the pill's count: narrow Units to this category's AVAILABLE units, not the
+  // whole category. The 'available' token engages the §10 availability lens (rowMatches)
+  // and makes availWin resolve to the in-scope window (open rental window, else "now"),
+  // so the list mirrors exactly what the pill was tallying.
+  us.search = `${cat.name} available`; us.listLimit = undefined; us.mode = 'list'; us.recId = null; us.recType = null;
+  let unitsSlot = null;
   if (s.cols) {
     const slots = ['left', 'middle', 'right'].filter((k) => k in s.cols);
     if (!slots.some((k) => s.cols[k] === 'units')) s.cols[(slots.find((k) => s.cols[k] === 'categories')) || slots[0]] = 'units';
+    unitsSlot = slots.find((k) => s.cols[k] === 'units');
   }
   state.focusedCard = 'units';
-  if (state.mobileCol !== undefined) state.mobileCol = 'units';   // mobile single-column → show Units
+  // mobile single-column → flip to the column that now holds Units. mobileCol is a
+  // NUMERIC COLUMNS index (not a member id) — writing the string broke the phone hop.
+  if (unitsSlot) { const idx = COLUMNS.findIndex((c) => c.id === unitsSlot); if (idx >= 0) state.mobileCol = idx; }
   render();
+}
+/** A category mini-card's NEXT plate → open the specific unit that frees up soonest, in
+ *  the Units card (Jac 2026-07-01). Mirrors showCategoryUnits' column plumbing, but lands
+ *  on that unit's Standard detail (openStandard) rather than a filtered list. */
+function showNextAvailableUnit(unitId) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  const s = activeSession(); if (!s.cards.units) return;
+  pushCardHistory(s.cards.units, true);   // record the pre-jump view + column layout so Back returns to the category card; openStandard's own push dedups against this (Jac 2026-07-02)
+  let unitsSlot = null;
+  if (s.cols) {
+    const slots = ['left', 'middle', 'right'].filter((k) => k in s.cols);
+    if (!slots.some((k) => s.cols[k] === 'units')) s.cols[(slots.find((k) => s.cols[k] === 'categories')) || slots[0]] = 'units';
+    unitsSlot = slots.find((k) => s.cols[k] === 'units');
+  }
+  state.focusedCard = 'units';
+  if (unitsSlot) { const idx = COLUMNS.findIndex((c) => c.id === unitsSlot); if (idx >= 0) state.mobileCol = idx; }
+  openStandard('units', unitId, null);   // openStandard re-renders
 }
 /** Universal pill rule (§0.2): clicking any pill forces its target card into
  *  standard mode. WO/Inspection/Service pills now resolve to the Shop card. */
@@ -2201,19 +2283,45 @@ function clearAnchor() {
    the other cards and the tab anchor. A view is a {mode,recId,recType} snapshot.
    Back/forward chevrons (and right-click = Back) step through it. */
 const cardSnap = (cs) => ({ mode: cs.mode, recId: cs.recId, recType: cs.recType || null });
+// A "full" view snapshot — additionally captures the list search/limit AND the column
+// layout (which slot holds which card + the focused/mobile column). Used for the CROSS-
+// COLUMN jumps a category mini-card makes into Units (showCategoryUnits / showNext-
+// AvailableUnit swap Categories → Units): a plain cardSnap can't reverse the swap or the
+// narrowed search, so those jumps record a viewSnap and Back restores the whole category
+// view — bringing back the mini-cards exactly where they were (Jac 2026-07-02).
+function viewSnap(cs) {
+  const s = activeSession();
+  return { mode: cs.mode, recId: cs.recId, recType: cs.recType || null,
+    search: cs.search, listLimit: cs.listLimit,
+    cols: s.cols ? { ...s.cols } : null, focusedCard: state.focusedCard, mobileCol: state.mobileCol };
+}
+// Restore the column layout carried by a viewSnap (a no-op for plain cardSnaps, which
+// have no 'cols' key — so ordinary same-card Back/Forward never touches the layout).
+function restoreLayout(snap) {
+  if (!snap || !('cols' in snap)) return;
+  const s = activeSession();
+  if (snap.cols) s.cols = { ...snap.cols };
+  if (snap.focusedCard !== undefined) state.focusedCard = snap.focusedCard;
+  if (snap.mobileCol !== undefined) state.mobileCol = snap.mobileCol;
+}
 const sameSnap = (a, b) => a && b && a.mode === b.mode && String(a.recId) === String(b.recId);
 const HIST_CAP = 50;
 // Record the card's CURRENT view before we change it; opening a new view clears the
-// forward branch (standard back/forward semantics).
-function pushCardHistory(cs) {
+// forward branch (standard back/forward semantics). `full` records a viewSnap (search +
+// column layout) for cross-column jumps that a plain snapshot couldn't reverse.
+function pushCardHistory(cs, full) {
   if (!cs) return;
-  const snap = cardSnap(cs);
+  const snap = full ? viewSnap(cs) : cardSnap(cs);
   const top = cs.backStack[cs.backStack.length - 1];
   if (!sameSnap(top, snap)) cs.backStack.push(snap);
   if (cs.backStack.length > HIST_CAP) cs.backStack.shift();
   cs.fwdStack = [];
 }
-function applySnap(cs, snap) { cs.mode = snap.mode; cs.recId = snap.recId; cs.recType = snap.recType || null; }
+function applySnap(cs, snap) {
+  cs.mode = snap.mode; cs.recId = snap.recId; cs.recType = snap.recType || null;
+  if ('search' in snap) { cs.search = snap.search; cs.listLimit = snap.listLimit; }   // viewSnap → restore the narrowed list too
+  restoreLayout(snap);                                                                // viewSnap → un-swap the column (bring the category cards back)
+}
 // Step this one card back / forward through its own history (other cards untouched).
 function cardBack(card) {
   const cs = activeSession().cards[card]; if (!cs) return;
@@ -2229,16 +2337,20 @@ function cardBack(card) {
     }
     return;
   }
-  cs.fwdStack.push(cardSnap(cs));
-  applySnap(cs, cs.backStack.pop());
+  const prev = cs.backStack.pop();
+  // Reversing a cross-column jump: the snapshot we leave behind for Forward must carry the
+  // CURRENT search + layout too, else Forward couldn't re-do the jump.
+  cs.fwdStack.push('cols' in prev ? viewSnap(cs) : cardSnap(cs));
+  applySnap(cs, prev);
   if (cs.mode === 'standard' && cs.recId != null) ackComments(recOf(entityCardOf(card, cs.recType), cs.recId));
   sweepEmptyDrafts(cs.recId);   // #8 — sweep the abandoned empty draft we stepped away from (keep the one we land on)
   render();
 }
 function cardFwd(card) {
   const cs = activeSession().cards[card]; if (!cs || !cs.fwdStack.length) return;
-  cs.backStack.push(cardSnap(cs));
-  applySnap(cs, cs.fwdStack.pop());
+  const nxt = cs.fwdStack.pop();
+  cs.backStack.push('cols' in nxt ? viewSnap(cs) : cardSnap(cs));
+  applySnap(cs, nxt);
   if (cs.mode === 'standard' && cs.recId != null) ackComments(recOf(entityCardOf(card, cs.recType), cs.recId));
   render();
 }
@@ -2337,8 +2449,14 @@ function pillTo(card, recId) {
   if (recId == null) return;
   // 3-column display: a link pill forces its column to reveal the target card.
   const revealCol = (member) => { const cs = activeSession(); const col = COLUMN_OF[member]; if (cs.cols && col) { cs.cols[col] = member; const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx; } };   // §M1 — also flip the visible phone column so a cross-column link lands where you can see it
-  if (SHOP_TYPES.includes(card)) { if (recOf(card, recId)) { revealCol(card); openStandard('shop', recId, card); } return; }
-  if (recOf(card, recId)) { revealCol(card); openStandard(card, recId); }
+  // If revealing the target SWAPS its column — hiding the card you're on now (e.g. an invoice
+  // → its customer, both in the right column; or a unit → its category, both left) — record the
+  // pre-swap view + column layout on the DESTINATION card so Back returns you to the card you
+  // left, exactly where it was. Same viewSnap mechanism the categories → units jump uses; no-op
+  // when the target is already visible in its own column (no swap). (Jac 2026-07-03)
+  const noteSwap = (member) => { const s = activeSession(), col = COLUMN_OF[member]; if (s.cols && col && s.cols[col] !== member) pushCardHistory(s.cards[SHOP_TYPES.includes(member) ? 'shop' : member], true); };
+  if (SHOP_TYPES.includes(card)) { if (recOf(card, recId)) { noteSwap(card); revealCol(card); openStandard('shop', recId, card); } return; }
+  if (recOf(card, recId)) { noteSwap(card); revealCol(card); openStandard(card, recId); }
 }
 
 /* ── global search (§5.4) ────────────────────────────────────────────────── */
@@ -4056,6 +4174,10 @@ function getEntityColor(entityType, rec) {
   const fl = getEntityFlags(entityType, rec);
   return fl.length ? fl[0].severity : 'green';
 }
+/** Pick the more-severe of a set of registry colors (danger → plain). Used to make the
+ *  unit mini-card border mirror the LOUDER of its two visible pills (Jac 2026-07-01). */
+const COLOR_SEVERITY = { red: 6, yellow: 5, orange: 4, purple: 3, blue: 2, green: 1, gray: 0 };
+const worseColor = (...cs) => cs.reduce((a, b) => ((COLOR_SEVERITY[b] ?? 1) > (COLOR_SEVERITY[a] ?? 1) ? b : a), 'gray');
 /** Map a statusPill `set` → its entity type (only the 5 PRIMARY status sets are
  *  flag-colored; secondary sets like unitInspectionStatus keep their registry color). */
 const PRIMARY_SET_ENTITY = { rentalStatus: 'rentals', unitFleetStatus: 'units', woPhase: 'workOrders', invoiceStatus: 'invoices', customerPayStatus: 'customers' };
@@ -4470,7 +4592,7 @@ const RB_FOUNDATION = {
     'ONE orange, ONE meaning: the selected tab · ignition · primary action. Never decorative.',
     rbSw('var(--accent)', 'Accent', 'selected · ignition', 'var(--on-orange)')],
   'color-status': ['◐', 'Status palette', '--green / --yellow / --red / --blue / --navy / --purple / --gray',
-    'Registry status colors — each carries a fixed meaning on every card (Ready · caution · danger · link…).',
+    'Registry status colors — each carries a fixed meaning on every card (Passed · caution · danger · link…).',
     ['var(--green)', 'var(--yellow)', 'var(--red)', 'var(--blue)', 'var(--navy)', 'var(--purple)', 'var(--gray)'].map((c) => `<span class="rb-sw" style="background:${c}"></span>`).join('')],
   'color-semantic': ['▣', 'Action-color law', 'commit = blue · money = green · danger = red',
     'Action INTENT, not status: blue commits/saves · green takes money · solid red confirms destructive.',
@@ -4684,29 +4806,66 @@ function categoryIconFor(name) {
   if (/saw|cut/.test(n)) return CATEGORY_ICON.saw;
   return CATEGORY_ICON.excavator;
 }
-/* The unit row's RENTAL+INSPECTION pill (Jac): text = rental status / availability
-   verdict / inspection label; COLOR is inspection-driven (mechanics' card) and only
-   goes red on a catastrophe (Failed inspection, overbooked). Built via statusPill's
-   color/label override so it stays an R3 pill. */
-function unitRentalInspPill(u) {
+/* The unit row's RENTAL+INSPECTION pill — the "driving button" (Jac 2026-07-03).
+   It says what you can DO with the unit right now: AVAILABLE (passed, active, free),
+   or its rental stage + the window dates when tied to a rental (RESERVED · JUL 5–8),
+   or the mechanic state (NOT READY / FAILED). A FAILED inspection while the unit is on
+   a rental is a breakdown mid-job = FIELD CALL, not a bench Failed. Color: green ok,
+   yellow caution, red danger/field-call. Returned as {label,color} so the card border
+   (worseColor of the two pills) can mirror the exact color the pill renders. Folds in
+   the #436 self-rental fix (a unit on the very rental being scoped shows its real
+   status, never a false "Available"). */
+/** Readable rental window for a card pill — "Jul 5–8" (same month) / "Jul 28 – Aug 5"
+    (spans months) / "Jul 5" (start only). Legible on a card vs the timeline's compact
+    SPEC fmtWindow ("Sa13-Tu16"). */
+function cardWindow(startISO, endISO) {
+  const s = parseISO(startISO), e = parseISO(endISO);
+  if (!s) return '';
+  const sd = fmtShortDate(startISO).replace(' 0', ' ');   // "Jul 05" → "Jul 5"
+  if (!e) return sd;
+  if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) return `${sd}–${e.getDate()}`;   // Jul 5–8
+  return `${sd} – ${fmtShortDate(endISO).replace(' 0', ' ')}`;   // Jul 28 – Aug 5
+}
+function unitPrimaryState(u) {
   const insp = getStatus('unitInspectionStatus', u.inspectionStatus);
-  const ar = activeRentalForUnit(u.unitId);
-  let text, color;
-  if (availWin) {
-    if (isUnitAvailableFor(u, availWin.start, availWin.end, availWin.selfId)) { text = 'Available'; color = 'green'; }
-    else if (u.fleetStatus !== 'Active') { text = getStatus('unitFleetStatus', u.fleetStatus).label; color = 'red'; }
-    else if (u.inspectionStatus === 'Failed') { text = 'Failed'; color = 'red'; }
-    else { const cf = rentalsOverlappingUnit(u.unitId, availWin.start, availWin.end, availWin.selfId)[0]; text = cf ? 'Booked' : 'Unavailable'; color = 'red'; }
-  } else if (ar) {
-    text = rentalDisplayStatus(ar);
-    color = (u.inspectionStatus === 'Failed' || unitOverbooked(u.unitId)) ? 'red' : insp.color;   // inspection drives; catastrophe → red
-  } else {
-    text = insp.label; color = insp.color;            // Passed / Not Ready / Failed
+  if (availWin) {   // availability lens active — the pill IS the avail verdict
+    // #436 — a unit already committed to the very rental being scoped must NOT read
+    // "Available" (selfId is excluded from the overlap, leaving it falsely free); show
+    // its real per-unit status. Voided units fall through — genuinely free to re-add.
+    const selfR = availWin.selfId ? IDX.rental.get(availWin.selfId) : null;
+    const selfEu = (selfR && selfR.status !== 'Quote' && ACTIVE_RENTAL.has(selfR.status)) ? unitEntry(selfR, u.unitId) : null;
+    if (selfEu && !unitVoided(selfR, selfEu)) return { label: unitStatus(selfR, selfEu), color: (u.inspectionStatus === 'Failed' || unitOverbooked(u.unitId)) ? 'red' : insp.color };
+    if (isUnitAvailableFor(u, availWin.start, availWin.end, availWin.selfId)) return { label: 'Available', color: 'green' };
+    if (u.fleetStatus !== 'Active') return { label: getStatus('unitFleetStatus', u.fleetStatus).label, color: 'red' };
+    if (u.inspectionStatus === 'Failed') return { label: 'Failed', color: 'red' };
+    const cf = rentalsOverlappingUnit(u.unitId, availWin.start, availWin.end, availWin.selfId)[0];
+    return { label: cf ? 'Booked' : 'Unavailable', color: 'red' };
   }
-  return statusPill('unitInspectionStatus', u.inspectionStatus, { card: 'units', recId: u.unitId, previewColor: color, previewLabel: text, focal: true });   // Units row headline = focal Primary
+  const ar = activeRentalForUnit(u.unitId);
+  if (ar) {   // tied to a rental → stage + window dates
+    const win = cardWindow(ar.startDate, ar.endDate);
+    const failed = u.inspectionStatus === 'Failed';
+    const status = failed ? 'Field Call' : rentalDisplayStatus(ar);   // breakdown mid-rental = field call, not "Failed"
+    return { label: win ? `${status} · ${win}` : status, color: (failed || unitOverbooked(u.unitId)) ? 'red' : insp.color };
+  }
+  if (u.inspectionStatus === 'Failed') return { label: 'Failed', color: 'red' };
+  if (u.inspectionStatus === 'Not Ready') return { label: 'Not Ready', color: 'yellow' };
+  if (u.fleetStatus === 'Active') return { label: 'Available', color: 'green' };   // passed · active · free → rentable
+  return { label: insp.label, color: insp.color };   // passed but out of fleet → plain inspection state
+}
+function unitRentalInspPill(u) {
+  const st = unitPrimaryState(u);
+  return statusPill('unitInspectionStatus', u.inspectionStatus, { card: 'units', recId: u.unitId, previewColor: st.color, previewLabel: st.label, focal: true });   // Units row headline = focal Primary
 }
 /* The unit row's WORK-ORDER+SERVICE pill (Jac): an open WO's journey bottleneck takes
    precedence (flag-colored woPhase); otherwise the nearest service order by hours. */
+/** The WO+SERVICE pill's COLOR (extracted so the card border can mirror it). */
+function unitWoSoColor(u) {
+  const wo = openWOForUnit(u.unitId);
+  if (wo) return getEntityColor('workOrders', wo);
+  const svc = topServiceForUnit(u);
+  return svc ? svc.color : 'green';
+}
 function unitWoSoPill(u) {
   const wo = openWOForUnit(u.unitId);
   if (wo) return statusPill('woPhase', wo.phase, { card: 'workOrders', recId: wo.woId });
@@ -4725,6 +4884,11 @@ function unitCardFlags(u) {
   if (u.gpsStatus === 'Not Reporting') f.push({ label: 'No GPS', color: 'red' });
   else if (u.gpsStatus === 'Verify') f.push({ label: 'GPS?', color: 'yellow' });
   if (u.fleetStatus && u.fleetStatus !== 'Active') { const fs = getStatus('unitFleetStatus', u.fleetStatus); f.push({ label: fs.label, color: fs.color }); }
+  // The border now mirrors the two pills, so surface the warnings the pills DON'T show
+  // (Jac 2026-07-01): a due/past-due SERVICE that an open WO is hiding in pill 2, and a
+  // requested wash. GPS/overbooked/fleet above are likewise pill-less signals.
+  if (openWOForUnit(u.unitId)) { const s = topServiceForUnit(u); if (s && (s.status === 'past-due' || s.status === 'due-soon')) f.push({ label: svcText(s), color: s.color, alert: s.status === 'past-due' }); }
+  if (u.washRequested) f.push({ label: 'Wash Due', color: 'yellow' });
   if (!f.length) return '';
   if (f.length === 1) return flagsStack([flagEl('', f[0].color, { icon: I.alert, alert: f[0].alert, title: f[0].label })]);
   const worst = f.some((x) => x.color === 'red') ? 'red' : f.some((x) => x.color === 'yellow') ? 'yellow' : 'gray';
@@ -4903,7 +5067,7 @@ const ROWS = {
     // labels never clip. Hours dropped (freed the top-right for flags). Border carries
     // the entity-health color (--ur-hl), like the category/rentals mini-cards.
     const cat = IDX.category.get(u.categoryId);
-    const hl = getEntityColor('units', u);
+    const hl = worseColor(unitPrimaryState(u).color, unitWoSoColor(u));   // border mirrors the LOUDER of the two visible pills (Jac 2026-07-01); pill-less warnings ride the ⚠ corner
     const nameColor = (hl === 'red' || hl === 'yellow' || hl === 'green') ? `var(--${hl})` : hl === 'gray' ? 'var(--txt-3)' : 'var(--txt)';
     return `<div class="ucard" style="--ur-hl:var(--${hl})">
       <div class="uc-top">
@@ -4919,12 +5083,15 @@ const ROWS = {
     // MINI-CARD (Jac 2026-06-25): the category as a vertical unit data-plate. The
     // Categories list renders these 3-across (2 when narrow) — see the .list grid.
     //   [icon · stamped NAME]
-    //   [Availability slot · rentable/inventory slot]   ← two equal pills, Units-style
+    //   [Avail/NEXT slot · PASS·NR·FAIL tally trio]      ← left half + three status buttons
     //   [1-Day · 7-Day · 4-Week stacked rates]          ← the rate card, vertical
     // The whole plate's border carries the rentable-health color (--catr-hl), exactly
     // like the rentals mini-card's --rcc-hl.
-    const r = categoryRentable(c.categoryId);
-    const tallyColor = r.total === 0 ? 'gray' : r.rentable === 0 ? 'red' : r.rentable < r.total ? 'yellow' : 'green';
+    // PASS/NR/FAIL over the ACTIVE fleet only — a Sold/Inactive/For-Sale unit isn't rentable
+    // inventory, so counting its inspection here made the tally contradict availability (e.g.
+    // "All failed" next to PASS 2). Same Active universe as availN + categoryUnavailReason.
+    const mix = { Ready: 0, 'Not Ready': 0, Failed: 0 };
+    DATA.units.forEach((u) => { if (u.categoryId === c.categoryId && u.fleetStatus === 'Active' && mix[u.inspectionStatus] != null) mix[u.inspectionStatus]++; });
     // FREE units (inspection-AGNOSTIC): Active fleet, not out on a rental for the window
     // (or right now). Their inspection makeup colors BOTH the plate border and the name
     // (Jac 2026-06-25): any free unit Ready → green · else any Not Ready → yellow · else
@@ -4942,13 +5109,47 @@ const ROWS = {
       ? categoryAvailableCount(c.categoryId, availWin.start, availWin.end, availWin.selfId)
       : free.filter(isUnitRentable).length;
     const availTip = availWin ? `${availN} available for the selected rental window` : `${availN} rentable and free to go out right now`;
+    // The availability row, rendered in the rulebook R3b pill language (badge()): a full-
+    //   width LEAD pill over a PASS · NR · FAIL trio.
+    //   LEAD  [ N Avail  |  Next wkday·time  |  None · reason ]
+    //   TRIO  [ n Pass ] [ n NR ] [ n Fail ]
+    // Lead = availability: ≥1 free now → green "N Avail" (taps to the category's available
+    // units); 0 free → red "Next" free-date (soonest rental end + 4h turnaround), tapping
+    // jumps to THAT unit; 0 free with no return date on record → red "None · reason" pill
+    // stamping the one-word why (On rent / All failed / Off fleet…) — inert, nothing to open.
+    const next = availN === 0 ? categoryNextAvailable(c.categoryId) : null;
+    // Compact syntax (Jac 2026-07-01): a weekday inside the next 7 days (else Mon-DD),
+    // and time as just the hour + a/p — keeps the lead short so the trio gets more room.
+    const compactClock = (min) => { if (min == null) return ''; let h = Math.floor(min / 60); const ap = h < 12 ? 'a' : 'p'; h = h % 12 || 12; return `${h}${ap}`; };
+    let lead;
+    if (availN > 0) {
+      lead = `<button class="catr-slot js-cat-avail" data-cat="${esc(c.categoryId)}" data-tip="${esc(availTip)} — tap to open these units">${badge(`${availN} Avail`, 'green', true)}</button>`;
+    } else if (next) {
+      const nd = parseISO(next.iso), daysAhead = nd ? Math.round((nd - TODAY) / 86400000) : 99;
+      const dlabel = (nd && daysAhead >= 0 && daysAhead <= 7) ? DOW3[nd.getDay()] : fmtShortDate(next.iso).replace(' 0', ' ');
+      const when = `${dlabel}${next.min != null ? ` ${compactClock(next.min)}` : ''}`;
+      const nu = IDX.unit.get(next.unitId);
+      lead = `<button class="catr-slot js-cat-next" data-unit="${esc(next.unitId)}" data-tip="Next free: ${esc(nu ? nu.name : 'unit')} on ${esc(when)} (4-hr turnaround) — tap to open it">${badge(`Next ${when}`, 'red')}</button>`;
+    } else {
+      // 0 free and no return date to show → tell the salesperson WHY in one word (Jac).
+      const why = categoryUnavailReason(c.categoryId);
+      lead = `<div class="catr-slot catr-slot-none" data-tip="None available — ${esc(why.toLowerCase())}">${badge(`None · ${why}`, 'red')}</div>`;
+    }
+    // The three status pills (Passed · Not Ready · Failed inspection) filter Units to that
+    // status in this category via the established js-fleet-filter path (like the detail mixbar).
+    const tally = (label, count, color, status, tip) =>
+      `<button class="catr-slot js-fleet-filter" data-cat="${esc(c.categoryId)}" data-status="${esc(status)}" data-kind="inspection" data-tip="${esc(tip)}">${badge(`${count} ${label}`, color)}</button>`;
+    const tallyRow = `${
+      tally('Pass', mix.Ready, 'green', 'Ready', `${mix.Ready} passed inspection — tap to filter Units`)
+    }${
+      tally('NR', mix['Not Ready'], 'yellow', 'Not Ready', `${mix['Not Ready']} not ready — tap to filter Units`)
+    }${
+      tally('Fail', mix.Failed, 'red', 'Failed', `${mix.Failed} failed inspection — tap to filter Units`)
+    }`;
     const rate = (label, v) => `<div class="catr-rate"><span class="catr-rk">${label}</span><span class="catr-rv${v ? '' : ' none'}">${v ? money(v) : '—'}</span></div>`;
     return `<div class="catr" style="--catr-hl:var(--${hl})">
       <div class="catr-head"><span class="catr-cat">${categoryIconFor(c.name)}</span><span class="r-title catr-name${hl === 'red' ? ' ec-red' : ''}" style="color:${nameColor}" data-tip="${esc(c.name)}">${esc(c.name)}</span></div>
-      <div class="catr-pills">
-        <div class="catr-slot js-cat-avail" data-cat="${esc(c.categoryId)}" data-tip="${esc(availTip)} — tap to open these units">${badge(`${availN} Avail`, availN > 0 ? 'green' : 'red')}</div>
-        <div class="catr-slot" data-tip="${r.rentable} of ${r.total} units rentable — in-yard, inspection not failed">${badge(`${r.rentable}/${r.total}`, tallyColor, true)}</div>
-      </div>
+      <div class="catr-pills">${lead}<div class="catr-tally-row">${tallyRow}</div></div>
       <div class="catr-rates">${rate('1-Day', c.rate1Day)}${rate('7-Day', c.rate7Day)}${rate('4-Week', c.rate4Wk)}${rate('Weekend', c.weekend)}</div>
     </div>`;
   },
@@ -6625,6 +6826,59 @@ function appendWindowed(list, rows, cs, card, renderRow) {
     list.appendChild(btn);
   }
 }
+/* Units column — PERMANENT stage sections (Jac 2026-07-03). The whole list is grouped
+   by each unit's rental stage, in urgency order, each led by a thin full-width dashed
+   divider in the stage color; the active sort still orders units WITHIN a section. */
+const UNIT_SECTIONS = [
+  { key: 'Today',        label: 'Today',           color: 'red' },
+  { key: 'Tomorrow',     label: 'Tomorrow',        color: 'yellow' },
+  { key: 'Reserved',     label: 'Reserved',        color: 'purple' },
+  { key: 'On Rent',      label: 'On Rent',         color: 'green' },
+  { key: 'Off Rent',     label: 'Off Rent',        color: 'blue' },
+  { key: 'End Rent',     label: 'End Rent',        color: 'yellow' },
+  { key: 'Available',    label: 'Available',       color: 'green' },
+  { key: 'Not Ready',    label: 'Not Ready',       color: 'yellow' },
+  { key: 'Attention',    label: 'Needs Attention', color: 'red' },
+  { key: 'Out of Fleet', label: 'Out of Fleet',    color: 'gray' },
+];
+/** A unit's stage bucket for the Units column sections. Rental stage (Today/Tomorrow
+    broken out of Reserved) when tied to a rental; else Available / Not Ready / Attention
+    (Failed) / Out of Fleet from its own condition. */
+function unitStageKey(u) {
+  if (u.fleetStatus && u.fleetStatus !== 'Active') return 'Out of Fleet';
+  const ar = activeRentalForUnit(u.unitId);
+  if (ar) {
+    const eu = unitEntry(ar, u.unitId);
+    let st = eu ? unitStatus(ar, eu) : rentalDisplayStatus(ar);
+    if (st === 'Reserved') { const n = dayDiff(TODAY, parseISO(ar.startDate)); if (n === 0) st = 'Today'; else if (n === 1) st = 'Tomorrow'; }
+    if (['Today', 'Tomorrow', 'Reserved', 'On Rent', 'Off Rent', 'End Rent'].includes(st)) return st;
+    return 'On Rent';   // any other active stage folds under On Rent
+  }
+  if (u.inspectionStatus === 'Failed') return 'Attention';
+  if (u.inspectionStatus === 'Not Ready') return 'Not Ready';
+  return 'Available';
+}
+function appendUnitSections(list, rows, cs, card) {
+  const limit = cs.listLimit || VIRT_CAP;
+  const buckets = new Map();
+  for (const u of rows) { const k = unitStageKey(u); if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(u); }
+  let shown = 0, remaining = 0;
+  for (const sec of UNIT_SECTIONS) {
+    const group = buckets.get(sec.key);
+    if (!group || !group.length) continue;
+    const canShow = limit - shown;
+    if (canShow <= 0) { remaining += group.length; continue; }
+    const take = group.slice(0, canShow);
+    remaining += group.length - take.length;
+    const hd = el('div', 'uc-sec');
+    hd.setAttribute('style', `--sec:var(--${sec.color})`);
+    hd.innerHTML = `<span class="uc-sec-label">${esc(sec.label)} · ${group.length}</span>`;
+    list.appendChild(hd);
+    take.forEach((u) => list.appendChild(rowEl(card, u)));
+    shown += take.length;
+  }
+  if (remaining > 0) { const btn = el('button', 'showmore js-showmore', `↓ Show more · ${remaining} hidden`); btn.dataset.card = card; list.appendChild(btn); }
+}
 
 // The open record's display title, mirroring each card's old detail-head title.
 function detailTitle(card, rec) {
@@ -6914,6 +7168,8 @@ function listView(cardDef, session) {
       const hint = PLUS_NEW.has(card) ? ` — use <b>+ New</b> above` : '';
       list.appendChild(el('div', 'empty', `No ${esc(cardDef.singular)}${session.anchor ? ' related' : hint}.`));
     }
+  } else if (card === 'units' && !availWin) {
+    appendUnitSections(list, rows, cs, card);   // permanent stage sections (Jac 2026-07-03)
   } else {
     appendWindowed(list, rows, cs, card, (rec) => list.appendChild(rowEl(card, rec)));
   }
@@ -7181,7 +7437,8 @@ function legacyKpiPct(roleId) {
   if (roleId === 'mtech') {
     const fc = R.filter((r) => r.fieldCall).length;
     const successful = R.length ? Math.round((1 - fc / R.length) * 100) : 100;
-    // Ready Rate — Ready ÷ rentable fleet, excluding Failed inspections + Inactive/Sold/For-Sale fleetStatus (Jac).
+    // Pass Rate — Passed ÷ rentable fleet, excluding Failed inspections + Inactive/Sold/For-Sale fleetStatus (Jac).
+    // (stored inspection value is still 'Ready' for live-DB compatibility; the term users see is 'Passed'.)
     const skipFleet = new Set(['Inactive', 'Sold', 'For Sale']);
     const eligible = DATA.units.filter((u) => !skipFleet.has(u.fleetStatus) && u.inspectionStatus !== 'Failed');
     const readyRate = pctOf(eligible.filter((u) => u.inspectionStatus === 'Ready').length, eligible.length);
@@ -7223,11 +7480,11 @@ function legacyKpiPct(roleId) {
 }
 // Plain-English explanation of each KPI's formula — shown on hover in the role popup.
 const KPI_HELP = {
-  'Healthy Fleet':          'Share of your fleet that’s rentable right now (Ready + Not-Ready units ÷ total fleet).',
+  'Healthy Fleet':          'Share of your fleet that’s rentable right now (Passed + Not-Ready units ÷ total fleet).',
   'WO Completion Rate':     'Work orders marked Complete ÷ all live work orders (cancelled ones excluded). Higher = the shop is keeping up.',
   'Parts Breakeven':        'How much of your parts cost is recovered by earnings from billed work orders. Full ring = billed WOs cover the parts.',
   'Successful Rentals':     'Rentals that went out without a breakdown — 1 minus the share of rentals that got a Field Call.',
-  'Ready Rate':             'Share of the rentable fleet that’s Ready to rent — Ready ÷ eligible units (Failed, Inactive, Sold & For-Sale excluded).',
+  'Pass Rate':              'Share of the rentable fleet that’s Passed inspection — Passed ÷ eligible units (Failed, Inactive, Sold & For-Sale excluded).',
   'WO Rate (20% goal)':     'Progress toward the goal: 20% of the last 30 days’ inspections spawning a work order is healthy (catching problems). Full ring at 20%.',
   'On-Time':                'Rentals you actually delivered/handled ÷ rentals scheduled (excludes quotes, cancels, no-shows).',
   'Wash Completion':        'Of the units flagged for a wash, how many got washed (washed ÷ wash-requested).',
@@ -11855,12 +12112,18 @@ function applyTitles() {
   });
 }
 
+/* Hover affordances (tooltip + record preview) are MOUSE-only. On a touch device the
+ * first tap synthesizes a `mouseover`, so arming a tooltip/preview there is exactly what
+ * made the first tap "act like hover" and cost a second tap to open a list row. Gate both
+ * to hover-capable pointers — covers phones AND touch tablets, not just the width-based
+ * is-phone (Jac 2026-07-01). */
+const HOVER_CAPABLE = window.matchMedia('(hover: hover)').matches;
 /* Custom tooltip (matches the app, not the OS) — shows full text after ~0.5s. */
 let tipTimer, tipEl;
 function initTooltip() {
   tipEl = el('div', 'tooltip'); document.body.appendChild(tipEl);
   document.addEventListener('mouseover', (e) => {
-    if (DRAG.active) return;   // §15c — no tooltips mid-drag
+    if (!HOVER_CAPABLE || DRAG.active) return;   // §15c — no tooltips mid-drag; never on touch (first-tap hover)
     const t = e.target.closest('[data-tip]');
     if (!t) return;
     clearTimeout(tipTimer);
@@ -13124,6 +13387,8 @@ function onClick(e) {
   // a category mini-card's Availability pill → jump to the Units card, narrowed to
   // that category's units (Jac 2026-06-25 — replaces the clunkier availability hop)
   if (closest('.js-cat-avail')) { e.stopPropagation(); return showCategoryUnits(closest('.js-cat-avail').dataset.cat); }
+  // the NEXT plate (0 free now) → jump straight to the unit that frees up soonest
+  if (closest('.js-cat-next')) { e.stopPropagation(); return showNextAvailableUnit(closest('.js-cat-next').dataset.unit); }
 
   // a flag naming a section WITHOUT a nav target scrolls within its own card
   // (e.g. "No Card" → Cards on File — Jac 2026-06-12)
@@ -15555,7 +15820,7 @@ function setInspResult(id, val) {
   const n = IDX.insp.get(id); if (!n) return;
   n.checklist = val;
   const u = IDX.unit.get(n.unitId);
-  if (u) { u.inspectionStatus = val === 'Pass' ? 'Ready' : 'Failed'; reindex('units', u); logAction(u, `Inspection ${val === 'Pass' ? 'passed → Ready' : 'failed → Failed'}`); }
+  if (u) { u.inspectionStatus = val === 'Pass' ? 'Ready' : 'Failed'; reindex('units', u); logAction(u, `Inspection ${val === 'Pass' ? 'passed' : 'failed'}`); }   // stored value stays 'Ready' (live-DB compatible); users see "Passed" via the registry label
   logAction(n, `Checklist → ${val}`);
   reindexDraft('inspections', n);
   if (val === 'Fail') {
@@ -16260,7 +16525,7 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault(); e.returnValue = '';
 });
 function renderLogin(msg) {
-  $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260623l" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
+  $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260702a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
       <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
@@ -16274,7 +16539,7 @@ function renderLogin(msg) {
         <label class="login-lbl" for="login-pw">Team password</label>
         <input id="login-pw" type="password" class="login-input" placeholder="••••••••" autocomplete="current-password" />
       </div>
-      <button type="submit" class="login-btn" data-r="R17" id="login-go">Clock In</button>
+      <button type="submit" class="login-btn" data-r="R17" id="login-go">Saddle Up?</button>
       <div class="login-err" id="login-err">${msg ? esc(msg) : ''}</div>
     </div>
   </form></div>`;
@@ -16344,7 +16609,9 @@ async function attemptLogin() {
   const btn = document.getElementById('login-go'); if (btn) { btn.textContent = 'Signing in…'; btn.disabled = true; }
   // Roll the Mr. Wrangler intro behind the box while the (slow) backend load runs — a little entertainment for the wait.
   const screen = document.querySelector('.login-screen'); if (screen) screen.classList.add('signing-in');
-  const vid = document.getElementById('login-video'); if (vid) { try { const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
+  // The Saddle Up click is a genuine user gesture, so unmuting here lets the intro's
+  // audio play under the browser's autoplay policy (a muted-only clip would stay silent).
+  const vid = document.getElementById('login-video'); if (vid) { try { vid.muted = false; const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
   try {
     // Ask the backend for the role. The role-aware backend returns it; an older
     // backend (pre-roles) replies "unknown action" → we proceed without a role
@@ -16572,7 +16839,7 @@ function boot() {
   document.addEventListener('mousemove', (e) => { lastMouse.x = e.clientX; lastMouse.y = e.clientY; });
   // hover preview (#1): float a record's Standard view after a short hover on a row/pill
   document.addEventListener('mouseover', (e) => {
-    if (!state.previewsOn || DRAG.active) return;       // previews off (per device) — and NEVER mid-drag (§15c)
+    if (!HOVER_CAPABLE || !state.previewsOn || DRAG.active) return;   // never on touch (first-tap hover eats the tap); previews off (per device); and NEVER mid-drag (§15c)
     if (e.target.closest('.hover-preview')) return;     // hovering INSIDE the open preview must NOT re-trigger/close it — let it persist so you can scroll/interact (the preview's own mouseenter/leave manage it)
     // interactive controls are CLICK targets, not preview triggers — the popup kept
     // landing under the cursor while aiming at the status dropdown (Jac 2026-06-12).

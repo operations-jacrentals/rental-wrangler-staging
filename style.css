@@ -3011,7 +3011,8 @@ body { font-variant-numeric: tabular-nums; }
   color:var(--yellow); border:none; background:transparent; position:relative; isolation:isolate; }   /* NO real border → the masked ::before ring (inset:0) spans the FULL border-box, matching the primary fill's height (a transparent border shrank the ring to the padding box → secondary read shorter). */
 .pill:is([data-r="R3"],[data-r="R3b"]):not(.focal).c-red::before, .pill.gate.dim.c-red::before,
 .pill:is([data-r="R3"],[data-r="R3b"]):not(.focal).c-yellow::before, .pill.gate.dim.c-yellow::before {
-  content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; padding:2.25px; pointer-events:none;
+  content:''; position:absolute; inset:0; z-index:-1; border-radius:inherit; padding:2px; pointer-events:none;
+  transform:translateZ(0);   /* promote the ring to its own layer so it rasterizes on the pixel grid → uniform thickness on all sides (a masked ring otherwise antialiases unevenly at fractional pill positions) */
   background-size:26px 26px;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor;
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; }
@@ -3059,6 +3060,12 @@ body.is-phone .card[data-card="units"] .list { grid-template-columns: repeat(2, 
    2026-07-01). A subtle dark shadow separates it from the panel; the red card border
    already flags danger, so the name only needs to READ. */
 .uc-name.ec-red { -webkit-text-fill-color: color-mix(in srgb, var(--red) 45%, white); text-shadow: 0 1px 2px rgba(0,0,0,.7); }
+/* Stage section divider (Jac 2026-07-03): a stamped stage label + a thin full-width
+   dashed rule in the stage color, spanning every grid column. Sort orders within. */
+.uc-sec { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin: 9px 2px 2px; }
+.card[data-card="units"] .list > .uc-sec:first-child { margin-top: 9px; }   /* clear the card's hazard-stripe top cap */
+.uc-sec-label { flex: 0 0 auto; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; font-size: 10.5px; line-height: 1; color: var(--sec, var(--txt-2)); }
+.uc-sec::after { content: ''; flex: 1 1 auto; border-top: 1.5px dashed var(--sec, var(--line)); opacity: .5; }
 .uc-flags { flex: 0 0 auto; }
 /* Corner ALERT mark — a compact icon (+count for several) so it never steals width
    from the name; label(s) live in the R23 data-tip. Suppress the R9 striped
@@ -3110,16 +3117,22 @@ body.is-phone .card[data-card="units"] .list { grid-template-columns: repeat(2, 
 .catr-cat { flex: 0 0 auto; width: 18px; height: 18px; color: var(--txt-2); display: flex; align-items: center; justify-content: center; }
 .catr-cat svg { width: 17px; height: 17px; display: block; }
 .catr-name { flex: 1 1 auto; min-width: 0; font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; font-size: 13px; line-height: 1.1; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.catr-pills { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-.catr-slot { display: flex; align-items: center; justify-content: center; }
+/* the availability row in the rulebook R3b pill language: a full-width LEAD pill
+   (N Avail / Next date / None·reason) over a PASS · NR · FAIL trio. Each slot is the
+   click target (the whole slot, not just the pill) — lead opens units / the next-free
+   unit, the trio filters Units by inspection status; the None lead is inert. */
+.catr-pills { display: flex; flex-direction: column; gap: 5px; }
+.catr-tally-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+/* the trio runs 3-across in a ~200px card — trim pad + type so "n Pass" fits without
+   ellipsis (the dense-grid legible-minimum override, per the design language). */
+.catr-tally-row .pill { padding: 0 5px; font-size: 9px; letter-spacing: .1px; gap: 3px; }
+.catr-slot { display: flex; align-items: center; justify-content: center; min-width: 0; }
 .catr-slot .pill { width: 100%; text-align: center; justify-content: center; overflow: hidden; }
 .catr-slot .pill .t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-/* the Availability slot is a shortcut into the Units card — give it a clear hit
-   affordance (the whole slot is the click target, not just the pill). */
-.catr-slot.js-cat-avail { cursor: pointer; }
-.catr-slot.js-cat-avail .pill { transition: box-shadow .12s, border-color .12s; }
-.catr-slot.js-cat-avail:hover .pill { border-color: var(--accent-line); box-shadow: 0 0 0 1px var(--accent-line); }
-.catr-slot.js-cat-avail:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
+button.catr-slot { cursor: pointer; padding: 0; background: none; border: 0; font: inherit; }
+.catr-slot.js-cat-avail .pill, .catr-slot.js-cat-next .pill, .catr-slot.js-fleet-filter .pill { transition: box-shadow .12s, border-color .12s; }
+.catr-slot.js-cat-avail:hover .pill, .catr-slot.js-cat-next:hover .pill, .catr-slot.js-fleet-filter:hover .pill { border-color: var(--accent-line); box-shadow: 0 0 0 1px var(--accent-line); }
+.catr-slot.js-cat-avail:focus-visible, .catr-slot.js-cat-next:focus-visible, .catr-slot.js-fleet-filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
 /* the rate card: a stamped period label on the left, the money value on the right,
    set off by a single saddle-stitch seam from the status pills above. */
 .catr-rates { margin-top: auto; display: flex; flex-direction: column; gap: 2px; border-top: 1px dashed var(--line); padding-top: 6px; }
