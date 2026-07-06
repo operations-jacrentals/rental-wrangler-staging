@@ -1450,7 +1450,11 @@ function mountTransportEditor() {
   const input = document.querySelector('.js-taddr');
   if (input && !input.dataset.wired) {
     input.dataset.wired = '1';
-    setTimeout(() => { try { input.focus(); const n = input.value.length; input.setSelectionRange(n, n); } catch (e) {} }, 0);
+    // Desktop only: auto-focus = type-immediately ergonomics. On the PHONE this fired on EVERY
+    // render while the editor was open (the wired flag resets with each DOM rebuild) — each focus
+    // scrolled the bottom-of-card editor into view + popped the keyboard (Jac bug 2026-07-06:
+    // "every transport action jumps me to the bottom"). Phone: tap the field to type.
+    if (!document.body.classList.contains('is-phone')) setTimeout(() => { try { input.focus(); const n = input.value.length; input.setSelectionRange(n, n); } catch (e) {} }, 0);
     input.addEventListener('input', () => teQuery(input.value));
     input.addEventListener('keydown', teKeydown);
   }
@@ -1778,6 +1782,52 @@ function isUnitAvailableFor(u, startISO, endISO, selfId) {
   if (!u || u.fleetStatus !== 'Active') return false;
   if (u.inspectionStatus === 'Failed') return false;
   return rentalsOverlappingUnit(u.unitId, startISO, endISO, selfId).length === 0;
+}
+/* ── Sale-price engine (spec automated-pricing D1/D3, Jac 2026-06-29) ──────────────
+   Suggests a category's used-sale BOTTOM DOLLAR + ASKING PRICE from an owner-set scale:
+   a % of the category's avg unit cost, or a % of its MSRP. Manager+ SEES suggestions and
+   ACCEPTS them (writes c.bottomDollar / c.askPrice); Settings picks approve-vs-auto.
+   AUTO mode applies drift only under a manager+ session — a staff login never writes
+   pricing. Config rides settings.salePricing { basis:'cost'|'msrp', bottomPct, askPct,
+   mode:'approve'|'auto' } (additive blob; absent = engine off). */
+function salePricingCfg() {
+  const co = (state.settings && state.settings.company) || {};
+  const num = (v, d) => (isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+  return { basis: co.salePriceBasis === 'msrp' ? 'msrp' : 'cost', bottomPct: num(co.saleBottomPct, 0), askPct: num(co.saleAskPct, 0), mode: co.salePriceMode === 'auto' ? 'auto' : 'approve', on: !!(num(co.saleBottomPct, 0) || num(co.saleAskPct, 0)) };
+}
+function categoryCostBasis(c) {
+  const us = DATA.units.filter((u) => u.categoryId === c.categoryId && (Number(u.trueCost) || Number(u.purchasePrice)));
+  if (!us.length) return 0;
+  return Math.round(us.reduce((a, u) => a + (Number(u.trueCost) || Number(u.purchasePrice) || 0), 0) / us.length);
+}
+function salePriceSuggest(c) {
+  const cfg = salePricingCfg(); if (!cfg.on) return null;
+  const base = cfg.basis === 'msrp' ? (Number(c.msrp) || 0) : categoryCostBasis(c);
+  if (!base) return null;
+  const r2 = (x) => Math.round(x / 25) * 25;   // sale prices land on clean $25 steps
+  return { basis: cfg.basis, base, bottom: cfg.bottomPct ? r2(base * cfg.bottomPct / 100) : null, ask: cfg.askPct ? r2(base * cfg.askPct / 100) : null, mode: cfg.mode };
+}
+/* AUTO mode: apply drifted suggestions once per boot — manager+ sessions only. */
+function salePricingAutoApply() {
+  const cfg = salePricingCfg();
+  if (!cfg.on || cfg.mode !== 'auto') return;
+  if (currentRole && roleTier(currentRole) < tierRank('manager')) return;   // never auto-write pricing under a sub-manager login
+  let n = 0;
+  DATA.categories.forEach((c) => {
+    const sug = salePriceSuggest(c); if (!sug) return;
+    const patch = [];
+    if (sug.bottom != null && Number(c.bottomDollar) !== sug.bottom) { c.bottomDollar = sug.bottom; patch.push(`bottom ${money(sug.bottom)}`); }
+    if (sug.ask != null && Number(c.askPrice) !== sug.ask) { c.askPrice = sug.ask; patch.push(`ask ${money(sug.ask)}`); }
+    if (patch.length) { logAction(c, `Sale-price engine (auto, ${sug.basis} basis): ${patch.join(' · ')}`); reindex('categories', c); n++; }
+  });
+  if (n) toast(`Sale-price engine updated ${n} categor${n === 1 ? 'y' : 'ies'} (auto mode).`);
+}
+/* Lost-demand capture (spec market-research D3, Jac 2026-06-29): a customer asked for a
+   category with 0 available — one tap logs the ask onto cat.lostDemand[] (additive, rides
+   the generic sync). Volume of asks per category feeds purchasing/fleet-spread decisions. */
+function lostDemandBtn(c) {
+  const n = (c.lostDemand || []).length;
+  return `<button class="catr-slot js-lost-demand" data-r="R5b" data-cat="${esc(c.categoryId)}" data-tip="A customer wanted one and none were free — log the lost ask${n ? ` (${n} logged)` : ''}"><span class="add-field anchor" style="height:20px;font-size:10px">+Lost${n ? ` ${n}` : ''}</span></button>`;
 }
 function categoryAvailableCount(catId, startISO, endISO, selfId) {
   return DATA.units.filter((u) => u.categoryId === catId && isUnitAvailableFor(u, startISO, endISO, selfId)).length;
@@ -2206,7 +2256,10 @@ function openCloseAllMenu(anchorEl) {
 // (computeChanges) so they never reach the backend until they earn real content.
 function isEmptyMockDraft(card, rec) {
   if (!rec || !rec.mock) return false;
-  if (card === 'invoices') return !(rec.lineItems || []).length && !(Number(rec.amountPaid) || 0);
+  // An invoice LINKED to a rental is not abandoned (Jac bug 2026-07-06: adding a transport
+  // address navigated → sweep deleted the attached-but-not-yet-billed mock invoice and cleared
+  // r.invoiceId). Mirrors the rentals branch below, where a link (!rec.invoiceId) counts as content.
+  if (card === 'invoices') return !(rec.lineItems || []).length && !(Number(rec.amountPaid) || 0) && !(rec.rentalIds || []).length && !DATA.rentals.some((r) => r.invoiceId === rec.invoiceId);
   if (card === 'rentals')  return !(rentalUnits(rec) || []).length && !rec.customerId && !rec.startDate && !rec.invoiceId;
   return false;
 }
@@ -3628,6 +3681,8 @@ const SETTINGS_TABS = [
   { id: 'inspections',   label: 'Inspections',      icon: CARD_ICON.inspections,  v1: true },
   { id: 'requirements',  label: 'Rental Rules',     icon: STATUS_ICONS.shield,    v1: true },
   { id: 'kpis',          label: 'KPIs & Rings',     icon: STATUS_ICONS.gauge,     v1: true },
+  { id: 'flags',         label: 'Flags & Alerts',   icon: STATUS_ICONS.alert,     v1: true },
+  { id: 'team',          label: 'Team Roster',      icon: I.lock,                 v1: true },
   { id: 'notifications', label: 'Notifications',    icon: I.bell,                 note: 'Team chat on/off, driver dispatch alerts, customer reminders & cadence.' },
   { id: 'integrations',  label: 'Integrations',     icon: STATUS_ICONS.zap,       note: 'Stripe, Maps, telematics feed — references & toggles (secrets stay server-side).' },
 ];
@@ -3639,6 +3694,13 @@ function setDraftStatus(o, set, val, patch) {
   const next = { ...(o.draftSettings.status[set][val] || {}), ...patch };
   if (!next.color) delete next.color; if (!next.icon) delete next.icon; if (!next.label) delete next.label;   // empties → fall back to the shipped default
   if (Object.keys(next).length) o.draftSettings.status[set][val] = next; else delete o.draftSettings.status[set][val];
+}
+function captureTeamEdits(o) {   // keep typed roster edits across re-renders + into Save
+  const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
+  const inputs = root.querySelectorAll('.set-input[data-emp]'); if (!inputs.length) return;
+  if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
+  const emps = o.draftSettings.employees || (o.draftSettings.employees = []);
+  inputs.forEach((i) => { const idx = Number(i.dataset.i); if (emps[idx]) emps[idx][i.dataset.emp] = i.value; });
 }
 function captureLoginEdits(o) {   // keep typed-but-unsaved password + label edits across a re-render
   const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
@@ -3669,6 +3731,46 @@ function ensureRoleMeta(o) {
 }
 // Just the active tab's pane HTML — so an in-pane edit can repaint ONLY the pane
 // (rerenderSettingsPane) instead of tearing down the whole overlay (renderOverlay), which flashed.
+/* ── Settings → Flags & Alerts (spec design-system D1, Jac 2026-06-29) ─────────────
+   Owner tunes the prescriptive flag engine: turn ANY flag off (including the money/credit
+   safety flags — Jac's explicit call) or override its severity. Stored in
+   settings.flagOverrides — absent = the shipped FLAG_META default. Every change is a
+   draft until Save (setConfig, admin-password-gated server-side); disables are audited
+   into settings.flagAuditLog so a hidden safety flag is always traceable. */
+function settingsFlagsPane(o) {
+  if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
+  const ov = o.draftSettings.flagOverrides || {};
+  const ENT_LBL = { rentals: 'Rentals', units: 'Units', workOrders: 'Work Orders', invoices: 'Invoices', customers: 'Customers' };
+  const rows = Object.keys(FLAG_META).map((ent) => {
+    const items = (FLAG_META[ent] || []).map((f) => {
+      const oo = (ov[ent] || {})[f.id] || {};
+      const sev = oo.severity || f.severity;
+      const off = !!oo.off;
+      const sevCtl = segCtl(['red', 'yellow', 'green'].map((sv) => ({ label: sv === 'red' ? 'R' : sv === 'yellow' ? 'Y' : 'G', js: 'js-flag-sev', data: { ent, id: f.id, sev: sv }, on: (!off && sev === sv) ? sv : null })));
+      const onCtl = segCtl([{ label: 'On', js: 'js-flag-ov', data: { ent, id: f.id, val: 'on' }, on: !off ? 'green' : null }, { label: 'Off', js: 'js-flag-ov', data: { ent, id: f.id, val: 'off' }, on: off ? 'red' : null }]);
+      const changed = oo.off || oo.severity ? `<span class="muted" style="font-size:10px">edited</span>` : '';
+      return `<div class="set-row" style="gap:9px;align-items:center"><span style="flex:1;min-width:150px;${off ? 'opacity:.45' : ''}">${flagEl(f.label, sev)} ${esc(f.label)}</span>${sevCtl}${onCtl}${changed}</div>`;
+    }).join('');
+    return `<div class="set-sec"><h4 class="set-h">${esc(ENT_LBL[ent] || ent)}</h4>${items}</div>`;
+  }).join('');
+  return `<div class="set-pane"><div class="muted" style="font-size:11.5px;margin-bottom:9px">Every flag is owner-tunable — Off hides it everywhere; R/Y/G overrides its severity. Defaults return by flipping back. Disabling a money/credit flag is audited.</div>${rows}</div>`;
+}
+/* ── Settings → Team Roster (spec hr-compliance trimmed scope, Jac 2026-06-29) ──────
+   The employee list — name · role · phone · note. Deliberately NO credentials/medical/
+   compliance PII (dropped from scope). Feeds the future multi-driver identity +
+   Driving Score hooks. Rides settings.employees (additive blob). */
+function settingsTeamPane(o) {
+  if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
+  const emps = o.draftSettings.employees || [];
+  const roleOpts = ROLES.map((r) => r.label || r.id);
+  const rows = emps.map((em, i) => `<div class="set-row" style="gap:7px">
+    <input class="set-input" data-emp="name" data-i="${i}" placeholder="Name" value="${esc(em.name || '')}" style="flex:2;min-width:110px" />
+    <select class="set-input" data-emp="role" data-i="${i}" style="flex:1;min-width:90px">${roleOpts.map((r) => `<option${(em.role || '') === r ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select>
+    <input class="set-input" data-emp="phone" data-i="${i}" placeholder="Phone" value="${esc(em.phone || '')}" style="flex:1;min-width:90px" />
+    <input class="set-input" data-emp="note" data-i="${i}" placeholder="Note" value="${esc(em.note || '')}" style="flex:2;min-width:110px" />
+    ${closeX('js-emp-del', { data: { i } })}</div>`).join('');
+  return `<div class="set-pane"><div class="muted" style="font-size:11.5px;margin-bottom:9px">The crew — name, role, phone, note. No credentials or compliance PII lives here (dropped from scope, Jac 2026-06-29).</div>${rows || '<div class="muted" style="font-size:12px">No hands on the roster yet.</div>'}<div class="kv pillrow" style="margin-top:9px">${addBtn('Hand', { link: true, js: 'js-emp-add' })}</div></div>`;
+}
 function settingsPaneFor(o) {
   if (o.tab === 'statuses') return settingsStatusesPane(o);
   if (o.tab === 'logins') return settingsLoginsPane(o);
@@ -3677,6 +3779,8 @@ function settingsPaneFor(o) {
   if (o.tab === 'requirements') return settingsRulesPane(o);
   if (o.tab === 'fields') return settingsFieldsPane(o);
   if (o.tab === 'inspections') return settingsInspectionsPane(o);
+  if (o.tab === 'flags') return settingsFlagsPane(o);
+  if (o.tab === 'team') return settingsTeamPane(o);
   return settingsPlannedPane(SETTINGS_TABS.find((t) => t.id === o.tab));
 }
 function settingsBoardHtml(o) {
@@ -3748,6 +3852,16 @@ function settingsCompanyPane(o) {
         ${segCtl([{ label: 'Off', js: 'js-retro-set', data: { val: 'off' }, on: retro ? null : 'gray' }, { label: 'On', js: 'js-retro-set', data: { val: 'on' }, on: retro ? 'green' : null }])}
       </label>
       <p class="set-note"><strong>On</strong> (default): extending a rental bills the cheapest price for <strong>all</strong> the days rented — what's already paid counts toward it (a week paid rolls into the month). <strong>Off</strong>: the extension is billed as a fresh rental of just the added days; the original invoice price stays as it was.</p>
+      <div class="set-pane-head" style="margin-top:14px"><h4>Used-Sale Price Engine</h4><p>Suggests each category's <strong>Bottom Dollar</strong> and <strong>Asking Price</strong> from a scale you set — % of avg unit cost, or % of MSRP (spec automated-pricing, Jac 2026-06-29). Leave the percents blank to keep the engine off.</p></div>
+      <label class="co-fld co-fld-toggle"><span class="kpi-cap">PRICE BASIS</span>
+        ${segCtl([{ label: '% of Cost', js: 'js-spe-basis', data: { val: 'cost' }, on: (co.salePriceBasis || 'cost') === 'cost' ? 'green' : null }, { label: '% of MSRP', js: 'js-spe-basis', data: { val: 'msrp' }, on: co.salePriceBasis === 'msrp' ? 'green' : null }])}
+      </label>
+      <label class="co-fld co-fld-goal"><span class="kpi-cap">BOTTOM DOLLAR %</span><span class="co-goal-wrap"><input class="co-in co-in-num js-co-field" data-f="saleBottomPct" value="${co.saleBottomPct != null ? esc(co.saleBottomPct) : ''}" placeholder="e.g. 55" inputmode="numeric" autocomplete="off"/><span class="co-goal-suffix">%</span></span></label>
+      <label class="co-fld co-fld-goal"><span class="kpi-cap">ASKING PRICE %</span><span class="co-goal-wrap"><input class="co-in co-in-num js-co-field" data-f="saleAskPct" value="${co.saleAskPct != null ? esc(co.saleAskPct) : ''}" placeholder="e.g. 80" inputmode="numeric" autocomplete="off"/><span class="co-goal-suffix">%</span></span></label>
+      <label class="co-fld co-fld-toggle"><span class="kpi-cap">APPLY MODE</span>
+        ${segCtl([{ label: 'Manager approves', js: 'js-spe-mode', data: { val: 'approve' }, on: (co.salePriceMode || 'approve') === 'approve' ? 'green' : null }, { label: 'Full auto', js: 'js-spe-mode', data: { val: 'auto' }, on: co.salePriceMode === 'auto' ? 'yellow' : null }])}
+      </label>
+      <p class="set-note"><strong>Manager approves</strong>: suggestions show on each category's Investment plate with an Accept button (Manager+). <strong>Full auto</strong>: drifted prices apply themselves at boot — only while a Manager+ is signed in, and every change lands in the category's audit log.</p>
       <div class="co-preview">
         <span class="kpi-cap">RECEIPT PREVIEW</span>
         <div class="co-receipt"><div class="co-receipt-brand">${esc(companyDraftName(co))}</div><div class="co-receipt-sub">${esc(companyDraftTagline(co))}</div></div>
@@ -4898,10 +5012,11 @@ function customerSpectrumViz(c) {
 // `box` (the unmatched/admin fallback) is deliberately `mo-none`: it stays inert so the
 // "this one's unrecognized" signal isn't undercut by a flourish that implies a real match.
 const CATEGORY_MOTION = {
-  excavator: 'mo-dig', skidsteer: 'mo-dig', trencher: 'mo-chop', grinder: 'mo-spin',
-  lift: 'mo-raise', attachment: 'mo-snap', roller: 'mo-press', buggy: 'mo-roll',
+  excavator: 'mo-dig', skidsteer: 'mo-dig', dozer: 'mo-dig', trencher: 'mo-chop', grinder: 'mo-spin',
+  lift: 'mo-raise', scissor: 'mo-raise', telehandler: 'mo-raise', towablelift: 'mo-raise',
+  attachment: 'mo-spin', roller: 'mo-roll', tamper: 'mo-press', buggy: 'mo-roll',
   generator: 'mo-spark', compressor: 'mo-puff', pump: 'mo-drip', truck: 'mo-roll',
-  tractor: 'mo-roll', trailer: 'mo-roll', fuel: 'mo-slosh', heater: 'mo-flicker',
+  tractor: 'mo-roll', trailer: 'mo-roll', dumptrailer: 'mo-raise', fuel: 'mo-slosh', heater: 'mo-flicker',
   tower: 'mo-pulse', saw: 'mo-chop', box: 'mo-none',
 };
 /* A library glyph representing a unit's CATEGORY (Jac) — keyword-resolved from the
@@ -4915,24 +5030,32 @@ const CATEGORY_MOTION = {
    box glyph — NOT a machine shape — so a miss is visually obvious instead of silently wrong.
    Wrapped in .cat-glyph so the parent row/card hover triggers a per-family CSS-only motion
    (never JS-driven, degrades to a plain color change under prefers-reduced-motion).
-   ANIMATED VARIANTS (Jac, 2026-07-03): the excavator / lift / skid-steer families render
-   the CATEGORY_ANIM ambient loops (icons-anim.js — converted from Jac's supplied Lottie
-   artwork) instead of the static glyph; reduced-motion freezes them to the rest pose. */
+   ANIMATED VARIANTS (Jac, 2026-07-03): the boom-lift and skid-steer families render
+   the CATEGORY_ANIM hover-play loops (icons-anim.js — converted from Jac's supplied
+   Lottie artwork) instead of the static glyph. The excavator Lottie was dropped —
+   it read as a track loader, not a boom-arm digger (Jac) — so that family stays on
+   the static Tabler backhoe until correct artwork arrives. */
 function categoryIconFor(name) {
   const n = (name || '').toLowerCase();
   let key = 'box';
   if (/stump|grinder/.test(n)) key = 'grinder';
   else if (/trench/.test(n)) key = 'trencher';
   else if (/att\.|attach|attatch|grapple|box.?blade|bush.?hog|\bforks?\b|breaker|auger/.test(n)) key = 'attachment';
-  else if (/skid|dozer|track.?loader|bobcat/.test(n)) key = 'skidsteer';
+  else if (/dozer/.test(n)) key = 'dozer';
+  else if (/skid|track.?loader|bobcat/.test(n)) key = 'skidsteer';
   else if (/excavat|backhoe|mini.?ex/.test(n)) key = 'excavator';
-  else if (/scissor|boom|man.?lift|aerial|telehandl|towable.?lift|\blift\b/.test(n)) key = 'lift';
-  else if (/roller|tamper|rammer/.test(n)) key = 'roller';
+  else if (/scissor/.test(n)) key = 'scissor';
+  else if (/telehandl|lull|telescopic.?fork|fork.?lift/.test(n)) key = 'telehandler';
+  else if (/towable/.test(n)) key = 'towablelift';
+  else if (/boom|man.?lift|aerial|\blift\b/.test(n)) key = 'lift';
+  else if (/tamper|rammer|compactor/.test(n)) key = 'tamper';
+  else if (/roller/.test(n)) key = 'roller';
   else if (/buggy/.test(n)) key = 'buggy';
   else if (/generat|\bpower\b|genset|geny/.test(n)) key = 'generator';
   else if (/compress|\bair\b/.test(n)) key = 'compressor';
   else if (/pump|water|sump/.test(n)) key = 'pump';
-  else if (/trailer|dump/.test(n)) key = 'trailer';
+  else if (/dump/.test(n)) key = 'dumptrailer';
+  else if (/trailer|container/.test(n)) key = 'trailer';
   else if (/hauler|flatbed|\btruck\b/.test(n)) key = 'truck';
   else if (/tractor/.test(n)) key = 'tractor';
   else if (/light|tower/.test(n)) key = 'tower';
@@ -5267,11 +5390,11 @@ const ROWS = {
       const dlabel = (nd && daysAhead >= 0 && daysAhead <= 7) ? DOW3[nd.getDay()] : fmtShortDate(next.iso).replace(' 0', ' ');
       const when = `${dlabel}${next.min != null ? ` ${compactClock(next.min)}` : ''}`;
       const nu = IDX.unit.get(next.unitId);
-      lead = `<button class="catr-slot js-cat-next" data-unit="${esc(next.unitId)}" data-tip="Next free: ${esc(nu ? nu.name : 'unit')} on ${esc(when)} (4-hr turnaround) — tap to open it">${badge(`Next ${when}`, 'red')}</button>`;
+      lead = `<button class="catr-slot js-cat-next" data-unit="${esc(next.unitId)}" data-tip="Next free: ${esc(nu ? nu.name : 'unit')} on ${esc(when)} (4-hr turnaround) — tap to open it">${badge(`Next ${when}`, 'red')}</button>${lostDemandBtn(c)}`;
     } else {
       // 0 free and no return date to show → tell the salesperson WHY in one word (Jac).
       const why = categoryUnavailReason(c.categoryId);
-      lead = `<div class="catr-slot catr-slot-none" data-tip="None available — ${esc(why.toLowerCase())}">${badge(`None · ${why}`, 'red')}</div>`;
+      lead = `<div class="catr-slot catr-slot-none" data-tip="None available — ${esc(why.toLowerCase())}">${badge(`None · ${why}`, 'red')}</div>${lostDemandBtn(c)}`;
     }
     // The three status pills (Passed · Not Ready · Failed inspection) filter Units to that
     // status in this category via the established js-fleet-filter path (like the detail mixbar).
@@ -6562,6 +6685,9 @@ const DETAIL = {
         </div>
         <div class="side r">
           ${kvPills(`${badge(acct.label, acct.color)}${c.requiresPO ? badge('PO Required', 'yellow') : ''}${c.rentalProtection ? badge('Protected', 'blue') : ''}${agPill}`)}
+          <div class="kv" style="justify-content:flex-end">${c.accountType === 'Blacklisted'
+            ? ghostPill('Lift blacklist', { js: 'js-blacklist-lift', h: 24, data: { rec: c.customerId } })
+            : actionPill('danger', 'Blacklist', { js: 'js-blacklist', h: 24, data: { rec: c.customerId } })}</div>
           ${kv(money(d.totalPaid), { pfx: 'Total', derived: true })}
           ${kv(`${d.visits || 0}`, { pfx: 'Visits', derived: true })}
           ${kv(`${d.years || 0} yrs`, { pfx: 'Customer for', derived: true })}
@@ -6643,6 +6769,7 @@ const DETAIL = {
     const fleet = `<div class="section"><h4>Fleet Summary</h4><div class="fieldstack">
       ${st.forSale ? kvPills(badge(st.forSale + ' For Sale', 'purple')) : ''}
       ${kv(`${num(st.avgHours)} HRS`, { sfx: 'avg hours', derived: true })}
+      ${(c.lostDemand || []).length ? kv(`${(c.lostDemand || []).length}`, { sfx: 'lost-demand asks', derived: true }) : ''}
       ${c.description ? kv(c.description, { wrap: true }) : ''}
     </div></div>`;
     // every unit in the category — R2 linked pill + R4 derived status pill (Jac 2026-06-12)
@@ -6659,6 +6786,13 @@ const DETAIL = {
           ${st.roi != null && canMoney() ? kv(`${st.roi}%`, { sfx: 'ROI', derived: true }) : ''}
           ${kv(money(st.avgRevUnit), { sfx: '/unit revenue', derived: true })}${kv(money(st.avgExpUnit), { sfx: '/unit expenses', derived: true })}
           ${kv(money(c.msrp), { sfx: 'MSRP' })}${kv(money(c.askPrice), { sfx: 'ask' })}${canMoney() ? kv(money(c.bottomDollar), { sfx: 'bottom dollar' }) : ''}
+          ${(() => {   // sale-price engine suggestion (spec automated-pricing D1/D3) — Manager+ sees + accepts
+            if (!currentRole || roleTier(currentRole) < tierRank('manager')) { if (currentRole) return ''; }
+            const sug = salePriceSuggest(c); if (!sug || sug.mode !== 'approve') return '';
+            const drift = (sug.bottom != null && Number(c.bottomDollar) !== sug.bottom) || (sug.ask != null && Number(c.askPrice) !== sug.ask);
+            if (!drift) return '';
+            return `<div class="kv" style="gap:7px">${kv(`${sug.bottom != null ? money(sug.bottom) : '—'} / ${sug.ask != null ? money(sug.ask) : '—'}`, { sfx: `engine bottom/ask (${sug.basis === 'msrp' ? '% MSRP' : '% cost'})`, derived: true })}${actionPill('commit', 'Accept', { js: 'js-spe-accept', h: 22, data: { rec: c.categoryId } })}</div>`;
+          })()}
           ${catUtilKv(c)}
           ${efld('categories', c, 'categoryId', 'usefulLifeHours', 'Useful life (hrs)', { type: 'number', admin: true, fmt: (v) => num(v) + ' HRS', sfx: 'useful life' })}
           ${efld('categories', c, 'categoryId', 'endOfLifeYears', 'End of life (yrs)', { type: 'number', admin: true, fmt: (v) => v + ' YRS', sfx: 'end of life' })}
@@ -6723,7 +6857,7 @@ const DETAIL = {
     // Merge (#64): a customer's other UNPAID invoices can fold into this one. Money-safe
     // by construction — only $0-paid, unlocked, un-refunded bills qualify (invoiceMergeable).
     const mergeables = (canMoney() && invoiceMergeable(i)) ? DATA.invoices.filter((o) => o.invoiceId !== i.invoiceId && o.customerId === i.customerId && invoiceMergeable(o)) : [];
-    const mergePicker = `<div class="lineform"><div class="muted" style="font-size:12px;margin-bottom:7px">Fold another unpaid invoice for ${esc(cust ? cust.name : 'this customer')} into ${esc(i.invoiceId)} — its lines move over and the original is removed.</div>${mergeables.map((o) => { const ot = invoiceTotals(o); const n = (o.lineItems || []).length; return `<div class="hitem"><b class="derived">${esc(invoiceShort(o.invoiceId))}</b><span class="muted" style="font-size:11px">${n} line${n === 1 ? '' : 's'} · ${money2(ot.total)}</span><span class="spacer"></span>${actionPill('commit', 'Merge in', { js: 'js-merge-pick', h: 24, data: { keep: i.invoiceId, rec: o.invoiceId } })}</div>`; }).join('')}<div class="pillrow" style="justify-content:flex-end;margin-top:7px">${ghostPill('Done', { js: 'js-merge-cancel' })}</div></div>`;
+    const mergePicker = `<div class="lineform mergeform"><div class="muted" style="font-size:12px;margin-bottom:7px">Fold another unpaid invoice for ${esc(cust ? cust.name : 'this customer')} into ${esc(i.invoiceId)} — its lines move over and the original is removed.</div>${mergeables.map((o) => { const ot = invoiceTotals(o); const n = (o.lineItems || []).length; return `<div class="hitem"><b class="derived">${esc(invoiceShort(o.invoiceId))}</b><span class="muted" style="font-size:11px">${n} line${n === 1 ? '' : 's'} · ${money2(ot.total)}</span><span class="spacer"></span>${actionPill('commit', 'Merge in', { js: 'js-merge-pick', h: 24, data: { keep: i.invoiceId, rec: o.invoiceId } })}</div>`; }).join('')}<div class="pillrow" style="justify-content:flex-end;margin-top:7px">${ghostPill('Done', { js: 'js-merge-cancel' })}</div></div>`;
     const manageRow = state.invLineForm === i.invoiceId ? lineForm
       : (state.invMergePick === i.invoiceId && mergeables.length) ? mergePicker
       : locked
@@ -8689,6 +8823,16 @@ function hkDemoInner(d) {
 /* ── §5.3/§11 Office Dispatch Time Grid ──────────────────────────────────────
    Every transport task (Deliver at the rental's start, Pick up at its end) for
    active rentals, grouped by day so the Office sees what trucks go where/when. */
+/* Driver roster (spec rentals-dispatch D6, Jac 2026-06-29): the Settings → Team Roster rows
+   whose role reads Driver (fallback: the whole roster when nobody is tagged Driver yet).
+   Rows predating stable ids fall back to name as the ref. */
+function driverRoster() {
+  const emps = (state.settings && state.settings.employees) || [];
+  const drivers = emps.filter((e2) => /driver/i.test(e2.role || ''));
+  return (drivers.length ? drivers : emps).map((e2) => ({ id: e2.id || e2.name, name: e2.name || '(unnamed)' })).filter((d) => d.name && d.name !== '(unnamed)');
+}
+const legDriverField = (task) => (task === 'Deliver' ? 'deliveryDriverId' : 'recoveryDriverId');
+function driverName(idOrName) { const d = driverRoster().find((x) => x.id === idOrName); return d ? d.name : (idOrName || ''); }
 function dispatchEvents() {
   const out = [];
   const SKIP = new Set(['Cancelled', 'No Show', 'Returned', 'Quote']);
@@ -8700,8 +8844,9 @@ function dispatchEvents() {
       const unit = IDX.unit.get(eu.unitId);
       const pin = eu.sitePin || (isPrimaryUnit(r, eu) ? r.sitePin : null) || null;   // §2.3 map: the geocoded drop, if set
       const base = { rentalId: r.rentalId, unitId: eu.unitId, unit: unit?.name || '—', cust: cust?.name || cust?.company || '—', addr: eu.deliveryAddress || '', ttype: eu.transportType, pin };
-      if (['Delivery', 'Round-Trip'].includes(eu.transportType) && r.startDate) out.push({ ...base, date: r.startDate, time: r.startTime || '', task: 'Deliver', color: 'blue' });
-      if (['Round-Trip', 'Recovery'].includes(eu.transportType) && r.endDate) out.push({ ...base, date: r.endDate, time: '', task: 'Pick up', color: 'brown', addr: eu.recoveryAddress || eu.deliveryAddress || '' });
+      // per-LEG driver (spec rentals-dispatch D6): eu.deliveryDriverId / eu.recoveryDriverId — additive, rides sync
+      if (['Delivery', 'Round-Trip'].includes(eu.transportType) && r.startDate) out.push({ ...base, date: r.startDate, time: r.startTime || '', task: 'Deliver', color: 'blue', driverId: eu.deliveryDriverId || null });
+      if (['Round-Trip', 'Recovery'].includes(eu.transportType) && r.endDate) out.push({ ...base, date: r.endDate, time: '', task: 'Pick up', color: 'brown', addr: eu.recoveryAddress || eu.deliveryAddress || '', driverId: eu.recoveryDriverId || null });
     });
   });
   return out.sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
@@ -8830,7 +8975,9 @@ function dispatchGridBody() {
       <div class="dt-rail"><span class="dt-dot"></span><b class="dt-mini">${timeToMin(s.time) != null ? esc(fmtClock(s.time)) : '—'}</b></div>
       <div class="dt-full">
         <div class="dt-r1"><span class="dt-grip" data-tip="Drag to reorder · or type a time">⠿</span><input class="dt-time js-disp-time" data-id="${esc(s.id)}" value="${esc(s.time || '')}" placeholder="—:—" maxlength="8" aria-label="Stop time" data-tip="Set the stop time — reorders the run" /><span class="spacer"></span>${flag}</div>
-        <div class="dt-r2">${badge(kind === 'deliver' ? 'Deliver' : 'Recover', kind === 'deliver' ? 'blue' : 'brown')}${refPill('rentals', s.rentalId, s.cust)}${s.unitId ? unitPill(s.unitId) : ''}</div>
+        <div class="dt-r2">${badge(kind === 'deliver' ? 'Deliver' : 'Recover', kind === 'deliver' ? 'blue' : 'brown')}${refPill('rentals', s.rentalId, s.cust)}${s.unitId ? unitPill(s.unitId) : ''}${s.driverId
+          ? `<button class="catr-slot js-stop-driver" data-id="${esc(s.id)}" data-rec="${esc(s.rentalId)}" data-unit="${esc(s.unitId || '')}" data-task="${esc(s.task)}" data-tip="Driver on this leg — tap to change">${badge(driverName(s.driverId), 'navy')}</button>`
+          : (driverRoster().length ? `<button class="catr-slot js-stop-driver" data-r="R5b" data-id="${esc(s.id)}" data-rec="${esc(s.rentalId)}" data-unit="${esc(s.unitId || '')}" data-task="${esc(s.task)}" data-tip="Assign a driver to this leg"><span class="add-field anchor" style="height:20px;font-size:10px">+Driver</span></button>` : '')}</div>
         ${s.addr ? `<div class="dt-addr js-site-go" data-rec="${esc(s.rentalId)}" data-unit="${esc(s.unitId || '')}" data-tip="Open the site / set the map pin">${s.pin ? '' : '⚠ '}${esc(s.addr)}</div>` : ''}
       </div>
     </div>`;
@@ -13658,7 +13805,7 @@ function onClick(e) {
   if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); reSettings(); return; }
   if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); reSettings(); return; }   // §M-touch — toggle + a sample buzz when turning ON
   // Settings Board — tab rail + Statuses & Icons editing
-  if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; reSettings(); } return; }
+  if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); captureTeamEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; reSettings(); } return; }
   if (closest('.js-set-pick')) { e.stopPropagation(); const o = state.overlay; if (o) { o.setSel = closest('.js-set-pick').dataset.set; o.iconFor = null; reSettings(); } return; }
   if (closest('.js-set-color')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-set-color'); if (o) { setDraftStatus(o, b.dataset.set, b.dataset.val, { color: b.dataset.color }); reSettings(); } return; }
   if (closest('.js-set-icon-open')) { e.stopPropagation(); const o = state.overlay, k = closest('.js-set-icon-open').dataset.key; if (o) { o.iconFor = o.iconFor === k ? null : k; reSettings(); } return; }
@@ -13672,6 +13819,8 @@ function onClick(e) {
   // Rental Rules tab
   if (closest('.js-rule-set')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-rule-set'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.rentalRules = o.draftSettings.rentalRules || { ...((state.settings && state.settings.rentalRules) || {}) }; o.draftSettings.rentalRules[b.dataset.rule] = b.dataset.val === 'required' ? 'required' : 'off'; reSettings(); } return; }
   if (closest('.js-retro-set')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-retro-set'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.company = o.draftSettings.company || { ...((state.settings && state.settings.company) || {}) }; o.draftSettings.company.retroactivePricing = b.dataset.val === 'on'; reSettings(); } return; }
+  if (closest('.js-spe-basis')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-spe-basis'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.company = o.draftSettings.company || { ...((state.settings && state.settings.company) || {}) }; o.draftSettings.company.salePriceBasis = b.dataset.val; reSettings(); } return; }
+  if (closest('.js-spe-mode')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-spe-mode'); if (o) { o.draftSettings = o.draftSettings || {}; o.draftSettings.company = o.draftSettings.company || { ...((state.settings && state.settings.company) || {}) }; o.draftSettings.company.salePriceMode = b.dataset.val; reSettings(); } return; }
   // Custom Fields tab
   if (closest('.js-cf-entity')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfEntity = closest('.js-cf-entity').dataset.ent; reSettings(); } return; }
   if (closest('.js-cf-type')) { e.stopPropagation(); const o = state.overlay; if (o) { o.cfDraft = { ...(o.cfDraft || { label: '', type: 'text', required: false }), type: closest('.js-cf-type').dataset.type }; reSettings(); } return; }
@@ -13771,6 +13920,16 @@ function onClick(e) {
   if (closest('.js-refund-invoice')) { e.stopPropagation(); if (state.overlay) { state.overlay.confirmRefund = true; state.overlay.error = ''; renderOverlay(); } return; }
   if (closest('.js-refund-cancel')) { e.stopPropagation(); if (state.overlay) { state.overlay.confirmRefund = false; state.overlay.refundAlloc = null; renderOverlay(); } return; }
   if (closest('.js-refund-confirm')) { e.stopPropagation(); return refundInvoiceFlow(closest('.js-refund-confirm').dataset.rec); }
+  if (closest('.js-stop-driver')) { e.stopPropagation(); const b = closest('.js-stop-driver'); const ds = driverRoster(); if (!ds.length) { toast('Add drivers on Settings → Team Roster first.'); return; } const html = ds.map((d) => `<button class="dd-item js-stop-driver-pick" data-rec="${esc(b.dataset.rec)}" data-unit="${esc(b.dataset.unit)}" data-task="${esc(b.dataset.task)}" data-driver="${esc(d.id)}">${esc(d.name)}</button>`).join('') + `<button class="dd-item js-stop-driver-pick" data-rec="${esc(b.dataset.rec)}" data-unit="${esc(b.dataset.unit)}" data-task="${esc(b.dataset.task)}" data-driver="">— Unassign —</button>`; openDropdown(b, html, { align: 'left' }); return; }
+  if (closest('.js-stop-driver-pick')) { e.stopPropagation(); const b = closest('.js-stop-driver-pick'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); const r = IDX.rental.get(b.dataset.rec); if (!r) return; const eu = unitEntry(r, b.dataset.unit) || (r.units || [])[0]; if (!eu) return; const f = legDriverField(b.dataset.task); const nv = b.dataset.driver || null; if ((eu[f] || null) !== nv) { eu[f] = nv; logAction(r, `${IDX.unit.get(eu.unitId)?.name || 'Unit'} — ${b.dataset.task === 'Deliver' ? 'delivery' : 'recovery'} driver → ${nv ? driverName(nv) : 'unassigned'}`); reindex('rentals', r); } render(); return; }
+  if (closest('.js-spe-accept')) { e.stopPropagation(); if (currentRole && roleTier(currentRole) < tierRank('manager')) { toast('Accepting engine prices is Manager-tier and up.'); return; } const c = IDX.category.get(closest('.js-spe-accept').dataset.rec); const sug = c && salePriceSuggest(c); if (!sug) return; const patch = []; if (sug.bottom != null && Number(c.bottomDollar) !== sug.bottom) { c.bottomDollar = sug.bottom; patch.push(`bottom ${money(sug.bottom)}`); } if (sug.ask != null && Number(c.askPrice) !== sug.ask) { c.askPrice = sug.ask; patch.push(`ask ${money(sug.ask)}`); } if (patch.length) { logAction(c, `Sale-price engine accepted (${sug.basis} basis): ${patch.join(' · ')}`); reindex('categories', c); toast(`${c.name} — engine prices accepted.`); } render(); return; }
+  if (closest('.js-lost-demand')) { e.stopPropagation(); const b = closest('.js-lost-demand'); const c = IDX.category.get(b.dataset.cat); if (!c) return; c.lostDemand = c.lostDemand || []; const aw = state.availWin; c.lostDemand.push({ when: TODAY_ISO, window: aw ? { start: aw.start, end: aw.end } : null, by: currentRole || '' }); logAction(c, `Lost demand logged — a customer wanted one, none free${aw ? ` (${fmtWindow(aw.start, aw.end)})` : ''}`); reindex('categories', c); toast(`Lost ask logged for ${c.name} — ${c.lostDemand.length} on record.`); render(); return; }
+  if (closest('.js-blacklist')) { e.stopPropagation(); const b = closest('.js-blacklist'); const c = IDX.customer.get(b.dataset.rec); if (!c || c.accountType === 'Blacklisted') return; if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Click again — blacklist'; return; } c._prevAccountType = c.accountType || ''; c.accountType = 'Blacklisted'; c.blacklistedAt = TODAY_ISO; c.activityLog = c.activityLog || []; c.activityLog.push({ when: TODAY_ISO, text: `Blacklisted by ${currentRole || 'operator'}` }); reindex('customers', c); toast(`${c.name} blacklisted — new rentals blocked.`); render(); return; }   // spec customers-crm D3: ANY role can blacklist; the audit trail is the control
+  if (closest('.js-blacklist-lift')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-blacklist-lift').dataset.rec); if (!c || c.accountType !== 'Blacklisted') return; c.accountType = c._prevAccountType || 'Non-Business'; delete c._prevAccountType; c.activityLog = c.activityLog || []; c.activityLog.push({ when: TODAY_ISO, text: `Blacklist lifted by ${currentRole || 'operator'}` }); reindex('customers', c); toast(`${c.name} — blacklist lifted.`); render(); return; }
+  if (closest('.js-flag-ov')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; const b = closest('.js-flag-ov'); captureTeamEdits(o); if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {})); const ov = o.draftSettings.flagOverrides || (o.draftSettings.flagOverrides = {}); const m = ov[b.dataset.ent] || (ov[b.dataset.ent] = {}); const cur = m[b.dataset.id] || {}; if (b.dataset.val === 'off') cur.off = true; else delete cur.off; if (Object.keys(cur).length) m[b.dataset.id] = cur; else delete m[b.dataset.id]; reSettings(); return; }
+  if (closest('.js-flag-sev')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; const b = closest('.js-flag-sev'); captureTeamEdits(o); if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {})); const ov = o.draftSettings.flagOverrides || (o.draftSettings.flagOverrides = {}); const m = ov[b.dataset.ent] || (ov[b.dataset.ent] = {}); const cur = m[b.dataset.id] || {}; const def = (FLAG_META[b.dataset.ent] || []).find((f) => f.id === b.dataset.id); if (def && def.severity === b.dataset.sev) delete cur.severity; else cur.severity = b.dataset.sev; delete cur.off; if (Object.keys(cur).length) m[b.dataset.id] = cur; else delete m[b.dataset.id]; reSettings(); return; }
+  if (closest('.js-emp-add')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; captureTeamEdits(o); if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {})); (o.draftSettings.employees || (o.draftSettings.employees = [])).push({ id: 'EMP' + Math.random().toString(36).slice(2, 8).toUpperCase(), name: '', role: (ROLES[0] && (ROLES[0].label || ROLES[0].id)) || '', phone: '', note: '' }); reSettings(); return; }
+  if (closest('.js-emp-del')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; const i = Number(closest('.js-emp-del').dataset.i); captureTeamEdits(o); (o.draftSettings.employees || []).splice(i, 1); reSettings(); return; }
   if (closest('.js-sales-schedule')) { e.stopPropagation(); return openOverlay({ kind: 'schedule', customerId: closest('.js-sales-schedule').dataset.rec }); }
   if (closest('.js-install-go')) { e.stopPropagation(); try { localStorage.setItem('jactec.installNudged', '1'); } catch (er) {} const ev = state._installEvt; closeOverlay(); if (ev) { ev.prompt(); } return; }
   if (closest('.js-install-later')) { e.stopPropagation(); try { localStorage.setItem('jactec.installNudged', '1'); } catch (er) {} closeOverlay(); return; }
@@ -14673,7 +14832,11 @@ function saveYardCapture() {
   // stamp persists immediately; the video uploads to Drive and only its URL
   // lands on the stamp afterwards (uploadCapture backend action).
   const file = state.capFile;
-  const stamp = { date: TODAY_ISO, clock: nowClock(), video: '' };
+  const eu0 = captureUnit(r, o.unitId) || (r.units || [])[0] || null;
+  const drvId = eu0 ? (o.cap === 'end' ? (eu0.recoveryDriverId || eu0.deliveryDriverId) : eu0.deliveryDriverId) : null;
+  // Driver-stamped capture (spec rentals-dispatch D7): the assigned leg driver rides the stamp;
+  // no assignment → the logged-in operator name, so the stamp is never anonymous.
+  const stamp = { date: TODAY_ISO, clock: nowClock(), video: '', driver: drvId ? driverName(drvId) : (currentUser || currentRole || '') };
   // move just this unit's status (or the whole rental when no unit context); a §9
   // gate may block it, in which case the popup stays open.
   const moveStatus = (val) => {
@@ -15268,6 +15431,16 @@ async function openSettings() {
 async function saveSettings() {
   const o = state.overlay; if (!o || o.kind !== 'settings') return;
   const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
+  captureTeamEdits(o);   // roster inputs → draft
+  // Audit trail for flag disables (spec design-system D1): a turned-off safety flag must be traceable.
+  if (o.draftSettings && o.draftSettings.flagOverrides) {
+    const prevOv = (state.settings && state.settings.flagOverrides) || {};
+    const log = o.draftSettings.flagAuditLog || (o.draftSettings.flagAuditLog = []);
+    Object.entries(o.draftSettings.flagOverrides).forEach(([ent, m]) => Object.entries(m).forEach(([id, oo]) => {
+      if (oo.off && !((prevOv[ent] || {})[id] || {}).off) log.push({ when: TODAY_ISO, text: `Flag ${ent}/${id} turned OFF`, by: currentRole || 'admin' });
+    }));
+    if (log.length > 50) log.splice(0, log.length - 50);
+  }
   // Logins inputs only exist while the Logins tab is open — when they're absent, keep the
   // passwords from o.config so saving from another tab can't wipe them.
   const haveLogins = !!root.querySelector('.set-input[data-role]');
@@ -16237,6 +16410,11 @@ function createInvoiceForRental(rentalId) {
   if (!r.customerId) { flashOr('[data-slot="customer"]', 'The Quote needs a customer first — drag one on (or quick-add).'); return; }
   if (!r.startDate || !r.endDate) { flashOr('.rdcal, .timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   if (!rentalUnitIds(r).length) { flashOr('.stall-empty, [data-slot="unit"]', 'Add at least one unit before invoicing.'); return; }
+  // §20 voided units aren't billed — so a rental where EVERY unit is No Show/Cancelled would
+  // mint a silently-EMPTY invoice (Jac bug 2026-07-06: a stale Reserved rental derives No Show
+  // → rentalLineItems() filters everything → attached invoice with zero lines). Refuse loudly
+  // instead: re-date or un-void first, then bill.
+  if (!rentalLineItems(r).length) { flashOr('.rdcal, .timeline, .statusbar.draftwin', 'Every unit here is No Show/Cancelled — nothing to bill. Re-date the window or un-void a unit first.'); return; }
   // §28cap — chunk the window into ≤28-day invoices (a long rental → a billing series).
   // ≤28 days = exactly one invoice, lines built exactly as before (the common path).
   const chunks = invoiceChunks(r.startDate, r.endDate);
@@ -16365,6 +16543,11 @@ function winPickSave() {
     if (r.startDate && r.endDate && r.status === 'Quote') r.status = 'Reserved';
     logAction(r, `Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}`);
     const ext = billExtension(r, prevEnd, prevStart);   // bill the lengthened window (either end) across the ≤28-day invoice series
+    // Un-void-by-RE-DATING restores billing (Jac bug 2026-07-06): a No-Show-stale unit's line
+    // was filtered/removed while voided; new valid dates un-void it, but billExtension only
+    // re-prices lines that EXIST. Mirror the un-void-by-status path (§20) and add back any
+    // missing unit lines — after the extension pass, so nothing double-bills.
+    if (r.invoiceId) { syncRentalLines(r); syncTransportLine(r); }
     if (ext) {
       const basis = ext.retro ? 'retroactive' : 'added days';
       const up = ext.subtotalDelta >= 0;
@@ -17386,6 +17569,7 @@ function finishLoad() {
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
   // (views no longer pull from the backend — personal per-device "my views", spec search-views D2)
   loadGroupOrderFromBackend();                                  // pull THIS role's saved card-group order
+  salePricingAutoApply();                                       // used-sale price engine, auto mode (manager+ sessions only)
   loadChats();                                                  // pull the shared team-chat threads (§ team-chat sync)
   wranglerRailLoad();                                           // load the Mr. Wrangler rail from IndexedDB (+ one-time localStorage migration)
   refreshWranglerRequests();                                    // §18e populate the approval-inbox badge
@@ -17853,7 +18037,7 @@ function exposeTestApi() {
       latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails,
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, addMonthsISO, openMembershipEnroll, membershipEnrollCommit, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, getEntityColor, getEntityFlags, setRole: (r) => { currentRole = r || ''; render(); },
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, addMonthsISO, openMembershipEnroll, membershipEnrollCommit, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, setRole: (r) => { currentRole = r || ''; render(); },
       openCustomerForm, renderOverlay, render, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature, __state: state };   // UI drivers for headless screenshot/e2e tests
 
   } catch (e) { /* no window (non-browser) */ }

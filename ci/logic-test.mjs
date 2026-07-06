@@ -590,6 +590,90 @@ try {
       T.__state.settings.flagOverrides = pre;
     }
 
+    // 12j7) Draft sweep must NOT eat an ATTACHED invoice (Jac bug 2026-07-06: adding a transport
+    // address navigated -> sweep deleted the linked-but-unbilled mock invoice off the rental).
+    {
+      const rr = T.DATA.rentals.find((r) => r.customerId);
+      const att = { invoiceId: 'INV-SWEEPA', customerId: rr.customerId, rentalIds: [rr.rentalId], date: T.TODAY_ISO, dueDate: T.TODAY_ISO, amountPaid: 0, lineItems: [], mock: true };
+      const orphan = { invoiceId: 'INV-SWEEPB', customerId: rr.customerId, rentalIds: [], date: T.TODAY_ISO, dueDate: T.TODAY_ISO, amountPaid: 0, lineItems: [], mock: true };
+      const prevLink = rr.invoiceId;
+      T.DATA.invoices.push(att, orphan); T.IDX.invoice.set(att.invoiceId, att); T.IDX.invoice.set(orphan.invoiceId, orphan);
+      rr.invoiceId = att.invoiceId;
+      ok(T.isEmptyMockDraft('invoices', att) === false, 'SWEEP: an invoice linked to a rental is NOT an abandoned draft');
+      ok(T.isEmptyMockDraft('invoices', orphan) === true, 'SWEEP: a free-floating empty mock invoice still is');
+      T.sweepEmptyDrafts('X-nothing');
+      ok(!!T.IDX.invoice.get('INV-SWEEPA') && rr.invoiceId === 'INV-SWEEPA', 'SWEEP: navigation keeps the attached invoice + the rental link');
+      ok(!T.IDX.invoice.get('INV-SWEEPB'), 'SWEEP: navigation still deletes the abandoned orphan draft');
+      const ix = T.DATA.invoices.indexOf(att); if (ix >= 0) T.DATA.invoices.splice(ix, 1); T.IDX.invoice.delete('INV-SWEEPA'); rr.invoiceId = prevLink;
+    }
+
+    // 12j8) No-Show billing holes (Jac bug 2026-07-06, the root of the "empty attached invoice"):
+    // (a) billing an all-No-Show rental must REFUSE, never mint a silent empty invoice;
+    // (b) rentalLineItems filters voided units (the §20 rule the refusal rides on);
+    // (c) re-dating back to a valid window makes the unit billable again + syncRentalLines restores its line.
+    {
+      const u0 = T.DATA.units.find((u) => u.fleetStatus === 'Active');
+      const cust = T.DATA.customers.find((c) => c.customerId);
+      const rN = { rentalId: 'R-NOSHOWBILL', customerId: cust.customerId, unitId: u0.unitId, categoryId: u0.categoryId, rentalName: 'NoShow bill test', startDate: '2026-06-01', endDate: '2026-06-03', startTime: '', status: 'Reserved', transportType: 'Self', deliveryAddress: '', po: '', invoiceId: null, units: [{ unitId: u0.unitId, status: 'Reserved', transportType: 'Self' }], notes: '', actions: [], mock: true };
+      T.DATA.rentals.push(rN); T.IDX.rental.set(rN.rentalId, rN);
+      ok(T.rentalLineItems(rN).length === 0, 'NOSHOW: a stale Reserved rental has zero billable lines (derived No Show is voided)');
+      const invCountBefore = T.DATA.invoices.length;
+      T.createInvoiceForRental(rN.rentalId);
+      ok(T.DATA.invoices.length === invCountBefore && !rN.invoiceId, 'NOSHOW: billing an all-No-Show rental REFUSES — no empty invoice minted');
+      // re-date to a valid future window → unit un-voids → billable again
+      rN.startDate = '2099-07-10'; rN.endDate = '2099-07-12';
+      ok(T.rentalLineItems(rN).length === 1, 'NOSHOW: re-dating to a valid window makes the unit billable again');
+      // and the restore primitive puts a missing line back on an attached invoice
+      const invR = { invoiceId: 'INV-NOSHOWFIX', customerId: cust.customerId, rentalIds: [rN.rentalId], date: T.TODAY_ISO, dueDate: T.TODAY_ISO, amountPaid: 0, lineItems: [], mock: true };
+      T.DATA.invoices.push(invR); T.IDX.invoice.set(invR.invoiceId, invR); rN.invoiceId = invR.invoiceId;
+      T.syncRentalLines(rN);
+      ok(invR.lineItems.filter((li) => li.kind === 'rental' && li.unitId === u0.unitId).length === 1, 'NOSHOW: syncRentalLines restores the missing unit line after un-void (the winPickSave re-date path)');
+      // cleanup
+      const ii = T.DATA.invoices.indexOf(invR); if (ii >= 0) T.DATA.invoices.splice(ii, 1); T.IDX.invoice.delete(invR.invoiceId);
+      const ri = T.DATA.rentals.indexOf(rN); if (ri >= 0) T.DATA.rentals.splice(ri, 1); T.IDX.rental.delete(rN.rentalId);
+    }
+
+    // 12j9) Sale-price engine (spec automated-pricing D1/D3, Jac 2026-06-29): scale off cost or
+    // MSRP, $25 rounding, off when unconfigured; lost-demand capture appends (market-research D3).
+    {
+      const co0 = T.__state.settings.company;
+      const cat = T.DATA.categories.find((c) => Number(c.msrp) > 0) || T.DATA.categories[0];
+      T.__state.settings.company = { ...(co0 || {}), salePriceBasis: 'msrp', saleBottomPct: 50, saleAskPct: 80, salePriceMode: 'approve' };
+      const s1 = T.salePriceSuggest(cat);
+      ok(!!s1 && s1.basis === 'msrp' && s1.bottom === Math.round(cat.msrp * 0.5 / 25) * 25 && s1.ask === Math.round(cat.msrp * 0.8 / 25) * 25, 'SPE: MSRP basis scales bottom/ask on $25 steps');
+      T.__state.settings.company = { ...(co0 || {}), salePriceBasis: 'cost', saleBottomPct: 55, salePriceMode: 'approve' };
+      const s2 = T.salePriceSuggest(cat);
+      const base = T.categoryCostBasis(cat);
+      if (base) ok(s2.base === base && s2.bottom === Math.round(base * 0.55 / 25) * 25 && s2.ask == null, 'SPE: cost basis uses avg unit cost; unset ask % stays null');
+      T.__state.settings.company = co0;
+      ok(T.salePriceSuggest(cat) === null || !T.salePricingCfg().on, 'SPE: engine is OFF when no percents are configured');
+      const ld0 = (cat.lostDemand || []).length;
+      cat.lostDemand = cat.lostDemand || []; cat.lostDemand.push({ when: T.TODAY_ISO, window: null, by: 'test' });
+      ok(cat.lostDemand.length === ld0 + 1, 'LOST: a lost-demand ask appends to the category record');
+      cat.lostDemand.pop();
+    }
+
+    // 12j10) Dispatch driver assignment (spec rentals-dispatch D6/D7, Jac 2026-06-29).
+    {
+      const pre = T.__state.settings.employees;
+      T.__state.settings.employees = [
+        { id: 'EMPAAA', name: 'Big Al', role: 'Driver', phone: '', note: '' },
+        { id: 'EMPBBB', name: 'Slim', role: 'Mechanic', phone: '', note: '' },
+      ];
+      const ds = T.driverRoster();
+      ok(ds.length === 1 && ds[0].id === 'EMPAAA' && ds[0].name === 'Big Al', 'DRV: roster filters to Driver-role hands');
+      ok(T.driverName('EMPAAA') === 'Big Al' && T.legDriverField('Deliver') === 'deliveryDriverId' && T.legDriverField('Pick up') === 'recoveryDriverId', 'DRV: name lookup + per-LEG field mapping (D6)');
+      const rD = T.DATA.rentals.find((x) => x.transportType && x.transportType !== 'Self' && (T.rentalUnits(x) || []).length && x.startDate);
+      if (rD) {
+        const eu = T.rentalUnits(rD)[0];
+        const prevD = eu.deliveryDriverId; eu.deliveryDriverId = 'EMPAAA';
+        const ev = T.dispatchEvents().find((x) => x.rentalId === rD.rentalId && x.task === 'Deliver');
+        ok(!!ev && ev.driverId === 'EMPAAA', 'DRV: the dispatch event carries its leg driver');
+        eu.deliveryDriverId = prevD;
+      }
+      T.__state.settings.employees = pre;
+    }
+
     // 12k) Chat markdown — Wrangler's replies render **bold**/`code`, but stay XSS-safe (escape before format).
     {
       ok(/<strong>June 30, 2026<\/strong>/.test(T.wrChatFormat('Monday is **June 30, 2026**.')), 'WR-fmt: **bold** renders as <strong>');
