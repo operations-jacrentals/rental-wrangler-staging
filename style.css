@@ -3481,34 +3481,35 @@ body.is-phone .card[data-card="units"] .list { grid-template-columns: repeat(2, 
 .catr-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .catr-cat { flex: 0 0 auto; width: 18px; height: 18px; color: var(--txt-2); display: flex; align-items: center; justify-content: center; }
 .catr-cat svg { width: 17px; height: 17px; display: block; }
-/* ── CATEGORY GLYPH HOVER MOTION (Jac, 2026-07-03) — hovering the unit row (.ur) or the
+/* ── CATEGORY GLYPH HOVER MOTION (Jac, 2026-07-03; extended to unit mini-cards
+   2026-07-07) — hovering the unit row (.ur), the unit mini-card (.ucard), or the
    category mini-card (.catr) nudges its category icon with a short, per-family CSS-only
    move (one crisp beat, no bounce/loop — same .12s control timing as the rest of the
    system). `mo-none` (the box/unmatched fallback) is deliberately inert. ── */
 .cat-glyph { display: inline-flex; transition: transform .12s cubic-bezier(.2,.7,.2,1), color .12s ease; }
-.ur:hover .mo-dig,     .catr:hover .mo-dig     { transform: translateY(1.5px) rotate(-8deg); }
-.ur:hover .mo-chop,    .catr:hover .mo-chop    { transform: rotate(-14deg); }
-.ur:hover .mo-spin,    .catr:hover .mo-spin    { transform: rotate(80deg); }
-.ur:hover .mo-raise,   .catr:hover .mo-raise   { transform: translateY(-1.5px) rotate(7deg); }
-.ur:hover .mo-snap,    .catr:hover .mo-snap    { transform: scale(1.14); }
-.ur:hover .mo-press,   .catr:hover .mo-press   { transform: translateY(2px) scale(.94); }
-.ur:hover .mo-roll,    .catr:hover .mo-roll    { transform: translateX(2px) rotate(14deg); }
-.ur:hover .mo-spark,   .catr:hover .mo-spark   { transform: scale(1.16); }
-.ur:hover .mo-puff,    .catr:hover .mo-puff    { transform: translateX(2px) scale(1.06); }
-.ur:hover .mo-drip,    .catr:hover .mo-drip    { transform: translateY(2px) scale(.92); }
-.ur:hover .mo-slosh,   .catr:hover .mo-slosh   { transform: rotate(-9deg); }
-.ur:hover .mo-flicker, .catr:hover .mo-flicker { transform: scale(1.1) rotate(-5deg); }
-.ur:hover .mo-pulse,   .catr:hover .mo-pulse   { transform: scale(1.12); }
-.ur:hover .mo-none,    .catr:hover .mo-none    { transform: none; }
+.ur:hover .mo-dig,     .ucard:hover .mo-dig,     .catr:hover .mo-dig     { transform: translateY(1.5px) rotate(-8deg); }
+.ur:hover .mo-chop,    .ucard:hover .mo-chop,    .catr:hover .mo-chop    { transform: rotate(-14deg); }
+.ur:hover .mo-spin,    .ucard:hover .mo-spin,    .catr:hover .mo-spin    { transform: rotate(80deg); }
+.ur:hover .mo-raise,   .ucard:hover .mo-raise,   .catr:hover .mo-raise   { transform: translateY(-1.5px) rotate(7deg); }
+.ur:hover .mo-snap,    .ucard:hover .mo-snap,    .catr:hover .mo-snap    { transform: scale(1.14); }
+.ur:hover .mo-press,   .ucard:hover .mo-press,   .catr:hover .mo-press   { transform: translateY(2px) scale(.94); }
+.ur:hover .mo-roll,    .ucard:hover .mo-roll,    .catr:hover .mo-roll    { transform: translateX(2px) rotate(14deg); }
+.ur:hover .mo-spark,   .ucard:hover .mo-spark,   .catr:hover .mo-spark   { transform: scale(1.16); }
+.ur:hover .mo-puff,    .ucard:hover .mo-puff,    .catr:hover .mo-puff    { transform: translateX(2px) scale(1.06); }
+.ur:hover .mo-drip,    .ucard:hover .mo-drip,    .catr:hover .mo-drip    { transform: translateY(2px) scale(.92); }
+.ur:hover .mo-slosh,   .ucard:hover .mo-slosh,   .catr:hover .mo-slosh   { transform: rotate(-9deg); }
+.ur:hover .mo-flicker, .ucard:hover .mo-flicker, .catr:hover .mo-flicker { transform: scale(1.1) rotate(-5deg); }
+.ur:hover .mo-pulse,   .ucard:hover .mo-pulse,   .catr:hover .mo-pulse   { transform: scale(1.12); }
+.ur:hover .mo-none,    .ucard:hover .mo-none,    .catr:hover .mo-none    { transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .cat-glyph { transition: color .12s ease; }
-  .ur:hover .cat-glyph, .catr:hover .cat-glyph { transform: none !important; }
+  .ur:hover .cat-glyph, .ucard:hover .cat-glyph, .catr:hover .cat-glyph { transform: none !important; }
 }
 
 /* ── ANIMATED CATEGORY GLYPHS (Jac, 2026-07-03) — the excavator / boom-lift / skid-steer
    families render CATEGORY_ANIM loops (icons-anim.js, converted from Jac's supplied
-   Lottie artwork). PAUSED at the rest pose until the parent row/card (.ur/.catr) is
-   hovered (Jac, 2026-07-03: icons should NOT move until hovered, and never tint orange);
+   Lottie artwork). PAUSED at the rest pose until the parent row/card (.ur/.ucard/.catr)
+   is hovered (Jac, 2026-07-03: icons should NOT move until hovered, and never tint orange);
    currentColor strokes (.k2 = dimmed secondary); pivots work because the SVG nests
    translate(p) › animated group › translate(-a) at each Lottie anchor.
    Reduced-motion keeps them frozen entirely. ── */
@@ -3538,6 +3539,7 @@ body.is-phone .card[data-card="units"] .list { grid-template-columns: repeat(2, 
    shorthand resets play-state to running, so declaration order is load-bearing. */
 .catanim [class*="bl-"], .catanim [class*="sk-"] { animation-play-state: paused; }
 .ur:hover .catanim [class*="bl-"], .ur:hover .catanim [class*="sk-"],
+.ucard:hover .catanim [class*="bl-"], .ucard:hover .catanim [class*="sk-"],
 .catr:hover .catanim [class*="bl-"], .catr:hover .catanim [class*="sk-"] { animation-play-state: running; }
 @media (prefers-reduced-motion: reduce) {
   .catanim *, .catanim { animation: none !important; }
@@ -4025,32 +4027,87 @@ body.dragging .row.drop-ok { opacity: 1; }
   border-image: repeating-linear-gradient(90deg, var(--tan) 0 7px, transparent 7px 13px) 1;
 }
 
-/* ── #109 printable invoice — a clean white customer document, not the dark yard UI.
-   On screen it's hidden; @media print swaps the whole app out for #print-root. ── */
+/* ── #109 printable invoice → a kraft "YARD LOG" page (2026-07-08): our logo, a stamped
+   Saira header with a status-colored date stamp + hazard-stripe signature rule, each rental
+   in a SOFT CARD with a centered header + per-rental subtotal, machine glyphs per unit line,
+   a Grand Subtotal + status-colored BALANCE DUE + PAID stamp, and SEPARATE Invoice / Rental
+   amendment logs. The accent ink follows payment status — green (paid) / yellow (open, not
+   yet due) / red (past due) — via the .is-paid/.is-open/.is-due modifier on .pr-doc. On
+   screen #print-root is hidden; @media print swaps the whole dark app out for it. Colors are
+   a self-contained PAPER palette (deliberately outside the dark-app tokens — white-paper
+   output) forced to render with print-color-adjust. ── */
 #print-root { display: none; }
 @media print {
   body.printing > *:not(#print-root) { display: none !important; }
   body.printing #print-root { display: block; }
-  @page { margin: 18mm; }
+  @page { margin: 12mm; }
 }
-.pr-doc { color: #14181d; background: #fff; font-family: Geist, system-ui, sans-serif; font-size: 13px; line-height: 1.5; max-width: 720px; }
-.pr-head { border-bottom: 2px solid #14181d; padding-bottom: 10px; margin-bottom: 16px; }
-.pr-brand { font-family: 'Saira Condensed', sans-serif; font-weight: 800; font-size: 30px; letter-spacing: 1.5px; text-transform: uppercase; }
-.pr-sub { font-size: 11.5px; letter-spacing: .5px; color: #5a626e; text-transform: uppercase; }
-.pr-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 24px; margin-bottom: 18px; }
-.pr-meta > div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dotted #c3c9d2; padding: 3px 0; }
-.pr-k { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; font-size: 11px; color: #5a626e; }
+.pr-doc {
+  --pr-ink: #14181d; --pr-mut: #6f6656; --pr-tan: #8a5a2b;
+  --pr-paper: #f7f2ea; --pr-rule: #e4dac6; --pr-line: #cdbfa6;
+  --pr-accent: #e08a00; --pr-stripe: #ffc21c;   /* default = open/caution; overridden per status below */
+  position: relative; max-width: 760px; margin: 0 auto; padding: 20px 24px 26px;
+  color: var(--pr-ink); background: var(--pr-paper);
+  font-family: Geist, system-ui, sans-serif; font-size: 12.5px; line-height: 1.5;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.pr-doc.is-paid { --pr-accent: #2f9e44; --pr-stripe: #37b04d; }   /* paid in full → green */
+.pr-doc.is-open { --pr-accent: #e08a00; --pr-stripe: #ffc21c; }   /* open, not yet due → vibrant amber-gold */
+.pr-doc.is-due  { --pr-accent: #e11507; --pr-stripe: #ff3a20; }   /* past due → vibrant red */
+/* Header — our logo + stamped wordmark, status-colored date stamp, hazard-stripe signature */
+.pr-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.pr-brandwrap { display: flex; align-items: center; gap: 11px; }
+.pr-logo { width: 46px; height: 46px; flex: 0 0 46px; border-radius: 10px; object-fit: cover; }
+.pr-brand { font-family: 'Saira Condensed', sans-serif; font-weight: 800; font-size: 30px; letter-spacing: .5px; line-height: .95; }
+.pr-sub { font-family: 'Saira Condensed', sans-serif; font-size: 11px; letter-spacing: 1.4px; color: var(--pr-mut); text-transform: uppercase; margin-top: 2px; }
+.pr-datestamp { font-family: 'Saira Condensed', sans-serif; font-weight: 800; font-size: 34px; letter-spacing: 1px; color: var(--pr-accent); line-height: .9; text-align: right; white-space: nowrap; }
+.pr-hazard { height: 7px; margin: 10px 0 16px; border-radius: 2px; background: repeating-linear-gradient(135deg, var(--pr-stripe) 0 11px, #14181d 11px 22px); }
+/* Meta grid on saddle-stitch dotted rules */
+.pr-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 26px; margin-bottom: 16px; }
+.pr-meta > div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dotted var(--pr-line); padding: 3px 0; }
+.pr-k { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; font-size: 10.5px; color: var(--pr-mut); }
 .pr-v { font-weight: 600; }
-.pr-lines { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-.pr-lines th { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: #5a626e; text-align: left; border-bottom: 1.5px solid #14181d; padding: 5px 4px; }
-.pr-lines td { padding: 6px 4px; border-bottom: 1px solid #e4e8ee; }
-.pr-lines .r, .pr-tot .r { text-align: right; }
-.pr-empty { color: #8a93a6; font-style: italic; }
-.pr-tot { margin-left: auto; width: 280px; }
-.pr-tot > div { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dotted #c3c9d2; }
-.pr-tot .pr-big { font-weight: 800; font-size: 15px; border-bottom: 2px solid #14181d; }
-.pr-tot .pr-due { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 800; font-size: 15px; border-bottom: none; padding-top: 8px; }
-.pr-foot { margin-top: 28px; padding-top: 10px; border-top: 1px solid #e4e8ee; font-size: 11.5px; color: #5a626e; }
+/* Rental soft cards — single-line header (bold title first, then meta, subtotal right) */
+.pr-groups { display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; }
+.pr-card { background: #fffdf8; border: 1px solid var(--pr-line); border-radius: 12px; padding: 9px 14px 6px; break-inside: avoid; }
+.pr-card-h { display: flex; align-items: baseline; gap: 9px; padding-bottom: 6px; margin-bottom: 3px; border-bottom: 2px dashed var(--pr-tan); }
+.pr-card-t { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1.4px; font-weight: 800; font-size: 13px; white-space: nowrap; }
+.pr-card-m { flex: 1 1 auto; font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: .6px; font-size: 10.5px; color: var(--pr-mut); }
+.pr-card-m > span + span::before { content: ' · '; }
+.pr-card-m .pr-prov { color: var(--pr-tan); }
+.pr-card-sub { margin-left: auto; font-weight: 800; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pr-line { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; border-bottom: 1px solid var(--pr-rule); }
+.pr-card-lines .pr-line:last-child { border-bottom: none; }
+.pr-desc { display: flex; align-items: center; min-width: 0; }
+.pr-ic { display: inline-flex; width: 17px; flex: 0 0 17px; margin-right: 9px; }
+.pr-ic svg { width: 17px; height: 17px; color: var(--pr-ink); vertical-align: middle; }
+.pr-ic .cat-glyph, .pr-ic .cat-glyph * { animation: none !important; }
+.pr-nm { font-weight: 600; }
+.pr-cat, .pr-mt { color: var(--pr-mut); }
+.pr-cat::before, .pr-mt::before { content: ' · '; }
+.pr-amt { font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 12px; font-weight: 600; }
+.pr-empty { color: var(--pr-mut); font-style: italic; padding: 8px 4px; }
+/* Totals + the customer's account photo on the left (muted to blend); the PAID stamp
+   overlays the photo when present, else stands alone in that space */
+.pr-summary { display: flex; align-items: center; gap: 16px; break-inside: avoid; }
+.pr-cust { position: relative; display: flex; align-items: center; margin-right: auto; }
+.pr-cust-photo { width: 108px; height: 108px; border-radius: 50%; object-fit: cover; border: 2px solid var(--pr-tan); filter: grayscale(.55) sepia(.16) contrast(.96) brightness(1.03); opacity: .9; }
+.pr-tot { flex: 0 0 300px; }
+.pr-tot > div { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dotted var(--pr-line); }
+.pr-tot .pr-big { font-weight: 800; font-size: 15px; border-bottom: 2px solid var(--pr-ink); }
+.pr-tot .pr-due { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1px; font-weight: 800; font-size: 17px; color: var(--pr-accent); border-bottom: none; padding-top: 8px; }
+/* PAID rubber stamp — inherits the status accent (green when paid) */
+.pr-stamp { transform: rotate(-8deg); font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 2px; font-weight: 800; font-size: 22px; color: var(--pr-accent); border: 3px solid var(--pr-accent); border-radius: 6px; padding: 6px 15px; opacity: .9; background: rgba(247, 242, 234, .66); }
+.pr-stamp.on-photo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-8deg); }
+/* Separated amendment logs — Invoice Log (left) · Rental Log (right) */
+.pr-logs { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 16px; padding-top: 10px; border-top: 2px dashed var(--pr-tan); break-inside: avoid; }
+.pr-log-h { font-family: 'Saira Condensed', sans-serif; text-transform: uppercase; letter-spacing: 1.4px; font-weight: 800; font-size: 12px; margin-bottom: 6px; }
+.pr-am-row { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px dotted var(--pr-line); font-size: 11px; }
+.pr-am-when { flex: 0 0 104px; font-family: 'Saira Condensed', sans-serif; letter-spacing: .3px; color: var(--pr-mut); text-transform: uppercase; font-size: 10px; padding-top: 1px; }
+.pr-am-tx em { color: var(--pr-mut); font-style: italic; }
+.pr-am-empty { color: var(--pr-mut); font-style: italic; font-size: 11px; }
+/* Footer */
+.pr-foot { margin-top: 20px; padding-top: 10px; border-top: 1px solid var(--pr-rule); font-size: 11px; color: var(--pr-mut); }
 
 /* ── KPI MASK — remove this block to restore ring visibility (Jac) ── */
 .kpi-ring, .big-ring, .menu-team-ring { filter: blur(12px); pointer-events: none; }
@@ -4088,6 +4145,48 @@ body.sync-failing #app { padding-top: 40px; }
 @media (prefers-reduced-motion: reduce) { #sync-banner { transition: none; } }
 @media (max-width: 560px) { #sync-banner .sb-sub { display: none; } }   /* keep the stamp + Retry on phones */
 
+/* ── R26 — "Due Today" scheduled-actions banner (#517) ─────────────────────────
+   Top-of-screen reminder band. Caution-YELLOW hazard stripe (the app's default
+   signature — NOT the red danger variant the R25 sync band reserves, NOT the
+   reserved orange accent) says "heads-up", not "emergency". Body-level like R25 so
+   render()'s #app swap can't wipe it; reserves its own top band via
+   body.sched-due so it never covers the yard. Themes off the tokens for free. */
+#sched-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 9500;
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 10px 12px 9px 18px;
+  background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: var(--shadow);
+  max-height: 42vh; overflow-y: auto;
+}
+body.sync-failing #sched-banner { top: 40px; }   /* an active R25 sync band outranks us — sit under it */
+#sched-banner .scb-stripe {
+  position: absolute; top: 0; left: 0; right: 0; height: 4px;
+  background: repeating-linear-gradient(135deg, var(--yellow) 0 13px, #14181d 13px 26px);
+}
+#sched-banner .scb-plate { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding-top: 2px; }
+#sched-banner .scb-stamp {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase;
+  letter-spacing: 1.4px; font-weight: 800; font-size: 14px; color: var(--yellow); white-space: nowrap;
+}
+#sched-banner .scb-stamp svg { width: 15px; height: 15px; }
+#sched-banner .scb-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 19px; height: 19px; padding: 0 5px; border-radius: 9px;
+  background: var(--yellow); color: #1a1205;
+  font-family: 'Saira Condensed', system-ui, sans-serif; font-weight: 800; font-size: 12px;
+}
+#sched-banner .scb-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; padding-top: 1px; }
+#sched-banner .scb-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+#sched-banner .scb-note { color: var(--txt); min-width: 0; }
+#sched-banner .scb-time {
+  font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase;
+  letter-spacing: .8px; font-weight: 700; font-size: 11.5px; color: var(--yellow); white-space: nowrap;
+}
+#sched-banner .scb-time.scb-anytime { color: var(--txt-3); }
+#sched-banner .close-x { flex-shrink: 0; margin-top: 1px; }
+body.sched-due #app { padding-top: var(--sched-band, 46px); }
+body.sync-failing.sched-due #app { padding-top: calc(40px + var(--sched-band, 46px)); }
 /* ── §Perf/SW — update-ready toast (spec frontend-performance P1) ─────────────
    Steel plate pinned bottom-center; hi-vis hazard stripe on the left edge; Saira
    stamped message; the one orange = the Reload ignition. Reduced-motion: appears

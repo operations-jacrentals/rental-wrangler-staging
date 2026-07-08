@@ -252,7 +252,7 @@ function rentalStatusDisplay(r) {
   const ss = rentalUnitStatuses(r);
   // COLOR is flag-driven (R/Y/G/gray, SPEC flag-color-system); the LABEL stays the
   // lifecycle status. Mixed-unit rentals keep the gray "mix" label + gray color.
-  if (ss.length <= 1) { const k = ss[0] || rentalDisplayStatus(r); const st = getStatus('rentalStatus', k); return { label: st.label, color: getEntityColor('rentals', r), key: k, mixed: false }; }
+  if (ss.length <= 1) { const k = ss[0] || rentalDisplayStatus(r); const st = getStatus('rentalStatus', k); const label = overdueOutStatus(k, r.endDate) ? 'Overdue' : st.label; return { label, color: getEntityColor('rentals', r), key: k, mixed: false }; }
   return { label: ss.join('/'), color: 'gray', key: null, mixed: true };
 }
 /* TERMINAL = the unit has reached an end state (Returned, or Cancelled/No Show —
@@ -1734,6 +1734,14 @@ let availWin = null;   // {start,end,time,selfId} set each render while the cale
 /* §20 physically-OUT statuses — the machine is in the customer's hands until it's
    Returned (Reserved/Today/Tomorrow = not yet picked up; Returned = back in the yard). */
 const OUT_RENTAL_STATUSES = new Set(['On Rent', 'End Rent', 'Off Rent']);
+/* §10 Overdue-out DISPLAY relabel (#509, approved by Jac): a unit still physically out
+   and reading On Rent / End Rent past its scheduled return DISPLAYS "Overdue" instead of
+   the stale lifecycle word. DISPLAY-ONLY — the STORED status is untouched (statuses are
+   user-selected, and the unit must stay "out" for availability/billing/transport). This
+   mirrors the start-side No-Show derivation (a Reserved rental whose start passed reads
+   "No Show") and rides on top of the #481 'off-rent-overdue' red flag/color. */
+const overdueOutStatus = (statusKey, endDate) =>
+  (statusKey === 'On Rent' || statusKey === 'End Rent') && !!endDate && endDate < TODAY_ISO;
 function rentalOverlaps(r, selS, selE, endISO) {
   const rs = parseISO(r.startDate), re = parseISO(endISO || r.endDate);
   if (!rs || !re || !selS || !selE) return false;
@@ -5024,6 +5032,7 @@ const RULE_META = {
   R24: ['Close ✕', 'closeX', 'red circle · white ✕ — the deliberate close/remove; hover-reveal variant on tabs'],
   R25: ['Sync banner', 'renderSyncBanner / #sync-banner', 'persistent “Not saving” plate — red hazard-stripe danger cap; raised when the backend sync is failing, hides on recovery. The ONE non-toast alert; lives on <body>, outside #app'],
   R26: ['Manual link', 'sourceLinkBtn', 'small ghost-circle external-link icon beside a service task — opens its cited OEM manual page (task.sourceUrl) in a new tab; renders only when the task actually carries one'],
+  R27: ['Due-Today banner', 'renderSchedBanner / #sched-banner', 'top-of-screen reminder plate — caution-YELLOW hazard-stripe cap; lists the scheduled actions due today (customer · note · time), each customer an R2 link. Manual X only (never auto-clears), dismissal sticks for the session (sessionStorage). Like R25 it lives on <body>, outside #app'],
 };
 /* ════════════ APP-12 · DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
    The Rulebook grew from "stamped element rules" (R0–R24 above) into the WHOLE
@@ -5358,8 +5367,19 @@ function unitPrimaryState(u) {
   if (ar) {   // tied to a rental → stage + window dates
     const win = cardWindow(ar.startDate, ar.endDate);
     const failed = u.inspectionStatus === 'Failed';
-    const status = failed ? 'Field Call' : rentalDisplayStatus(ar);   // breakdown mid-rental = field call, not "Failed"
-    return { label: win ? `${status} · ${win}` : status, color: (failed || unitOverbooked(u.unitId)) ? 'red' : insp.color };
+    let status = failed ? 'Field Call' : rentalDisplayStatus(ar);   // breakdown mid-rental = field call, not "Failed"
+    // §10 Overdue Return (#509) — an out unit whose scheduled return has passed reads RED
+    // and its pill word flips to "Overdue" (approved by Jac), mirroring the rental-entity
+    // flag #481 added (FLAG_COND 'off-rent-overdue') and the availability engine's per-unit
+    // overdue-out test (rentalsOverlappingUnit). Without this the unit's headline pill stayed
+    // inspection-color green reading "On Rent" while its rental card already showed overdue —
+    // the same "still ON RENT after the return date" gap, on the unit side. Stored status is
+    // untouched (display-only relabel, per overdueOutStatus).
+    const eu = unitEntry(ar, u.unitId);
+    const euStatus = eu ? unitStatus(ar, eu) : ar.status;
+    const overdueOut = OUT_RENTAL_STATUSES.has(euStatus) && !!ar.endDate && ar.endDate < TODAY_ISO;
+    if (!failed && overdueOutStatus(euStatus, ar.endDate)) status = 'Overdue';
+    return { label: win ? `${status} · ${win}` : status, color: (failed || unitOverbooked(u.unitId) || overdueOut) ? 'red' : insp.color };
   }
   if (u.inspectionStatus === 'Failed') return { label: 'Failed', color: 'red' };
   if (u.inspectionStatus === 'Not Ready') return { label: 'Not Ready', color: 'yellow' };
@@ -8225,7 +8245,9 @@ function headerEl() {
   const nu = unseenNotifs();
   const notifBtn = `<button class="iconbtn js-notifications" data-tip="Notifications">${I.bell}${nu ? `<span class="bb-badge">${nu > 9 ? '9+' : nu}</span>` : ''}</button>`;
   const ruBtn = `<button class="iconbtn js-ru-open" data-tip="The Round-Up — the reports board">${I.graph}</button>`;
-  const topBar = `<div class="top-toolbar">${ruBtn}${notifBtn}${bottomBarInner()}</div>`;
+  const tn = visibleTransportAlerts().length;   // #515 transport reminders
+  const trBtn = `<button class="iconbtn js-transport-alerts" data-tip="Transports due — call the customer">${I.truck}${tn ? `<span class="bb-badge">${tn > 9 ? '9+' : tn}</span>` : ''}</button>`;
+  const topBar = `<div class="top-toolbar">${ruBtn}${trBtn}${notifBtn}${bottomBarInner()}</div>`;
   // Decluttered top: logo + rings on one row, the tool bar across the next.
   h.innerHTML = `
     <button class="logo js-logo" aria-label="Jac Rentals"></button>
@@ -8298,7 +8320,10 @@ function bottomBarEl() {
 function commsUtilsEl() {
   const nu = unseenNotifs();
   const notifBadge = nu ? `<span class="fab-badge">${nu > 9 ? '9+' : nu}</span>` : '';
-  return `<button class="fab js-notifications" data-tip="Notifications — resolved fixes">${I.bell}${notifBadge}</button>`;
+  const tn = visibleTransportAlerts().length;
+  const trBadge = tn ? `<span class="fab-badge">${tn > 9 ? '9+' : tn}</span>` : '';   // #515 — deliveries/pickups due to call
+  return `<button class="fab js-transport-alerts" data-tip="Transports due — call the customer">${I.truck}${trBadge}</button>`
+    + `<button class="fab js-notifications" data-tip="Notifications — resolved fixes">${I.bell}${notifBadge}</button>`;
 }
 // The conversation rail. Idle (no chip summoned) it carries ONLY the open Mr. Wrangler
 // REQUEST tabs (needs-answer = red · needs-your-OK = yellow; they replaced the desktop
@@ -10890,6 +10915,36 @@ function buildPopupEl(o, overlay, opts = {}) {
       headRight: `<button class="iconbtn js-notif-refresh" data-tip="Refresh">${I.refresh || '⟳'}</button>`,
       bodyClass: 'req-wrap', body: inner, foot });
     overlay.appendChild(pop);
+  } else if (o.kind === 'transport-alerts') {
+    // Scheduled Transport Reminder Alerts (#515) — the deliveries/pickups DUE in the window,
+    // one dismissible "call the customer" card per leg. Live from transportAlerts() (→
+    // dispatchEvents, the same source as the Office run) so it can't drift; the footer segment
+    // adjusts the window (today + N days). Delivery = blue · Pickup = brown, matching the
+    // dispatch cockpit's kind colors. Re-derived on every render — no reload to see a new one.
+    const days = tralertDays();
+    const list = visibleTransportAlerts();
+    const relDay = (d) => (d === TODAY_ISO ? 'Today' : d === addDaysISO(TODAY_ISO, 1) ? 'Tomorrow' : dispatchDayLabel(d));
+    const spanNote = days === 0 ? 'today' : days === 1 ? 'today or tomorrow' : `in the next ${days + 1} days`;
+    const inner = !list.length
+      ? `<div class="req-empty"><span class="req-empty-ic">🚚</span><p>All clear.</p><span>No deliveries or pickups due ${spanNote}. Newly scheduled transports show up here on their own — no refresh needed.</span></div>`
+      : list.map((a) => {
+          const when = `${relDay(a.date)}${a.time ? ' · ' + fmtClock(a.time) : ' · no set time'}`;
+          const where = [a.unitId ? unitPill(a.unitId) : esc(a.unit), a.address ? esc(a.address) : ''].filter(Boolean).join(' · ');
+          return `<div class="req-card">
+              <div class="req-head">${badge(a.type, a.color)}<span class="req-title">${esc(a.customer)}</span><span class="spacer"></span><span class="req-await">${esc(when)}</span></div>
+              <div class="req-text">${where}</div>
+              <div class="req-acts"><span class="spacer"></span>${actionPill('blue', 'Called', { js: 'js-tralert-called', data: { key: a.key } })}</div>
+            </div>`;
+        }).join('');
+    const winSeg = segCtl([
+      { label: 'Today', js: 'js-tralert-win', data: { days: 0 }, on: days === 0 ? 'blue' : undefined },
+      { label: '+ Tomorrow', js: 'js-tralert-win', data: { days: 1 }, on: days === 1 ? 'blue' : undefined },
+      { label: 'This week', js: 'js-tralert-win', data: { days: 6 }, on: days >= 6 ? 'blue' : undefined },
+    ]);
+    const foot = `${winSeg}<span class="spacer"></span>${list.length ? ghostPill('Mark all called', { js: 'js-tralert-allcalled', tip: 'Clear every reminder in this window' }) : ''}`;
+    const pop = el('div', 'popup'); pop.style.width = '460px';
+    pop.innerHTML = popupShell({ icon: I.truck, title: `Transports Due${list.length ? ` · ${list.length}` : ''}`, tag: 'Dispatch · call the customer', bodyClass: 'req-wrap', body: inner, foot });
+    overlay.appendChild(pop);
   } else if (o.kind === 'hotkeys') {
     const rows = [
       { d: 'click',    n: 'Click',              t: 'Open a record to view it — in its own card, nothing else moves.' },
@@ -10993,9 +11048,11 @@ function buildPopupEl(o, overlay, opts = {}) {
     // carries Requests, so we add the Notifications bell.
     const nu = unseenNotifs();
     const notifBtn = `<button class="iconbtn js-notifications" data-tip="Notifications">${I.bell}<span>Notifications</span>${nu ? `<span class="bb-badge">${nu > 9 ? '9+' : nu}</span>` : ''}</button>`;
+    const tn = visibleTransportAlerts().length;   // #515 transport reminders
+    const trBtn = `<button class="iconbtn js-transport-alerts" data-tip="Transports due — call the customer">${I.truck}<span>Transports Due</span>${tn ? `<span class="bb-badge">${tn > 9 ? '9+' : tn}</span>` : ''}</button>`;
     const pop = el('div', 'popup'); pop.style.width = '360px';
     pop.innerHTML = popupShell({ icon: I.sliders || I.menu || '', title: 'Tools', tag: 'Yard · toolbox',
-      body: `<div class="tools-tray">${notifBtn}${bottomBarInner()}</div>` });
+      body: `<div class="tools-tray">${trBtn}${notifBtn}${bottomBarInner()}</div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'settings') {
     o.config = o.config || { roles: {}, admin: '' };
@@ -11437,6 +11494,7 @@ const WINDOW_CATALOG = [
   { kind: 'role',          label: 'Role KPIs',               tag: 'Role · scorecard',          sample: () => ({ role: (ROLES[0] || {}).id }) },
   { kind: 'requests',      label: 'Requests inbox',          tag: 'Mr. Wrangler · approvals',  sample: () => ({}) },
   { kind: 'notifications', label: 'Notifications',           tag: 'Mr. Wrangler · resolved',   sample: () => ({}) },
+  { kind: 'transport-alerts', label: 'Transports Due',       tag: 'Dispatch · call the customer', sample: () => ({}) },
   { kind: 'hotkeys',       label: 'Mouse shortcuts',         tag: 'Operator · controls',       sample: () => ({}) },
   { kind: 'roadmap',       label: 'Coming in 2026',          tag: 'Roadmap · the docket',      sample: () => ({}) },
   { kind: 'feedback',      label: 'Report a bug or request', tag: 'Mr. Wrangler · report',     sample: () => ({}) },
@@ -11523,7 +11581,7 @@ async function sendFeedback() {
    (action 'wrangler'); Code.gs calls api.anthropic.com with the key from a Script
    Property. Carries a compact data digest + (when opened from a record) its detail.
    ════════════════════════════════════════════════════════════════════════ */
-const WRANGLER_SYSTEM = "You are Mr. Wrangler, the in-app AI for JacRentals — a heavy-equipment rental yard in Sulphur, Louisiana. You help the team make sense of their units, rentals, customers, invoices, work orders, and service, and you help triage bugs they report.\n\nSTYLE — keep it tight: answer in 1–3 sentences by default. Lead with the direct answer first; add at most one short supporting clause. Use a bullet list ONLY when enumerating multiple records, one line each. Don't restate the question, don't pad, and don't over-explain what you can't do — just answer.\n\nDATA — you have live read TOOLS that search the FULL records: find_customers, find_units, find_categories, find_vendors, find_rentals, find_invoices, find_work_orders, check_unit_availability, and price_rental. Use them to look up anything specific. Below is a short orientation only (today's date, the totals, and the categories with their rates) — not the full lists. Don't guess at a record you can look up, and only say a fact is missing after a tool comes back empty. Never invent records, names, or numbers.\n\nHELPING & FIXING — you're the assistant living inside the app (think Claude, but for this yard). The user might ask a question, describe a problem, or paste something — work out what they need and help. If they describe a BUG or glitch in the app itself (something not working, a dead control, a wrong layout or behavior), reproduce it in your head; if you're missing a detail, ask ONE quick follow-up (what they tapped + what they expected). Once you can state a clear repro, FILE A FIX by ending your reply with this exact fenced block:\n```wrangler-action\n{\"action\":\"fix\",\"title\":\"<short title>\",\"report\":\"<clear repro: steps, expected vs actual, any element involved>\"}\n```\nThat auto-ships obvious bugs (a dead control, a typo, a plainly wrong value).\nBut if it's a CHANGE or improvement (not an obvious bug), do NOT file it blind — talk it through first: lay out a SHORT, concrete PLAN of exactly what you'd change and where, then ask if that's good or needs adjusting. When you put a concrete plan on the table, end with:\n```wrangler-action\n{\"action\":\"plan\",\"title\":\"<short title>\",\"plan\":\"<numbered steps: what changes, where, and the resulting UX>\"}\n```\nJac reviews that plan and taps Build only when it's right — so take his tweaks and re-propose the plan until he's happy. Emit a block ONLY when ready — a clear repro for a fix, or a concrete plan for a change — never while still gathering detail; keep your visible words short and natural and never mention JSON, blocks, labels, or buttons.\n\nACTING ON DATA — you can DO things, not just answer. You can ADD (create), UPDATE, or BULK-IMPORT items for the user: customers, units, categories, vendors, parts, expenses, inspections, and work orders (and update notes/PO on rentals). Hard limits, always: NEVER hard-delete a record, NEVER charge a card or run an ACH, NEVER refund, NEVER touch a balance directly, NEVER change roles / permissions / passwords (security), and NEVER complete a work order. If the user asks to add/change something, or hands you lead/customer data to import (pasted rows, a list, a spreadsheet they paste in), DO IT — never say you can't or that Jac has to build it. Ask any quick follow-up you genuinely need first (which field, how their columns map, what membership stage), then end your reply with:\n```wrangler-action\n{\"action\":\"data\",\"title\":\"<what this does>\",\"ops\":[{\"op\":\"import\",\"entity\":\"customers\",\"rows\":[{\"firstName\":\"..\",\"lastName\":\"..\",\"phone\":\"..\",\"email\":\"..\",\"membershipStage\":\"..\"}]},{\"op\":\"create\",\"entity\":\"customers\",\"fields\":{}},{\"op\":\"update\",\"entity\":\"units\",\"id\":\"U003\",\"fields\":{\"notes\":\"..\"}}]}\n```\nA wrangler-action block is the ONLY thing that triggers a write, so whenever you add, update, or import you MUST end the reply with the block. Simple, single, safe edits (e.g. add one unit, fix a phone number) are applied AUTOMATICALLY the moment you emit the block — you may speak about those as done (e.g. say you added the unit Termite). Bigger or money-sensitive ones — bulk imports, rate/pricing changes, and invoicing a rental — instead show the user a preview to review and Apply first, so word THOSE as a preview (e.g. tell them to look over the import and tap Apply) and don't claim they're saved. When unsure which it'll be, describe the change plainly without promising either; the app shows the user the right control. Never claim a save without emitting the block. If the user PASTES a long list of rows (not a file) too big for one reply, import a smaller batch and tell them how many rows are still to send (but for an ATTACHED CSV file, never inline rows like this — always use the csv-import op described below, which expands every row locally with no size limit); never claim a save you didn't actually emit in a block. Map their funnel/membership words to one of: Inbound Lead, Outbound Lead, Contacted, Not A No!, Payment Discussed, Paid. Editable fields are name/contact/address/industry/notes/account-type/membership+sales stage (customers); name/category/mechanic/notes/specs/fleet-status (units); name/description/fuel + rental rates (member-daily, 1-day, 7-day, 4-week, weekend) (categories); name/phone/email/address/website/contact/type/notes (vendors); name/status/qty/website/order-email/product-number/notes (parts); notes/po (rentals); vendor/date/amount/category/method/notes (expenses); unit/date/wash/bill-customer/description (inspections); unit/customer/report/type/description/mechanic/eta/labor-hours (work orders — you can create or edit one but you can NEVER complete it or set its phase; only the Complete WO button does that; a work order is service on a UNIT, so if the user names only the customer just pass the customer and I'll attach their on-rent unit — I ask which only if they have none or several out) — anything else (used-sale prices, balances, payments/refunds, cards/ACH, roles/passwords) you must decline for now and explain you can't touch money movement or security yet. NAMES vs IDS — you can refer to any customer, unit, category, or vendor BY NAME (and a customer by phone), and the app resolves it to the right record; the find_* tools return each record's [id] if you want to be exact. When you set a unit's category (categoryId) or a part's vendor (vendorId), pass the category/vendor NAME or its [id] — but it must already exist (look it up with find_categories/find_vendors if unsure); if it's NEW, create that category/vendor FIRST (a separate action) so the link resolves, otherwise the link is dropped. If a name matches more than one record, ask which one rather than guessing. The find_* tools search the FULL records (not a list), so never refuse or demand an id just because a customer or unit isn't in the orientation — look it up by name or phone with a find_* tool and act on what it returns. If you can name who/what the user means, resolve it and proceed; the preview catches a true miss. Ask (with ask_user) only when a lookup is genuinely ambiguous — two real matches — or you have no name at all. You CAN invoice an EXISTING rental: emit an operate op `{\"op\":\"operate\",\"name\":\"billRental\",\"params\":{\"rentalId\":\"R-104\"}}` — this builds the invoice from the live pricing engine (you NEVER invent line items or amounts), and only works if that rental has a customer, dates, and units and isn't already invoiced. You may pass `\"customer\":\"<name>\"` instead of a rental id and I'll bill that customer's MOST RECENT un-invoiced rental — so just emit it with the customer name; do NOT ask for a rental id, even if you can't see the rental in the orientation (the engine searches the full records and the preview shows which one). You can also RECORD a CASH or CHECK payment on an invoice: emit `{\"op\":\"operate\",\"name\":\"recordPayment\",\"params\":{\"invoiceId\":\"INV-104\",\"method\":\"cash\"}}` — add \"amount\" to pay part of the balance (omit it to pay the balance in full), and for a check include \"checkNum\"; or pass \"customer\":\"<name>\" instead of an invoice id to pay that customer's one open invoice. You can NEVER charge a card or run an ACH, you cannot REFUND, and you cannot create a from-scratch/standalone invoice. You can PUT UNITS ON RENT for a customer (create a reserved booking): emit `{\"op\":\"operate\",\"name\":\"startRental\",\"params\":{\"customer\":\"Cameron Miller\",\"units\":[\"3in Trash Pump\"],\"startDate\":\"2026-06-30\",\"days\":1,\"startTime\":\"10:00 AM\"}}` — give startDate plus EITHER a duration (\"days\": 1 for a one-day rental, which runs to the next morning and bills as 1 day) OR an explicit \"endDate\" for a set range, and pass the pickup \"startTime\" (e.g. \"10:00 AM\") whenever the user gives a time. ALWAYS include the time and the duration when stated — a one-day 10am rental is startDate that morning, days 1, startTime 10:00 AM. Optional transport `\"transport\":{\"type\":\"Delivery\",\"miles\":10,\"address\":\"..\"}`. DON'T INTERROGATE — a salesperson should be able to reserve from one short line. From a message like \"Cameron Miller getting a jack hammer Tuesday for 3 days 8am\", just emit the booking: resolve the customer, treat \"3 days\" as days:3, use 8:00 AM, and if the unit name matches several units DON'T ask which — the app auto-picks an available one and the user sees it in the preview to swap. Don't quibble about end-of-day vs last-full-day, and don't make the user choose between interchangeable units. Ask a question ONLY when you truly can't proceed: no matching customer, or no available unit for that window. DATES — a weekday name (\"Wednesday\", \"Tuesday\") ALWAYS means the NEXT upcoming one (today or later), NEVER a date that already passed; resolve it to that date and book — do NOT ask \"did you mean this coming Wednesday?\". Don't ask the user to confirm an obvious date reading. It's priced automatically by the engine; the customer's agreement signature and the payment are SEPARATE steps you don't do. It's refused if a unit isn't Active, the customer is blacklisted, the dates are bad, or a unit is already booked for that window.\n\nLARGE CSV IMPORTS — when the user attaches a CSV file you will see a compact summary: column headers, up to 5 sample rows, and the total row count. For any attached CSV with 2 or more rows, ALWAYS use the csv-import op (never the inline import op) and DO NOT re-emit all the rows yourself — instead emit a csv-import op with just the column mapping. The app expands every row locally, so nothing gets cut off no matter how big the file:\n\`\`\`wrangler-action\n{\"action\":\"data\",\"title\":\"Import 234 customers from leads.csv\",\"ops\":[{\"op\":\"csv-import\",\"entity\":\"customers\",\"mapping\":{\"First Name\":\"firstName\",\"Last Name\":\"lastName\",\"Mobile\":\"phone\",\"E-mail\":\"email\"},\"skipIfEmpty\":[\"firstName\",\"lastName\"]}]}\n\`\`\`\nThe mapping keys are the CSV column headers EXACTLY as shown in the summary. The values are app field names (firstName, lastName, phone, email, company, address, industry, accountNotes, accountType, membershipStage, usedSalesStage for customers). Set skipIfEmpty to app fields that must not be blank. Map every column that clearly lines up with an app field even if the names differ (\"Mobile\" -> \"phone\"). If you are unsure about a column, ask first.\n\nA light wrangler/ranch flavor in voice is welcome — never campy.";
+const WRANGLER_SYSTEM = "You are Mr. Wrangler, the in-app AI for JacRentals — a heavy-equipment rental yard in Sulphur, Louisiana. You help the team make sense of their units, rentals, customers, invoices, work orders, and service, and you help triage bugs they report.\n\nSTYLE — keep it tight: answer in 1–3 sentences by default. Lead with the direct answer first; add at most one short supporting clause. Use a bullet list ONLY when enumerating multiple records, one line each. Don't restate the question, don't pad, and don't over-explain what you can't do — just answer.\n\nDATA — you have live read TOOLS that search the FULL records: find_customers, find_units, find_categories, find_vendors, find_rentals, find_transports, find_invoices, find_work_orders, check_unit_availability, and price_rental. Use them to look up anything specific. For \"what transports/deliveries/pickups are due today or tomorrow?\" use find_transports (it defaults to a today→tomorrow window and returns one leg per line — customer, unit, type, address, date, time); if it comes back empty, say plainly that nothing's due. Below is a short orientation only (today's date, the totals, and the categories with their rates) — not the full lists. Don't guess at a record you can look up, and only say a fact is missing after a tool comes back empty. Never invent records, names, or numbers.\n\nHELPING & FIXING — you're the assistant living inside the app (think Claude, but for this yard). The user might ask a question, describe a problem, or paste something — work out what they need and help. If they describe a BUG or glitch in the app itself (something not working, a dead control, a wrong layout or behavior), reproduce it in your head; if you're missing a detail, ask ONE quick follow-up (what they tapped + what they expected). Once you can state a clear repro, FILE A FIX by ending your reply with this exact fenced block:\n```wrangler-action\n{\"action\":\"fix\",\"title\":\"<short title>\",\"report\":\"<clear repro: steps, expected vs actual, any element involved>\"}\n```\nThat auto-ships obvious bugs (a dead control, a typo, a plainly wrong value).\nBut if it's a CHANGE or improvement (not an obvious bug), do NOT file it blind — talk it through first: lay out a SHORT, concrete PLAN of exactly what you'd change and where, then ask if that's good or needs adjusting. When you put a concrete plan on the table, end with:\n```wrangler-action\n{\"action\":\"plan\",\"title\":\"<short title>\",\"plan\":\"<numbered steps: what changes, where, and the resulting UX>\"}\n```\nJac reviews that plan and taps Build only when it's right — so take his tweaks and re-propose the plan until he's happy. Emit a block ONLY when ready — a clear repro for a fix, or a concrete plan for a change — never while still gathering detail; keep your visible words short and natural and never mention JSON, blocks, labels, or buttons.\n\nACTING ON DATA — you can DO things, not just answer. You can ADD (create), UPDATE, or BULK-IMPORT items for the user: customers, units, categories, vendors, parts, expenses, inspections, and work orders (and update notes/PO on rentals). Hard limits, always: NEVER hard-delete a record, NEVER charge a card or run an ACH, NEVER refund, NEVER touch a balance directly, NEVER change roles / permissions / passwords (security), and NEVER complete a work order. If the user asks to add/change something, or hands you lead/customer data to import (pasted rows, a list, a spreadsheet they paste in), DO IT — never say you can't or that Jac has to build it. Ask any quick follow-up you genuinely need first (which field, how their columns map, what membership stage), then end your reply with:\n```wrangler-action\n{\"action\":\"data\",\"title\":\"<what this does>\",\"ops\":[{\"op\":\"import\",\"entity\":\"customers\",\"rows\":[{\"firstName\":\"..\",\"lastName\":\"..\",\"phone\":\"..\",\"email\":\"..\",\"membershipStage\":\"..\"}]},{\"op\":\"create\",\"entity\":\"customers\",\"fields\":{}},{\"op\":\"update\",\"entity\":\"units\",\"id\":\"U003\",\"fields\":{\"notes\":\"..\"}}]}\n```\nA wrangler-action block is the ONLY thing that triggers a write, so whenever you add, update, or import you MUST end the reply with the block. Simple, single, safe edits (e.g. add one unit, fix a phone number) are applied AUTOMATICALLY the moment you emit the block — you may speak about those as done (e.g. say you added the unit Termite). Bigger or money-sensitive ones — bulk imports, rate/pricing changes, and invoicing a rental — instead show the user a preview to review and Apply first, so word THOSE as a preview (e.g. tell them to look over the import and tap Apply) and don't claim they're saved. When unsure which it'll be, describe the change plainly without promising either; the app shows the user the right control. Never claim a save without emitting the block. If the user PASTES a long list of rows (not a file) too big for one reply, import a smaller batch and tell them how many rows are still to send (but for an ATTACHED CSV file, never inline rows like this — always use the csv-import op described below, which expands every row locally with no size limit); never claim a save you didn't actually emit in a block. Map their funnel/membership words to one of: Inbound Lead, Outbound Lead, Contacted, Not A No!, Payment Discussed, Paid. Editable fields are name/contact/address/industry/notes/account-type/membership+sales stage (customers); name/category/mechanic/notes/specs/fleet-status (units); name/description/fuel + rental rates (member-daily, 1-day, 7-day, 4-week, weekend) (categories); name/phone/email/address/website/contact/type/notes (vendors); name/status/qty/website/order-email/product-number/notes (parts); notes/po (rentals); vendor/date/amount/category/method/notes (expenses); unit/date/wash/bill-customer/description (inspections); unit/customer/report/type/description/mechanic/eta/labor-hours (work orders — you can create or edit one but you can NEVER complete it or set its phase; only the Complete WO button does that; a work order is service on a UNIT, so if the user names only the customer just pass the customer and I'll attach their on-rent unit — I ask which only if they have none or several out) — anything else (used-sale prices, balances, payments/refunds, cards/ACH, roles/passwords) you must decline for now and explain you can't touch money movement or security yet. NAMES vs IDS — you can refer to any customer, unit, category, or vendor BY NAME (and a customer by phone), and the app resolves it to the right record; the find_* tools return each record's [id] if you want to be exact. When you set a unit's category (categoryId) or a part's vendor (vendorId), pass the category/vendor NAME or its [id] — but it must already exist (look it up with find_categories/find_vendors if unsure); if it's NEW, create that category/vendor FIRST (a separate action) so the link resolves, otherwise the link is dropped. If a name matches more than one record, ask which one rather than guessing. The find_* tools search the FULL records (not a list), so never refuse or demand an id just because a customer or unit isn't in the orientation — look it up by name or phone with a find_* tool and act on what it returns. If you can name who/what the user means, resolve it and proceed; the preview catches a true miss. Ask (with ask_user) only when a lookup is genuinely ambiguous — two real matches — or you have no name at all. You CAN invoice an EXISTING rental: emit an operate op `{\"op\":\"operate\",\"name\":\"billRental\",\"params\":{\"rentalId\":\"R-104\"}}` — this builds the invoice from the live pricing engine (you NEVER invent line items or amounts), and only works if that rental has a customer, dates, and units and isn't already invoiced. You may pass `\"customer\":\"<name>\"` instead of a rental id and I'll bill that customer's MOST RECENT un-invoiced rental — so just emit it with the customer name; do NOT ask for a rental id, even if you can't see the rental in the orientation (the engine searches the full records and the preview shows which one). You can also RECORD a CASH or CHECK payment on an invoice: emit `{\"op\":\"operate\",\"name\":\"recordPayment\",\"params\":{\"invoiceId\":\"INV-104\",\"method\":\"cash\"}}` — add \"amount\" to pay part of the balance (omit it to pay the balance in full), and for a check include \"checkNum\"; or pass \"customer\":\"<name>\" instead of an invoice id to pay that customer's one open invoice. You can NEVER charge a card or run an ACH, you cannot REFUND, and you cannot create a from-scratch/standalone invoice. You can PUT UNITS ON RENT for a customer (create a reserved booking): emit `{\"op\":\"operate\",\"name\":\"startRental\",\"params\":{\"customer\":\"Cameron Miller\",\"units\":[\"3in Trash Pump\"],\"startDate\":\"2026-06-30\",\"days\":1,\"startTime\":\"10:00 AM\"}}` — give startDate plus EITHER a duration (\"days\": 1 for a one-day rental, which runs to the next morning and bills as 1 day) OR an explicit \"endDate\" for a set range, and pass the pickup \"startTime\" (e.g. \"10:00 AM\") whenever the user gives a time. ALWAYS include the time and the duration when stated — a one-day 10am rental is startDate that morning, days 1, startTime 10:00 AM. Optional transport `\"transport\":{\"type\":\"Delivery\",\"miles\":10,\"address\":\"..\"}`. DON'T INTERROGATE — a salesperson should be able to reserve from one short line. From a message like \"Cameron Miller getting a jack hammer Tuesday for 3 days 8am\", just emit the booking: resolve the customer, treat \"3 days\" as days:3, use 8:00 AM, and if the unit name matches several units DON'T ask which — the app auto-picks an available one and the user sees it in the preview to swap. Don't quibble about end-of-day vs last-full-day, and don't make the user choose between interchangeable units. Ask a question ONLY when you truly can't proceed: no matching customer, or no available unit for that window. DATES — a weekday name (\"Wednesday\", \"Tuesday\") ALWAYS means the NEXT upcoming one (today or later), NEVER a date that already passed; resolve it to that date and book — do NOT ask \"did you mean this coming Wednesday?\". Don't ask the user to confirm an obvious date reading. It's priced automatically by the engine; the customer's agreement signature and the payment are SEPARATE steps you don't do. It's refused if a unit isn't Active, the customer is blacklisted, the dates are bad, or a unit is already booked for that window.\n\nLARGE CSV IMPORTS — when the user attaches a CSV file you will see a compact summary: column headers, up to 5 sample rows, and the total row count. For any attached CSV with 2 or more rows, ALWAYS use the csv-import op (never the inline import op) and DO NOT re-emit all the rows yourself — instead emit a csv-import op with just the column mapping. The app expands every row locally, so nothing gets cut off no matter how big the file:\n\`\`\`wrangler-action\n{\"action\":\"data\",\"title\":\"Import 234 customers from leads.csv\",\"ops\":[{\"op\":\"csv-import\",\"entity\":\"customers\",\"mapping\":{\"First Name\":\"firstName\",\"Last Name\":\"lastName\",\"Mobile\":\"phone\",\"E-mail\":\"email\"},\"skipIfEmpty\":[\"firstName\",\"lastName\"]}]}\n\`\`\`\nThe mapping keys are the CSV column headers EXACTLY as shown in the summary. The values are app field names (firstName, lastName, phone, email, company, address, industry, accountNotes, accountType, membershipStage, usedSalesStage for customers). Set skipIfEmpty to app fields that must not be blank. Map every column that clearly lines up with an app field even if the names differ (\"Mobile\" -> \"phone\"). If you are unsure about a column, ask first.\n\nA light wrangler/ranch flavor in voice is welcome — never campy.";
 // The digest is Mr. Wrangler's whole window into the yard, so it carries the ACTUAL
 // records (not just counts): category rates, each unit's type/status, each rental's
 // date window + customer, customer balances, and open invoices/WOs. Sections cap at
@@ -11725,6 +11783,25 @@ const WR_TOOL_IMPL = {
     if (input.status) { const s = String(input.status).toLowerCase(); list = list.filter((r) => String(r.status || '').toLowerCase() === s); }
     return { count: list.length, rentals: list.slice(0, WR_TOOL_LIMIT).map((r) => ({ id: r.rentalId, label: rentalUnitsLabel(r) || r.rentalName || '', customer: (IDX.customer.get(r.customerId) || {}).name || '', window: fmtWindow(r.startDate, r.endDate), status: r.status || '', invoiced: !!r.invoiceId })) };
   },
+  // Transports due — the scheduled delivery/pickup LEGS in a date window, straight from
+  // dispatchEvents() (the SAME source as the Office dispatch grid, so this never drifts from
+  // it): a Deliver leg on the rental's start date/time, a Pick up leg on its end date, per
+  // unit, skipping Cancelled/No-Show/Returned/Quote and Self-transport units. Default window
+  // is today→tomorrow so "what's due?" always covers same-day + next-day. `type` filters to
+  // 'Delivery' or 'Pickup'. One row per leg: customer, unit, type, address, date, time.
+  find_transports(input) {
+    const iso = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+    let from = iso(input.from) ? input.from : TODAY_ISO;
+    let through = iso(input.through) ? input.through : addDaysISO(TODAY_ISO, 1);
+    if (from > through) { const t = from; from = through; through = t; }
+    const LEG = { Deliver: 'Delivery', 'Pick up': 'Pickup' };
+    const want = String(input.type || '').trim().toLowerCase();
+    let rows = dispatchEvents()
+      .filter((ev) => ev.date >= from && ev.date <= through)
+      .map((ev) => ({ rental: ev.rentalId, customer: ev.cust, unit: ev.unit, type: LEG[ev.task] || ev.task, address: ev.addr || '', date: ev.date, time: ev.time || '' }));
+    if (want) rows = rows.filter((r) => r.type.toLowerCase() === want);
+    return { count: rows.length, window: { from, through }, transports: rows.slice(0, WR_TOOL_LIMIT) };
+  },
   find_invoices(input) {
     let list = DATA.invoices || [];
     if (input.customer) { const c = wrResolveCustomer(input.customer).rec; if (!c) return { count: 0, invoices: [], note: `no customer matching “${input.customer}”` }; list = list.filter((i) => i.customerId === c.customerId); }
@@ -11778,6 +11855,7 @@ const WR_TOOLS = [
   { name: 'find_categories', description: 'Search equipment categories by name. Returns id, name, and all rental rates (memberDaily, rate1Day, rate7Day, rate4Wk, weekend).', input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'find_vendors', description: 'Search vendors by name. Returns id, name, phone, type.', input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'find_rentals', description: 'List rentals, filtered by customer (name/id), unit (name/id), and/or status. Returns id, units label, customer, window, status, and whether invoiced.', input_schema: { type: 'object', properties: { customer: { type: 'string' }, unit: { type: 'string' }, status: { type: 'string' } }, required: [] } },
+  { name: 'find_transports', description: 'List scheduled transport legs — deliveries and pickups DUE in a date window (the same dispatch data the Office run uses). Use this for "what transports are due today/tomorrow?", "any pickups today?", etc. Defaults to today through tomorrow when no dates are given, so it covers same-day + next-day together. Optionally filter by type ("Delivery" or "Pickup"). Dates are YYYY-MM-DD. Returns one row per leg: customer, unit, type, address, date, time.', input_schema: { type: 'object', properties: { type: { type: 'string', description: '"Delivery" or "Pickup" — omit for both' }, from: { type: 'string', description: 'window start YYYY-MM-DD (default today)' }, through: { type: 'string', description: 'window end YYYY-MM-DD (default tomorrow)' } }, required: [] } },
   { name: 'find_invoices', description: 'List invoices, optionally filtered by customer and/or onlyOpen=true. Returns id, customer, total, balance, status.', input_schema: { type: 'object', properties: { customer: { type: 'string' }, onlyOpen: { type: 'boolean' } }, required: [] } },
   { name: 'find_work_orders', description: 'List work orders, filtered by unit and/or customer. Returns id, unit, report, phase, type.', input_schema: { type: 'object', properties: { unit: { type: 'string' }, customer: { type: 'string' } }, required: [] } },
   { name: 'check_unit_availability', description: 'Check whether a unit is free for a date window. Returns available + any conflicting rentals. Dates are YYYY-MM-DD.', input_schema: { type: 'object', properties: { unit: { type: 'string' }, startDate: { type: 'string' }, endDate: { type: 'string' } }, required: ['unit', 'startDate', 'endDate'] } },
@@ -11786,7 +11864,7 @@ const WR_TOOLS = [
   { name: 'note_on_issue', description: 'Add a comment to an issue that has ALREADY been filed (one from the ALREADY FILED list) instead of filing a duplicate. Use ONLY after the user chooses "Add my note to #NNN" in the DUPLICATE CHECK. Pass the issue `number` and a one-paragraph `text` summarizing their new report. Does NOT create a new issue.', input_schema: { type: 'object', properties: { number: { type: 'number', description: 'the existing issue number to comment on' }, text: { type: 'string', description: "one-paragraph summary of the user's report to append" } }, required: ['number', 'text'] } },
   { name: 'apply_changes', description: "WRITE changes: create/update/import records or run an operation. Pass `ops` — the SAME op shapes documented above ({op:'create'|'update'|'import'|'csv-import', entity, fields|rows|id} and {op:'operate', name:'startRental'|'billRental'|'recordPayment', params}). It validates against the allowlist and the safety fences and RETURNS what resolved or got dropped, so if a link drops (e.g. a category that doesn't exist yet) you can create it first and call again. Safe single edits apply immediately; consequential ones (bulk, pricing, billing, payments, several records) are staged for the user to tap Apply — word those as a preview, never as saved. This is the ONLY write path — never charge a card/ACH, refund, touch a balance, change roles/passwords, hard-delete, or complete a WO.", input_schema: { type: 'object', properties: { title: { type: 'string', description: 'short label for the change' }, ops: { type: 'array', items: { type: 'object' }, description: 'the operations to apply' } }, required: ['ops'] } },
 ];
-const WR_TOOLS_NOTE = "\n\nLOOKING THINGS UP — you have live read-only tools (find_customers, find_units, find_categories, find_vendors, find_rentals, find_invoices, find_work_orders, check_unit_availability, price_rental) that query the FULL records, not just the snapshot. PREFER them: when the user names a customer/unit/rental, look it up to confirm it exists and get its id before you answer or emit an action; check availability before booking; quote with price_rental rather than guessing. Don't ask the user for something a tool can find. For WRITES, prefer the apply_changes tool: call it with the ops array (same shapes as the wrangler-action block) and it returns exactly what resolved or got dropped, so you can fix a dropped link and try again — much better than emitting a blind block. Safe single edits auto-apply; consequential ones come back staged for the user's Apply (word those as a preview). You may still emit a wrangler-action block as a fallback, but don't ALSO emit one for a write you already made with apply_changes. When you truly need to disambiguate before acting, call ask_user (with tappable options when the choice is between known records) instead of guessing or burying the question in prose — but only when a tool can't resolve it.";
+const WR_TOOLS_NOTE = "\n\nLOOKING THINGS UP — you have live read-only tools (find_customers, find_units, find_categories, find_vendors, find_rentals, find_transports, find_invoices, find_work_orders, check_unit_availability, price_rental) that query the FULL records, not just the snapshot. PREFER them: when the user names a customer/unit/rental, look it up to confirm it exists and get its id before you answer or emit an action; check availability before booking; quote with price_rental rather than guessing. Don't ask the user for something a tool can find. For WRITES, prefer the apply_changes tool: call it with the ops array (same shapes as the wrangler-action block) and it returns exactly what resolved or got dropped, so you can fix a dropped link and try again — much better than emitting a blind block. Safe single edits auto-apply; consequential ones come back staged for the user's Apply (word those as a preview). You may still emit a wrangler-action block as a fallback, but don't ALSO emit one for a write you already made with apply_changes. When you truly need to disambiguate before acting, call ask_user (with tappable options when the choice is between known records) instead of guessing or burying the question in prose — but only when a tool can't resolve it.";
 // The agent loop: send → if the model calls tools, run them locally and feed results back →
 // repeat until it answers in plain text. opts.call is injectable for offline tests; it defaults
 // to the live backend pass-through. Degrades to a single shot against a backend with no tools
@@ -12628,6 +12706,32 @@ function markNotifsSeen() { const mx = wranglerNotifs.reduce((a, n) => Math.max(
 function dismissNotif(num) { const s = loadDismissedNotifs(); s.add(num); saveDismissedNotifs(s); render(); if (state.overlay?.kind === 'notifications') renderOverlay(); }
 function dismissAllNotifs() { const s = loadDismissedNotifs(); wranglerNotifs.forEach((n) => s.add(n.number)); saveDismissedNotifs(s); render(); if (state.overlay?.kind === 'notifications') renderOverlay(); }
 function toggleNotifsMuted() { setNotifsMuted(!notifsMuted()); render(); if (state.overlay?.kind === 'notifications') renderOverlay(); }
+/* ── Scheduled Transport Reminder Alerts (#515) — the delivery/pickup LEGS due in the near
+   window, so the team calls the customer before the truck rolls. Derived LIVE from
+   dispatchEvents() (the SAME source as the Office dispatch grid + the find_transports tool,
+   so the reminder can't drift from the run) — every render re-derives, so a newly scheduled
+   transport shows without a reload. Window = today + N days ahead (default 1 = today→tomorrow,
+   matching the dispatch run), adjustable per-device. A "Called" dismiss clears one leg so it
+   won't nag again (§246 idiom), keyed per leg+date so a RESCHEDULE surfaces a fresh reminder;
+   the store self-prunes past-window keys so it can't grow forever. */
+const TRALERT_DAYS_KEY = 'jactec.transportAlertDays';       // per-device window: today + N days ahead
+const TRALERT_CALLED_KEY = 'jactec.transportAlertsCalled';  // leg keys the team has dismissed ("Called")
+const tralertDays = () => { try { const n = parseInt(localStorage.getItem(TRALERT_DAYS_KEY), 10); return Number.isFinite(n) ? Math.max(0, Math.min(6, n)) : 1; } catch (e) { return 1; } };
+const setTralertDays = (n) => { try { localStorage.setItem(TRALERT_DAYS_KEY, String(Math.max(0, Math.min(6, n)))); } catch (e) {} };
+const loadCalledAlerts = () => { try { return new Set(JSON.parse(localStorage.getItem(TRALERT_CALLED_KEY) || '[]')); } catch (e) { return new Set(); } };
+const saveCalledAlerts = (set) => { try { localStorage.setItem(TRALERT_CALLED_KEY, JSON.stringify([...set].filter((k) => String(k).split('|').pop() >= TODAY_ISO))); } catch (e) {} };
+const tralertKey = (ev) => `${ev.rentalId}|${ev.unitId || ''}|${ev.task}|${ev.date}`;   // per leg + date — a reschedule = a fresh reminder
+const TRALERT_LEG = { Deliver: 'Delivery', 'Pick up': 'Pickup' };
+function transportAlerts() {
+  const from = TODAY_ISO, through = addDaysISO(TODAY_ISO, tralertDays());
+  return dispatchEvents()
+    .filter((ev) => ev.date >= from && ev.date <= through)
+    .map((ev) => ({ key: tralertKey(ev), rentalId: ev.rentalId, unitId: ev.unitId, customer: ev.cust, unit: ev.unit,
+      type: TRALERT_LEG[ev.task] || ev.task, color: ev.color === 'blue' ? 'blue' : 'brown', address: ev.addr || '', date: ev.date, time: ev.time || '' }));
+}
+const visibleTransportAlerts = () => { const called = loadCalledAlerts(); return transportAlerts().filter((a) => !called.has(a.key)); };
+function callTransportAlert(key) { const s = loadCalledAlerts(); s.add(key); saveCalledAlerts(s); render(); if (state.overlay?.kind === 'transport-alerts') renderOverlay(); }
+function callAllTransportAlerts() { const s = loadCalledAlerts(); transportAlerts().forEach((a) => s.add(a.key)); saveCalledAlerts(s); render(); if (state.overlay?.kind === 'transport-alerts') renderOverlay(); }
 async function refreshWranglerNotifications() {
   if (typeof backendPassword === 'undefined' || !backendPassword || notifLoading) return;   // demo/offline → no feed
   notifLoading = true;
@@ -13407,6 +13511,7 @@ function render() {
   mountTransportEditor();   // inline transport editor: mount the live map + wire the address field
   mountWranglerDock();   // §18 wire paste + drag-drop image input on the wrangler dock after each render
   mountDispatchMap();   // §2.3 office cockpit: re-parent the singleton dispatch map + refresh pins/route/truck
+  renderSchedBanner();   // R27 — top "Due Today" scheduled-actions band (lives on <body>, survives the #app swap)
   ruMountStrips();   // §13.7 gauge strips — build each open strip's chart into its measured 25% box
   applyTitles();   // full text on hover wherever we truncate (custom ~0.5s tooltip)
   drawDispatchArrows();   // §2.3 — paint free-form route legs over the dispatch run (needs live geometry)
@@ -14193,6 +14298,9 @@ function onClick(e) {
     return openOverlay({ kind: 'comment', card: hit.card, recId: hit.recId, recType: hit.recType, color: (last && last.color) || 'yellow', text: last ? last.text : '' });
   }
 
+  // R26 — dismiss the top "Due Today" scheduled-actions band (manual X only; sticks for the session)
+  if (closest('.js-sched-dismiss')) { e.stopPropagation(); dismissSchedBanner(); return; }
+
   // clicked card → orange-border focus (§0.1 visual feedback; applied immediately,
   // independent of whatever else this click does — anchor stays a separate action)
   const fc = closest('.card');
@@ -14540,6 +14648,10 @@ function onClick(e) {
   if (closest('.js-notif-dismiss')) { e.stopPropagation(); return dismissNotif(Number(closest('.js-notif-dismiss').dataset.num)); }   // §246 clear one
   if (closest('.js-notif-dismissall')) { e.stopPropagation(); return dismissAllNotifs(); }   // §246 clear all
   if (closest('.js-notif-mute')) { e.stopPropagation(); return toggleNotifsMuted(); }   // §246 mute/unmute the badge
+  if (closest('.js-transport-alerts')) { e.stopPropagation(); return openOverlay({ kind: 'transport-alerts' }); }   // #515 transport reminders — deliveries/pickups due
+  if (closest('.js-tralert-called')) { e.stopPropagation(); return callTransportAlert(closest('.js-tralert-called').dataset.key); }   // #515 dismiss one leg ("Called")
+  if (closest('.js-tralert-allcalled')) { e.stopPropagation(); return callAllTransportAlerts(); }   // #515 clear the whole window
+  if (closest('.js-tralert-win')) { e.stopPropagation(); setTralertDays(Number(closest('.js-tralert-win').dataset.days)); render(); renderOverlay(); return; }   // #515 adjust the window
   if (closest('.js-requests')) { e.stopPropagation(); openOverlay({ kind: 'requests' }); refreshWranglerRequests(); return; }   // §18e approval inbox
   if (closest('.js-req-refresh')) { e.stopPropagation(); return refreshWranglerRequests(); }
   if (closest('.js-req-chat')) { e.stopPropagation(); return openWranglerFromRequest(Number(closest('.js-req-chat').dataset.n)); }   // §18e continue the conversation
@@ -16930,48 +17042,186 @@ async function recordManualPayment(invoiceId) {
     if (live()) { o.busy = false; o.error = (e && e.rwTimeout) ? 'Timed out — try again.' : ((e && e.message) || 'Network error — try again.'); renderOverlay(); }
   }
 }
-// Print / PDF a customer-facing invoice (#109) — a clean white document (not the dark
-// yard UI) rendered into #print-root; the @media print rules hide everything else and
-// the browser's print dialog handles paper or "Save as PDF".
+// ── Invoice "Yard Log" PRINT / PDF (#109; reshaped to a kraft yard-log page 2026-07-08).
+// A customer-facing document rendered into #print-root: line items GROUPED by rental
+// (recent→oldest window), each group stamped with its window · duration · merge/extension
+// provenance · per-rental subtotal; a grand subtotal; a machine glyph per unit line; a red
+// BALANCE DUE + PAID stamp; a signature block; and a customer-safe Amendments log. The
+// @media print rules swap the dark yard UI out and the browser dialog handles "Save as PDF".
+
+/** "2 Days" · "2 Weeks" · "1 Month" from a day count (28d = 1 Month, matching the 4-Week
+ *  rate; falls back to whole weeks then days). */
+function prDuration(days) {
+  if (days % 28 === 0) { const m = days / 28; return `${m} Month${m === 1 ? '' : 's'}`; }
+  if (days % 7 === 0)  { const w = days / 7;  return `${w} Week${w === 1 ? '' : 's'}`; }
+  return `${days} Day${days === 1 ? '' : 's'}`;
+}
+/** Provenance stamp for a rental group: "Merged from 216i" (lines carry a `fromInv` tag
+ *  stamped at merge time) · "Extension of 216i" (a line's "Ext of NNN" tail, or the invoice's
+ *  contOf when this is the covered rental) · "Extension" (a grow-in-place extension line). */
+function prGroupProvenance(inv, r, gl) {
+  const merged = gl.find((li) => li.fromInv);
+  if (merged) return `Merged from ${invoiceShort(merged.fromInv)}`;
+  for (const li of gl) { const m = /·\s*Ext of\s+(\S+)\s*$/i.exec(li.label || ''); if (m) return `Extension of ${m[1]}`; }
+  if (inv.contOf && r && inv.covOf === r.rentalId) return `Extension of ${invoiceShort(inv.contOf)}`;
+  if (gl.some((li) => li.kind === 'extension')) return 'Extension';
+  return '';
+}
+/** Group an invoice's line items by rental, newest window first (manual / unlinked lines
+ *  fall to a trailing "Additional charges" group). */
+function invoicePrintGroups(inv) {
+  const map = new Map(), order = [];
+  (inv.lineItems || []).forEach((li) => {
+    const r = li.ref ? IDX.rental.get(li.ref) : null;
+    const key = r ? r.rentalId : '__other';
+    if (!map.has(key)) { map.set(key, { r, key, lines: [] }); order.push(key); }
+    map.get(key).lines.push(li);
+  });
+  const groups = order.map((key) => {
+    const g = map.get(key), r = g.r;
+    const start = r ? r.startDate : '', end = r ? r.endDate : '';   // unlinked "Additional charges" get no window/duration
+    const days = (parseISO(start) && parseISO(end)) ? Math.max(1, dayDiff(parseISO(start), parseISO(end))) : 0;
+    return {
+      key, r, isOther: key === '__other', start,
+      title: (key === '__other') ? 'Other' : 'Rental',
+      window: (start && end) ? `${fmtShortDate(start)} – ${fmtShortDate(end)}` : '',
+      dur: days ? prDuration(days) : '',
+      prov: (key === '__other') ? '' : prGroupProvenance(inv, r, g.lines),
+      subtotal: g.lines.reduce((a, li) => a + (Number(li.amount) || 0), 0),
+      lines: g.lines,
+    };
+  });
+  groups.sort((a, b) => a.isOther ? 1 : b.isOther ? -1 : (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
+  return groups;
+}
+/** One printed line row → { icon, name, cat, meta }. A unit line shows its glyph + name +
+ *  CATEGORY only (the per-day rate/qty is dropped — the card header now carries the window +
+ *  duration). Transport keeps its leg descriptor; a manual line shows its plain label. */
+function prLineParts(li) {
+  let rest = String(li.label || '').replace(/\s*·\s*Ext of\s+\S+\s*$/i, '').replace(/\s*·\s*Extension\s*→.*$/i, '');
+  if (li.kind === 'transport') {
+    const r = li.ref ? IDX.rental.get(li.ref) : null;
+    const eu = (r && li.unitId) ? unitEntry(r, li.unitId) : null;
+    const type = (eu && eu.transportType) || (r && r.transportType) || rest.replace(/^Transport\s*·\s*/i, '');
+    const addr = (eu && eu.deliveryAddress) || (r && r.deliveryAddress) || '';
+    const miles = Number((eu && eu.transportMiles) || (r && r.transportMiles) || 0);
+    return { icon: I.truck, name: 'Transport', cat: '', meta: [type, addr, miles ? `${miles} mi` : ''].filter(Boolean).join(' · ') };
+  }
+  const u = li.unitId ? IDX.unit.get(li.unitId) : null;
+  if (u) {
+    const cat = IDX.category.get(u.categoryId);
+    return { icon: categoryIconFor(cat && cat.name), name: u.name, cat: (cat && cat.name) || '', meta: '' };
+  }
+  return { icon: '', name: rest, cat: '', meta: '' };
+}
+/** Customer-safe amendment logs — SEPARATED: { invoiceLog, rentalLog }. Each is the record's
+ *  actions scrubbed of internal ops detail (staff names via `by`, pricing locks, Mr. Wrangler,
+ *  card/ACH, mechanic/GPS), internal-but-relevant wording translated to plain language, sorted
+ *  MOST RECENT → oldest. rentalLog entries carry the rental name (which unit(s)). */
+function invoiceAmendments(inv) {
+  const DENY = /pricing (un)?locked|mr\.?\s*wrangler|added by|••|\bach\b|\bcard\b|mechanic|assigned|\bgps\b|\bhours\b/i;
+  const scrub = (a, rname) => {
+    let text = String(a.text || '');
+    if (!text || DENY.test(text)) return null;
+    text = text
+      .replace(/Merged in invoice\s+\S+.*$/i, 'Combined with a prior ticket')
+      .replace(/Continuation (of|invoice)\b.*$/i, 'Continued on a new ticket (28-day billing)')
+      .replace(/Transport type →/i, 'Transport set to');
+    return { when: a.when, clock: a.clock || '', seq: a.seq || 0, text, rname: rname || '' };
+  };
+  const recent = (x, y) => (x.when < y.when ? 1 : x.when > y.when ? -1 : (y.seq - x.seq));   // most recent → oldest
+  const invoiceLog = (inv.actions || []).map((a) => scrub(a)).filter(Boolean).sort(recent);
+  const rentalLog = [];
+  (inv.rentalIds || []).map((id) => IDX.rental.get(id)).filter(Boolean).forEach((r) => {
+    const rname = rentalUnitsLabel(r) || r.rentalName || '';
+    (r.actions || []).forEach((a) => { const s = scrub(a, rname); if (s) rentalLog.push(s); });
+  });
+  rentalLog.sort(recent);
+  return { invoiceLog, rentalLog };
+}
+/** Invoice status → the print doc's accent state: green (paid), yellow (open / not yet due),
+ *  red (past due). Drives the date stamp, hazard stripe, Balance Due and the Paid stamp. */
+function prInvoiceInk(inv, t) {
+  if ((t || invoiceTotals(inv)).balance <= 0.005) return 'is-paid';
+  return /^(Late|Collections)/.test((t || invoiceTotals(inv)).status) ? 'is-due' : 'is-open';
+}
 function printInvoice(invoiceId) {
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
   const t = invoiceTotals(inv);
   const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
-  const rows = (inv.lineItems || []).map((li) => `<tr><td>${esc(li.label)}</td><td class="r">${money2(Number(li.amount) || 0)}</td></tr>`).join('')
-    || '<tr><td colspan="2" class="pr-empty">No line items.</td></tr>';
+  const groups = invoicePrintGroups(inv);
+  const paid = t.balance <= 0.005 && t.total > 0;
+  const ink = prInvoiceInk(inv, t);   // is-paid (green) / is-open (yellow) / is-due (red)
+  const bigDate = (fmtShortDate(inv.date) || '').toUpperCase();
+  const brandName = companyName().replace(/([a-z])([A-Z])/g, '$1 $2');   // "JacRentals" → "Jac Rentals" (proper case, spaced)
+  const custPhoto = cust ? latestCustomerSelfie(cust) : '';
+
+  // Each rental → a soft card with a single-line header: the bold title FIRST, then its window ·
+  // duration · provenance, and the per-rental subtotal pinned right; the unit lines sit inside.
+  const cardHtml = (g) => {
+    const lines = g.lines.map((li) => {
+      const p = prLineParts(li);
+      return `<div class="pr-line"><span class="pr-desc">${p.icon ? `<span class="pr-ic">${p.icon}</span>` : '<span class="pr-ic"></span>'}<span class="pr-txt"><span class="pr-nm">${esc(p.name)}</span>${p.cat ? `<span class="pr-cat">${esc(p.cat)}</span>` : ''}${p.meta ? `<span class="pr-mt">${esc(p.meta)}</span>` : ''}</span></span><span class="pr-amt">${money2(Number(li.amount) || 0)}</span></div>`;
+    }).join('');
+    const meta = `${g.window ? `<span>${esc(g.window)}</span>` : ''}${g.dur ? `<span>${esc(g.dur)}</span>` : ''}${g.prov ? `<span class="pr-prov">${esc(g.prov)}</span>` : ''}`;
+    return `<section class="pr-card">
+      <header class="pr-card-h"><span class="pr-card-t">${esc(g.title)}</span>${meta ? `<span class="pr-card-m">${meta}</span>` : ''}<span class="pr-card-sub">${money2(g.subtotal)}</span></header>
+      <div class="pr-card-lines">${lines}</div>
+    </section>`;
+  };
+  const groupsHtml = groups.length ? groups.map(cardHtml).join('') : '<div class="pr-empty">No line items.</div>';
+
+  const paymentRows = (inv.payments || []).length
+    ? (inv.payments || []).map((pmt) => {
+        const when = pmt.at ? esc(fmtShortDate(pmt.at)) : '';
+        const method = pmt.type === 'cash' ? 'Cash'
+          : pmt.type === 'check' ? ('Check' + (pmt.checkNum ? ' #' + esc(String(pmt.checkNum)) : ''))
+          : pmt.type === 'ach-pending' ? 'ACH (pending)'
+          : pmt.type === 'charge' ? 'Card'
+          : esc(String(pmt.type || 'Payment'));
+        return `<div><span>Paid${when ? ' · ' + when : ''} · ${method}</span><span>${money2((Number(pmt.amountCents) || 0) / 100)}</span></div>`;
+      }).join('')
+    : (t.paid ? `<div><span>Paid${inv.paymentMethod ? ' · ' + esc(inv.paymentMethod) : ''}</span><span>${money2(t.paid)}</span></div>` : '');
+
+  const { invoiceLog, rentalLog } = invoiceAmendments(inv);
+  const logRow = (a, withName) => `<div class="pr-am-row"><span class="pr-am-when">${esc(fmtShortDate(a.when))}${a.clock ? ' · ' + esc(a.clock) : ''}</span><span class="pr-am-tx">${esc(a.text)}${withName && a.rname ? ` <em>· ${esc(a.rname)}</em>` : ''}</span></div>`;
+  const logCol = (title, items, withName) => `<div class="pr-log"><div class="pr-log-h">${title}</div>${items.length ? items.map((a) => logRow(a, withName)).join('') : '<div class="pr-am-empty">No entries.</div>'}</div>`;
+
   let host = document.getElementById('print-root');
   if (!host) { host = document.createElement('div'); host.id = 'print-root'; document.body.appendChild(host); }
   host.innerHTML = `
-    <div class="pr-doc">
-      <div class="pr-head"><div class="pr-brand">${esc(companyName())}</div><div class="pr-sub">${esc(companyTagline())}</div></div>
+    <div class="pr-doc ${ink}">
+      <div class="pr-head">
+        <div class="pr-brandwrap"><img class="pr-logo" src="assets/jac-rentals-logo.jpg" alt="${esc(brandName)}" /><div><div class="pr-brand">${esc(brandName)}</div><div class="pr-sub">${esc(companyTagline())}</div></div></div>
+        <div class="pr-datestamp">${esc(bigDate)}</div>
+      </div>
+      <div class="pr-hazard" aria-hidden="true"></div>
       <div class="pr-meta">
         <div><span class="pr-k">Invoice</span><span class="pr-v">${esc(inv.invoiceId)}</span></div>
         <div><span class="pr-k">Bill to</span><span class="pr-v">${esc(cust ? cust.name : '—')}</span></div>
-        <div><span class="pr-k">Date</span><span class="pr-v">${esc(fmtShortDate(inv.date) || '—')}</span></div>
+        <div><span class="pr-k">Created</span><span class="pr-v">${esc(fmtShortDate(inv.date) || '—')}</span></div>
         <div><span class="pr-k">Due</span><span class="pr-v">${esc(inv.dueDate ? fmtShortDate(inv.dueDate) : '—')}</span></div>
         ${inv.po ? `<div><span class="pr-k">PO</span><span class="pr-v">${esc(inv.po)}</span></div>` : ''}
-        ${inv.covStart && inv.covEnd ? `<div><span class="pr-k">Rental period</span><span class="pr-v">${esc(fmtShortDate(inv.covStart))} – ${esc(fmtShortDate(inv.covEnd))}</span></div>` : ''}
         ${inv.contOf ? `<div><span class="pr-k">Continuation of</span><span class="pr-v">${esc(invoiceShort(inv.contOf))} (28-day billing split)</span></div>` : ''}
       </div>
-      <table class="pr-lines"><thead><tr><th>Description</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="pr-tot">
-        <div><span>Subtotal</span><span>${money2(t.subtotal)}</span></div>
-        <div><span>Tax${t.exempt ? ' (exempt)' : ` (${(TAX_RATE * 100).toFixed(2)}%)`}</span><span>${t.exempt ? '—' : money2(t.tax)}</span></div>
-        <div class="pr-big"><span>Total</span><span>${money2(t.total)}</span></div>
-        ${(inv.payments || []).length
-          ? (inv.payments || []).map((p) => {
-              const when = p.at ? esc(fmtShortDate(p.at)) : '';
-              const method = p.type === 'cash' ? 'Cash'
-                : p.type === 'check' ? ('Check' + (p.checkNum ? ' #' + esc(String(p.checkNum)) : ''))
-                : p.type === 'ach-pending' ? 'ACH (pending)'
-                : p.type === 'charge' ? 'Card'
-                : esc(String(p.type || 'Payment'));
-              return `<div><span>Paid${when ? ' · ' + when : ''} · ${method}</span><span>${money2((Number(p.amountCents) || 0) / 100)}</span></div>`;
-            }).join('')
-          : (t.paid ? `<div><span>Paid${inv.paymentMethod ? ' · ' + esc(inv.paymentMethod) : ''}</span><span>${money2(t.paid)}</span></div>` : '')}
-        <div class="pr-due"><span>Balance due</span><span>${money2(t.balance)}</span></div>
+      <div class="pr-groups">${groupsHtml}</div>
+      <div class="pr-summary">
+        <div class="pr-cust">
+          ${custPhoto ? `<img class="pr-cust-photo" src="${esc(custPhoto)}" alt="" />` : ''}
+          ${paid ? `<div class="pr-stamp${custPhoto ? ' on-photo' : ''}" aria-hidden="true">Paid in Full</div>` : ''}
+        </div>
+        <div class="pr-tot">
+          <div><span>Grand Subtotal</span><span>${money2(t.subtotal)}</span></div>
+          <div><span>Tax${t.exempt ? ' (exempt)' : ` (${(TAX_RATE * 100).toFixed(2)}%)`}</span><span>${t.exempt ? '—' : money2(t.tax)}</span></div>
+          <div class="pr-big"><span>Total</span><span>${money2(t.total)}</span></div>
+          ${paymentRows}
+          <div class="pr-due"><span>Balance Due</span><span>${money2(t.balance)}</span></div>
+        </div>
       </div>
-      <div class="pr-foot">Thank you for your business — much obliged. Questions on this ticket? Give the yard a holler.</div>
+      <div class="pr-logs">
+        ${logCol('Invoice Log', invoiceLog, false)}
+        ${logCol('Rental Log', rentalLog, true)}
+      </div>
     </div>`;
   document.body.classList.add('printing');
   const cleanup = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', cleanup); };
@@ -17937,10 +18187,11 @@ function mergeInvoiceInto(keepId, absorbId) {
   if (!invoiceMergeable(src)) { toast(`Blocked: invoice ${invoiceShort(absorbId)} has a payment or lock — refund/unlock it before merging.`); return; }
   if (keep.customerId !== src.customerId) { toast('Blocked: those invoices belong to different customers.'); return; }
   // move every line over, re-minting lids so allocations can never collide on the keeper.
-  // Each moved line is stamped with its ORIGIN invoice (spec collections D3, Jac 2026-06-29) so a
-  // merged invoice stays auditable back to every source — the prerequisite for placing a merged
-  // debt stack with a collections agency. An existing originInvoiceId (a re-merge) is preserved.
-  const moved = (src.lineItems || []).map((li) => Object.assign({}, li, { lid: lineLid(), originInvoiceId: li.originInvoiceId || absorbId }));
+  // Stamp the absorbed invoice id as `fromInv` (kept if a line was already merged once, so
+  // the earliest source sticks) — the print doc reads it for the "Merged from" group stamp;
+  // also the provenance field spec collections D3 (Jac 2026-06-29) needs for a future merged
+  // debt-stack audit trail back to every source invoice.
+  const moved = (src.lineItems || []).map((li) => Object.assign({}, li, { lid: lineLid(), fromInv: li.fromInv || absorbId }));
   moved.forEach((li) => keep.lineItems.push(li));
   // union rentalIds + relink the absorbed invoice's rentals to the keeper (§7.5: one invoice per rental)
   (src.rentalIds || []).forEach((rid) => {
@@ -18916,6 +19167,75 @@ function renderSyncBanner() {
   document.body.classList.add('sync-failing');
   requestAnimationFrame(() => el.classList.add('show'));
 }
+
+/* ── R26 — "Due Today" scheduled-actions banner (#517) ────────────────────────
+   Scheduled actions are customer.activityLog entries stamped `Scheduled: <note> @
+   <date> <time>` (see the schedule popup save). On the day of the action (from
+   midnight / app-open, since TODAY_ISO is fixed at load) we surface every one due
+   today as a dismissible top band — the reminder Jac asked for. Manual X only:
+   it NEVER auto-clears when the time passes or the action is logged. The dismiss
+   sticks for the browser session (sessionStorage, keyed to today's set) so a
+   refresh can't ghost it back, but a fresh app-open shows it again. Lives on
+   <body>, outside #app, like the R25 sync band. */
+function parseSchedText(text) {
+  const body = String(text || '').replace(/^Scheduled:\s*/, '');
+  // the popup appends " @ YYYY-MM-DD H:MM AM" — anchor on that tail so a note that
+  // itself contains "@" is never mistaken for the separator.
+  const m = /\s*@\s*\d{4}-\d{2}-\d{2}\s+(\d{1,2}:\d{2}\s*[AP]M)\s*$/i.exec(body);
+  return { note: (m ? body.slice(0, m.index) : body).trim() || 'Follow-up', time: m ? m[1].replace(/\s+/g, ' ').toUpperCase() : '' };
+}
+function schedActionsDueToday() {
+  const out = [];
+  (DATA.customers || []).forEach((c) => {
+    (c.activityLog || []).forEach((a) => {
+      if (a && a.when === TODAY_ISO && /^Scheduled:/.test(a.text || '')) {
+        const p = parseSchedText(a.text);
+        out.push({ customerId: c.customerId, name: fullName(c) || c.company || 'Customer', note: p.note, time: p.time });
+      }
+    });
+  });
+  return out.sort((a, b) => (timeToMin(a.time) ?? 1e9) - (timeToMin(b.time) ?? 1e9));   // earliest first, untimed last
+}
+const SCHED_DISMISS_KEY = 'jactec.schedBannerDismissed';
+const schedBannerSig = (items) => TODAY_ISO + '|' + items.map((i) => `${i.customerId}:${i.note}@${i.time}`).sort().join('~');
+function dismissSchedBanner() {
+  try { sessionStorage.setItem(SCHED_DISMISS_KEY, schedBannerSig(schedActionsDueToday())); } catch (e) {}
+  renderSchedBanner();
+}
+function renderSchedBanner() {
+  const items = schedActionsDueToday();
+  const sig = schedBannerSig(items);
+  let dismissed = false; try { dismissed = sessionStorage.getItem(SCHED_DISMISS_KEY) === sig; } catch (e) {}
+  let node = document.getElementById('sched-banner');
+  if (!items.length || dismissed) {   // nothing due, or the operator dismissed today's set
+    if (node) node.remove();
+    document.body.classList.remove('sched-due');
+    document.body.style.removeProperty('--sched-band');
+    return;
+  }
+  if (node && node.dataset.sig === sig) return;   // same set already on screen → don't thrash
+  const rows = items.map((i) =>
+    `<div class="scb-row">`
+    + `<span class="pill ref link scb-cust" data-r="R2" data-pill-card="customers" data-pill-rec="${esc(i.customerId)}" data-tip="${esc(i.name)}">${CARD_ICON.customers}${esc(i.name)}</span>`
+    + `<span class="scb-note">${esc(i.note)}</span>`
+    + (i.time ? `<span class="scb-time">${esc(i.time)}</span>` : `<span class="scb-time scb-anytime">Any time</span>`)
+    + `</div>`).join('');
+  const html = `<span class="scb-stripe" aria-hidden="true"></span>`
+    + `<div class="scb-plate"><span class="scb-stamp">${I.bell}<span>Due Today</span></span><span class="scb-count">${items.length}</span></div>`
+    + `<div class="scb-list">${rows}</div>`
+    + closeX('js-sched-dismiss');
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'sched-banner'; node.dataset.r = 'R26';
+    node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
+    document.body.appendChild(node);
+  }
+  node.dataset.sig = sig;
+  node.innerHTML = html;
+  document.body.classList.add('sched-due');
+  // reserve the exact band height so the banner never covers the yard/header (variable rows)
+  requestAnimationFrame(() => { const n = document.getElementById('sched-banner'); if (n) document.body.style.setProperty('--sched-band', n.offsetHeight + 'px'); });
+}
 // Safety net: a debounced save that hasn't flushed yet — or a large bulk-import sync
 // still in flight — would be lost silently if the page closes/reloads first (#164).
 // If anything is still un-persisted, kick a final flush and let the browser show its
@@ -19427,7 +19747,7 @@ function exposeTestApi() {
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
       companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, addMonthsISO, openMembershipEnroll, membershipEnrollCommit, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyShopRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
-      openCustomerForm, renderOverlay, render, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature, __state: state };   // UI drivers for headless screenshot/e2e tests
+      openCustomerForm, renderOverlay, render, printInvoice, invoicePrintGroups, invoiceAmendments, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature, __state: state };   // UI drivers for headless screenshot/e2e tests
 
   } catch (e) { /* no window (non-browser) */ }
 }
