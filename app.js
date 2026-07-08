@@ -25,7 +25,7 @@ import { ico, I, CARD_ICON, RING_ICON, CATEGORY_ICON } from './icons.js';
 import { CATEGORY_ANIM } from './icons-anim.js';
 import {
   getStatus, STATUS, ROLES, ROLE_TIERS, tierRank, BUILTIN_ROLE_TIERS, GRID_CARDS, BACKOFFICE_BOARDS, SORT_FIELDS,
-  SHOP_TYPES, SHOP_SEGMENTS, COLUMNS, COLUMN_OF,
+  SHOP_TYPES, COLUMNS, COLUMN_OF,
   legacyTransportPrice, computeTransportPrice, isFueledType, legsForType, YARD_ORIGIN, GOOGLE_MAPS_KEY, GPS_BACKEND_URL,
   fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, invoiceShort, TRANSPORT_MAP,
   FLAG_META, FLAG_SEVERITY_RANK, INSURANCE_COVERAGE_TYPES,
@@ -78,7 +78,7 @@ const num = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US', { maxi
 const TODAY = parseISO(TODAY_ISO);
 const dayDiff = (a, b) => Math.round((b - a) / 86400000);
 
-const SINGULAR = { customers: 'customer', rentals: 'rental', units: 'unit', invoices: 'invoice', categories: 'category', workOrders: 'workOrder', inspections: 'inspection', serviceOrders: 'unit' };
+const SINGULAR = { customers: 'customer', rentals: 'rental', units: 'unit', invoices: 'invoice', categories: 'category', workOrders: 'workOrder', inspections: 'inspection', serviceOrders: 'unit', models: 'model' };
 
 /* ════════════════════════════════════════════════════════════════════════
    APP-03 · §2 INDEXES & SEARCH — built once on load (SPEC §3: never scan per keystroke)
@@ -696,6 +696,7 @@ function buildIndexes() {
   migrateInvoiceLines();
   IDX.unit     = new Map(DATA.units.map((u) => [u.unitId, u]));
   IDX.category = new Map(DATA.categories.map((c) => [c.categoryId, c]));
+  IDX.model    = new Map((DATA.models || []).map((m) => [m.modelId, m]));
   IDX.customer = new Map(DATA.customers.map((c) => [c.customerId, c]));
   IDX.invoice  = new Map(DATA.invoices.map((i) => [i.invoiceId, i]));
   IDX.rental   = new Map(DATA.rentals.map((r) => [r.rentalId, r]));
@@ -1874,7 +1875,15 @@ const svcText = (s) => (s.status === 'past-due'
 const WASH_TASK = { taskId: 'svc-wash', name: 'Wash / Detail', intervalHours: 100, parts: [] };
 const UNIT_SVC_TASKS = [WASH_TASK, ...SERVICE_TASKS];
 const SVC_OPTS = { tasks: UNIT_SVC_TASKS, hoursField: 'currentHours', baselineField: 'purchaseHours' };
-const unitServiceRows = (u) => serviceOrdersForUnit(u, u.serviceCompletions || {}, SVC_OPTS);
+// Real per-model schedules (Jac 2026-07-07) win when the unit has picked a model
+// with sourced tasks; otherwise fall back to the generic placeholder — an honest
+// miss (same spirit as categoryIconFor's neutral box glyph) rather than a silent
+// wrong number.
+const unitServiceRows = (u) => {
+  const modelTasks = u.modelId && IDX.model.get(u.modelId)?.tasks;
+  const tasks = (modelTasks && modelTasks.length) ? [WASH_TASK, ...modelTasks] : UNIT_SVC_TASKS;
+  return serviceOrdersForUnit(u, u.serviceCompletions || {}, { ...SVC_OPTS, tasks });
+};
 /** The service pill(s) for a row: a submitted Wash Request overrides the countdown
  *  language to a single blue "Wash Requested" pill; otherwise status + countdown. */
 function svcPills(s, focal) {
@@ -1882,12 +1891,39 @@ function svcPills(s, focal) {
   if (s.washRequested) return badge('Wash Requested', 'blue', focal);          // R3
   return badge(getStatus('serviceStatus', s.status).label, s.color, focal) + badge(svcText(s), s.color);   // R3 (urgency = focal on the shop service row)
 }
+/* SNOOZE (backlog #43, Jac 2026-07-07): a mechanic mutes ONE task's alarm until a date.
+   Jac's law: snooze SILENCES the alarm everywhere — row pills, the Units-tab alert, the
+   worklist graph, the countdown sort — all via topServiceForUnit skipping snoozed tasks.
+   The task row itself still tells the truth ("Snoozed thru … · was N HRS overdue").
+   Expired snoozes are inert; completing a task clears its snooze. */
+const svcSnoozedUntil = (u, taskId) => {
+  const until = (u.serviceSnoozes || {})[taskId];
+  return until && until > TODAY_ISO ? until : null;
+};
+function snoozeService(unitId, taskId, days) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  const t = unitServiceRows(u).find((s) => s.taskId === taskId);
+  u.serviceSnoozes = u.serviceSnoozes || {};
+  if (days == null) {   // wake — the alarm is live again
+    delete u.serviceSnoozes[taskId];
+    reindex('units', u); logAction(u, `Woke ${t?.name || taskId} — service alarm live`);
+    toast('Snooze cleared — the countdown is live.');
+  } else {
+    const until = addDaysISO(TODAY_ISO, days);
+    u.serviceSnoozes[taskId] = until;
+    reindex('units', u); logAction(u, `Snoozed ${t?.name || taskId} until ${fmtShortDate(until)}`);
+    toast(`Snoozed ${days} days — quiet until ${fmtShortDate(until)}.`);
+  }
+  render();
+}
 /** Most-urgent active service order for a unit (derived via the reference module).
- *  A pending wash request floats the wash task to the top regardless of its countdown. */
+ *  A pending wash request floats the wash task to the top regardless of its countdown.
+ *  Snoozed tasks are SKIPPED (Jac: snoozing silences the alarm — the next-urgent
+ *  unsnoozed task drives the pills/alerts instead). */
 function topServiceForUnit(unit) {
   const rows = unitServiceRows(unit);
   if (unit.washRequested) { const w = rows.find((s) => s.taskId === 'svc-wash'); if (w) return { ...w, washRequested: true }; }
-  const active = rows.filter((s) => s.status !== 'ok');
+  const active = rows.filter((s) => s.status !== 'ok' && !svcSnoozedUntil(unit, s.taskId));
   return active[0] || null;
 }
 /** Total repair cost for a unit = Σ its WO line-item costs (SPEC §12.4). */
@@ -2018,7 +2054,11 @@ function categoryStats(cat) {
   // Without a purchase cost (units with no trueCost/purchasePrice), revenue ÷ repair-only
   // explodes to absurd %. Gate on `trueCost` (matches the §12.4 unit-level `invested ?`
   // guard) so a category with no acquisition cost reads '—', not a fake 900,000%.
-  const lifetimeRoi = trueCost ? ((totalRev + (cat.bottomDollar || 0) * us.length) - denom) / denom : null;
+  // D3 sell-a-unit (units-fleet spec): a SOLD unit's REALIZED salePrice replaces the
+  // assumed bottomDollar residual for that one unit; every still-unsold unit keeps the
+  // existing assumed-residual behavior. Surgical — only this one term changed.
+  const residual = us.reduce((a, u) => a + (u.fleetStatus === 'Sold' && Number(u.salePrice) ? Number(u.salePrice) : (cat.bottomDollar || 0)), 0);
+  const lifetimeRoi = trueCost ? ((totalRev + residual) - denom) / denom : null;
   const roi = lifetimeRoi != null ? Math.round(lifetimeRoi * (365 / avgDaysOwned) * 100) : null;
   return {
     count: us.length,
@@ -2038,7 +2078,7 @@ function categoryStats(cat) {
    its own anchored main card + cascade. */
 function freshSession() {
   const cards = {};
-  for (const c of GRID_CARDS) cards[c.id] = { mode: 'list', recId: null, recType: null, search: '', filterTerms: [], historySearch: '', sort: loadSort(c.id), backStack: [], fwdStack: [], segment: c.id === 'shop' ? 'all' : null, graphIdx: 0, graphSel: {} };   // §13.4 graphIdx = active carousel view; graphSel = remembered selection per view
+  for (const c of GRID_CARDS) cards[c.id] = { mode: 'list', recId: null, recType: null, search: '', filterTerms: [], historySearch: '', sort: loadSort(c.id), backStack: [], fwdStack: [], segment: null, graphIdx: 0, graphSel: {} };   // §13.4 graphIdx = active carousel view; graphSel = remembered selection per view
   // 3-column layout: which member card is visible in each column (display-only;
   // rides inside the session so item-tabs / pause-resume restore it for free).
   const cols = {}; for (const col of COLUMNS) cols[col.id] = col.default;
@@ -2066,6 +2106,12 @@ function saveSort(card, sort) {
 }
 // the entity-card a record belongs to (Shop holds 3 entity types via recType)
 const entityCardOf = (card, recType) => (card === 'shop' ? recType : card);
+// Shop retirement (Jac 2026-07-07): a WO / inspection / serviceOrder reference now
+// opens its OWNING UNIT — this resolves the unitId for any of the 3 shop entity types
+// (a serviceOrder id IS a unitId; SINGULAR.serviceOrders === 'unit').
+const unitOfShopRec = (type, id) => (type === 'workOrders' ? (IDX.wo.get(id)?.unitId || null)
+  : type === 'inspections' ? (IDX.insp.get(id)?.unitId || null)
+  : id);
 
 /* ── D8/D9 THE COMMS RAIL — per-device session persistence (spec comms D8 + D9).
    { cat, sessions: { team|text|email|wrangler: { tabs:[id…], lastOpen, hidden:[id…],
@@ -2412,7 +2458,7 @@ function cardRecordAt(target) {
   const pill = target.closest && target.closest('[data-pill-card]');
   if (pill && pill.dataset.pillRec != null) {
     const pc = pill.dataset.pillCard;
-    return SHOP_TYPES.includes(pc) ? { card: 'shop', recId: pill.dataset.pillRec, recType: pc } : { card: pc, recId: pill.dataset.pillRec, recType: null };
+    return SHOP_TYPES.includes(pc) ? { card: 'units', recId: unitOfShopRec(pc, pill.dataset.pillRec), recType: null } : { card: pc, recId: pill.dataset.pillRec, recType: null };   // Shop retirement: WO/insp/svc pills act on their owning unit
   }
   const row = target.closest && target.closest('.row');
   if (row && row.dataset.rec) return { card: row.dataset.card, recId: row.dataset.rec, recType: row.dataset.type || null };
@@ -2602,7 +2648,7 @@ function showHoverPreview(target) {
    (e.g. "No Card" → Cards on File) — smooth scroll + the R19 glow. */
 function scrollToSect(card, sect) {
   setTimeout(() => {
-    const ec = SHOP_TYPES.includes(card) ? 'shop' : card;
+    const ec = SHOP_TYPES.includes(card) ? 'units' : card;   // Shop retirement: WO/insp/svc sections live on the unit
     const n = document.querySelector(`.card[data-card="${ec}"] .${sect}`);
     if (n) { n.scrollIntoView({ behavior: 'smooth', block: 'start' }); attnFlash(`.card[data-card="${ec}"] .${sect}`); }
   }, 60);
@@ -2616,8 +2662,13 @@ function pillTo(card, recId) {
   // pre-swap view + column layout on the DESTINATION card so Back returns you to the card you
   // left, exactly where it was. Same viewSnap mechanism the categories → units jump uses; no-op
   // when the target is already visible in its own column (no swap). (Jac 2026-07-03)
-  const noteSwap = (member) => { const s = activeSession(), col = COLUMN_OF[member]; if (s.cols && col && s.cols[col] !== member) pushCardHistory(s.cards[SHOP_TYPES.includes(member) ? 'shop' : member], true); };
-  if (SHOP_TYPES.includes(card)) { if (recOf(card, recId)) { noteSwap(card); revealCol(card); openStandard('shop', recId, card); } return; }
+  const noteSwap = (member) => { const s = activeSession(), col = COLUMN_OF[member]; if (s.cols && col && s.cols[col] !== member) pushCardHistory(s.cards[member], true); };
+  // Shop retirement (Jac 2026-07-07): a WO / inspection / serviceOrder pill opens its OWNING UNIT.
+  if (SHOP_TYPES.includes(card)) {
+    const uid = unitOfShopRec(card, recId);
+    if (uid && IDX.unit.get(uid)) { noteSwap('units'); revealCol('units'); openStandard('units', uid); }
+    return;
+  }
   if (recOf(card, recId)) { noteSwap(card); revealCol(card); openStandard(card, recId); }
 }
 
@@ -2709,7 +2760,7 @@ function totColMatch(card, rec, col, value) {
   if (col === '__date') return dateTermHits(card, rec, value);   // §5.4d date-picker filter term
   if (col === '__transport') return card === 'rentals' && rentalHasLeg(rec, value);   // §11 Delivery/Pickup leg filter
   if (col === '__wo') return DATA.workOrders.some((w) => w.unitId === rec.unitId && w.phase !== 'Complete' && !w.cancelled && (value === 'open' || w.phase === 'Part Ordered' || (w.lineItems || []).some((l) => l.phase === 'Part Ordered')));
-  if (col === '__wop') return DATA.workOrders.some((w) => w.unitId === rec.unitId && w.phase !== 'Complete' && !w.cancelled && (w.phase || '—') === value);   // §13.5 — unit has an open WO stuck at this phase (bottleneck)
+  if (col === '__wop') return DATA.workOrders.some((w) => w.unitId === rec.unitId && !w.cancelled && (w.phase || '—') === value);   // §13.5 — unit has a WO at this phase (open = bottleneck; 'Complete' matches finished WOs for the Round-Up drill)
   if (col === '__insp') return value === 'Ready' ? rec.inspectionStatus === 'Ready' : rec.inspectionStatus !== 'Ready';   // §13.5 — Passed vs Not Ready (Failed folds into Not Ready; Jac retired the Failed bucket)
   if (col === '__cond') return rec.inspectionStatus === value;
   if (col === '__svc') { const s = topServiceForUnit(rec); return !!rec.washRequested || !!(s && s.remaining < 0); }   // service-due: overdue service or wash requested
@@ -2722,6 +2773,8 @@ function totColMatch(card, rec, col, value) {
   if (col === '__rentrange') { const [a, b] = String(value).split('|'); const d = (rec.startDate || '').slice(0, 10); return !!d && d >= a && d < b; }   // §13.4 — rental start in a timeline bucket [a,b)
   if (col === '__daterange') { const [a, b] = String(value).split('|'); const d = (rec.date || '').slice(0, 10); return !!d && d >= a && d < b; }   // §13.4 — inspection / WO dated in a timeline bucket
   if (col === '__fcrange') { const [a, b] = String(value).split('|'); return DATA.workOrders.some((w) => w.unitId === rec.unitId && w.woType === 'Field Call' && (w.date || '').slice(0, 10) >= a && (w.date || '').slice(0, 10) < b); }   // §13.4 — Field Call in a timeline bucket
+  if (col === '__worange') { const [a, b] = String(value).split('|'); return DATA.workOrders.some((w) => w.unitId === rec.unitId && !w.cancelled && (w.date || '').slice(0, 10) >= a && (w.date || '').slice(0, 10) < b); }   // Shop retirement — unit has a WO dated in a timeline bucket (Round-Up WO drills land on Units)
+  if (col === '__insprange') { const [a, b] = String(value).split('|'); return DATA.inspections.some((n2) => n2.unitId === rec.unitId && (n2.date || '').slice(0, 10) >= a && (n2.date || '').slice(0, 10) < b); }   // Shop retirement — unit inspected in a timeline bucket
   if (col === '__svcstat') {   // §13.4 — a unit's service urgency (mirrors the serviceOrders status pie)
     if (value === 'wash') return !!rec.washRequested;
     if (rec.washRequested) return false;
@@ -2731,7 +2784,7 @@ function totColMatch(card, rec, col, value) {
     if (value === 'on-schedule') return !s || (s.status !== 'past-due' && s.status !== 'due-soon');
     return false;
   }
-  if (col === '__wophase') return card === 'workOrders' && (rec.phase || '—') === value;   // shop front-page WO bar: match this phase AND exclude non-WO items (the normal 'phase' fallback would let them through)
+  if (col === '__wophase') return card === 'workOrders' && (rec.phase || '—') === value;   // WO-row phase match (excludes non-WO items; units use __wop instead)
   const c = cardColumns(card, activeSession()).find((x) => x.key === col);
   return c ? String(c.get(rec)) === String(value) : true;
 }
@@ -4572,6 +4625,136 @@ function unruledElements() {
 function closeX(js, { data, hover } = {}) {
   return `<button class="close-x${hover ? ' hoveronly' : ''}${js ? ' ' + js : ''}" data-r="R24"${dataAttrs(data)} data-tip="Close">${I.x}</button>`;
 }
+/** R26: MANUAL LINK — icon-only ghost circle, opens a service task's cited OEM
+ *  manual page in a new tab (Jac 2026-07-07: every model task now carries a
+ *  sourceUrl alongside its `source` citation). Renders NOTHING when the caller
+ *  has no real sourceUrl — an honest miss, never a dead/fake link (same spirit
+ *  as categoryIconFor's neutral box glyph). `cite` (the task's rich `source`
+ *  text) rides as the tooltip when short enough to read at a glance. */
+function sourceLinkBtn(url, cite) {
+  if (!url) return '';
+  const tip = (cite && cite.length <= 140) ? cite : 'View in manual';
+  return `<a class="icon-link" data-r="R26" href="${esc(url)}" target="_blank" rel="noopener" data-tip="${esc(tip)}">${I.linkOut}</a>`;
+}
+/* SERVICE DETAIL PANEL (Jac 2026-07-08 — "REALLY hold their hands"): a service task's
+ * optional `detail` object (fluidType/fluidCapacity/partRefs/notes) drives the "What
+ * you need" block in the service-completion popup. Parts are editable IN PLACE — they
+ * reuse the exact WO Work-Order line idiom (.woline row + closeX remove + the partform
+ * popup for add/edit) rather than inventing a parallel parts UI, per Jac's "this should
+ * nearly already exist because of Work Orders" note. Edits write to the REAL model task
+ * (unitServiceRows returns a merged/derived copy), never the copy — see
+ * removeSvcPartRef / savePartForm's taskTarget branch. */
+function svcRealTask(u, task) {
+  const mo = u && u.modelId ? IDX.model.get(u.modelId) : null;
+  return mo ? { mo, realTask: (mo.tasks || []).find((t) => t.taskId === task.taskId) || null } : { mo: null, realTask: null };
+}
+function svcNeedHtml(u, task) {
+  const { realTask } = svcRealTask(u, task);
+  const editable = !!realTask;
+  const d = task.detail || null;
+  if (!d) {
+    return (task.parts && task.parts.length)
+      ? `Parts: ${esc(task.parts.join(' · '))}`
+      : '<span class="muted">No detailed spec on file for this task yet.</span>';
+  }
+  const partRefs = d.partRefs || [];
+  const fluidHtml = (d.fluidType || d.fluidCapacity) ? `<div class="svc-fluid">${I.droplet}<span class="svc-fluid-txt">${d.fluidCapacity ? `<b>${esc(d.fluidCapacity)}</b>` : ''}${d.fluidCapacity && d.fluidType ? ' · ' : ''}${d.fluidType ? esc(d.fluidType) : ''}</span></div>` : '';
+  const notesHtml = d.notes ? `<div class="muted svc-notes">${esc(d.notes)}</div>` : '';
+  const rows = partRefs.map((pr, idx) => `
+    <div class="woline">
+      <span class="js-svc-part" data-idx="${idx}" style="cursor:pointer">${esc(pr.name || 'Part')}</span>
+      <span class="nums">${pr.cost != null ? `<b>${money(pr.cost)}</b>` : ''}<span>${esc(pr.oem || '—')}</span></span>
+      <span class="woline-acts">${editable ? closeX('js-svc-part-remove', { data: { unit: u.unitId, task: task.taskId, idx } }) : ''}</span>
+    </div>`).join('');
+  const partsBlock = (partRefs.length || editable) ? `
+    <div class="svc-parts-head">Parts / filters${editable ? '<span class="svc-editnote"> · edits this model’s schedule</span>' : ''}</div>
+    ${rows}
+    ${editable ? `<div class="svc-partadd">${addBtn('Part', { line: true, js: 'js-svc-addpart', h: 26, data: { unit: u.unitId, task: task.taskId } })}${actionPill('commit', 'Browse catalog', { js: 'js-svc-browseparts', data: { unit: u.unitId, task: task.taskId }, h: 26 })}</div>` : ''}` : '';
+  return `${fluidHtml}${notesHtml}${partsBlock}` || '<span class="muted">No detailed spec on file for this task yet.</span>';
+}
+/** The part-detail side panel — a SECOND .popup appended to the same overlay (the
+ * cardSub / newCustomer §14 side-by-side precedent), showing a clicked partRef's
+ * vendor/cost. Prefers values the mechanic already entered directly on the partRef
+ * (via partform); falls back to a DATA.parts catalog match by OEM/productNumber;
+ * an honest "not in catalog yet" when neither is on file. */
+function svcPartPanelEl(u, task, pr, idx) {
+  const norm = (s) => String(s || '').trim().toLowerCase();
+  const catalogPart = pr.oem ? DATA.parts.find((p) => p.productNumber && norm(p.productNumber) === norm(pr.oem)) : null;
+  const vendor = (pr.vendorId && (IDX.vendor.get(pr.vendorId) || DATA.vendors.find((v) => v.vendorId === pr.vendorId)))
+    || (catalogPart && catalogPart.vendorId && (IDX.vendor.get(catalogPart.vendorId) || DATA.vendors.find((v) => v.vendorId === catalogPart.vendorId))) || null;
+  const cost = pr.cost != null ? pr.cost : (catalogPart ? catalogPart.priceEach : null);
+  const url = pr.url || (catalogPart ? catalogPart.website : '');
+  const img = pr.photo || (catalogPart ? catalogPart.imageUrl : '');
+  const enriched = !!(vendor || cost != null || url || catalogPart);
+  const webUrl = (w) => (/^https?:\/\//i.test(w) ? w : 'https://' + w);
+  const vendorBlock = vendor ? `
+      <div class="svc-ref-head" style="margin-top:14px">Vendor</div>
+      <div class="svc-vendor-block">
+        <div class="svc-vendor-name">${esc(vendor.name || '')}</div>
+        ${vendor.primaryContact ? `<div class="muted" style="font-size:11.5px">${esc(vendor.primaryContact)}</div>` : ''}
+        ${vendor.phone ? linkName(vendor.phone, { js: 'js-open-link', data: { url: 'tel:' + String(vendor.phone).replace(/[^\d+]/g, '') } }) : ''}
+        ${vendor.email ? linkName(vendor.email, { js: 'js-open-link', data: { url: 'mailto:' + vendor.email } }) : ''}
+        ${vendor.website ? linkName(vendor.website, { js: 'js-open-link', data: { url: webUrl(vendor.website) } }) : ''}
+      </div>` : (enriched ? '' : `
+      <p class="muted" style="font-size:12px;margin-top:8px">Not in the parts catalog yet.</p>
+      <div class="svc-part-row">${linkName('Search this part number ↗', { js: 'js-open-link', data: { url: 'https://www.google.com/search?q=' + encodeURIComponent(pr.oem || pr.name || '') } })}</div>`);
+  const pp = el('div', 'popup svc-part-popup'); pp.style.width = '300px';
+  pp.innerHTML = popupShell({
+    icon: CARD_ICON.parts || '', title: pr.name || 'Part',
+    tag: catalogPart ? 'Parts catalog · match' : (enriched ? 'Service · part' : 'Parts catalog · not on file'),
+    closeJs: 'js-svc-part-close',
+    body: `
+      ${img ? `<img class="insp-thumb" src="${esc(img)}" alt="${esc(pr.name || 'part')}">` : ''}
+      <div class="muted" style="font-size:11px;margin-bottom:8px">OEM ${esc(pr.oem || '—')}${catalogPart ? ` · Catalog ${esc(catalogPart.productNumber || '')}` : ''}</div>
+      ${cost != null ? kv(money(cost), { pfx: 'Cost', derived: pr.cost == null }) : ''}
+      ${catalogPart && catalogPart.qtyOnHand != null ? kv(catalogPart.qtyOnHand + ' on hand', { pfx: 'Stock', derived: true }) : ''}
+      ${url ? `<div class="svc-part-row">${linkName(url.length > 30 ? 'Order / info ↗' : url, { js: 'js-open-link', data: { url: webUrl(url) } })}</div>` : ''}
+      ${vendorBlock}`,
+    foot: `${ghostPill('Close', { js: 'js-svc-part-close' })}${actionPill('commit', 'Edit', { js: 'js-svc-partedit', data: { unit: u.unitId, task: task.taskId, idx } })}`,
+  });
+  return pp;
+}
+function removeSvcPartRef(unitId, taskId, idx) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  const { mo, realTask } = svcRealTask(u, { taskId });
+  if (!realTask || !realTask.detail || !Array.isArray(realTask.detail.partRefs) || !realTask.detail.partRefs[idx]) return;
+  const [gone] = realTask.detail.partRefs.splice(idx, 1);
+  reindex('models', mo); logAction(mo, `Removed part ${auditVal(gone.name)} from ${realTask.name}`);
+  const o = state.overlay;
+  if (o && o.kind === 'service' && o.partRef && o.partRef.idx === idx) o.partRef = null;
+  else if (o && o.kind === 'service' && o.partRef && o.partRef.idx > idx) o.partRef.idx -= 1;   // keep pointing at the same part after the array shifts
+  toast('Part removed.'); renderOverlay();
+}
+/** Attach an EXISTING catalog part (DATA.parts) onto a service task's detail.partRefs —
+ * the "selection" half of the parts UX (Jac 2026-07-08), paired with the partform
+ * "create" half. Opened from the parts board in pick mode (js-svc-pick-part). Writes to
+ * the REAL model task (svcRealTask + reindex('models',…)), the same idiom as
+ * removeSvcPartRef / savePartForm's taskTarget branch — never the unitServiceRows copy.
+ * Only carries fields the catalog actually has (undefined, not '', so svcPartPanelEl's
+ * "not in catalog yet" fallback still behaves). Dedupes by OEM (when present) or name. */
+function attachCatalogPart(unitId, taskId, partId) {
+  const u = IDX.unit.get(unitId); if (!u) return;
+  const p = DATA.parts.find((x) => x.partId === partId); if (!p) return;
+  const { mo, realTask } = svcRealTask(u, { taskId });
+  if (!realTask) { toast('No editable schedule for this unit.'); return; }
+  realTask.detail = realTask.detail || {};
+  realTask.detail.partRefs = realTask.detail.partRefs || [];
+  const norm = (s) => String(s || '').trim().toLowerCase();
+  const oem = p.productNumber || '';
+  const dupe = realTask.detail.partRefs.some((pr) => (oem && pr.oem && norm(pr.oem) === norm(oem)) || (norm(pr.name) && norm(pr.name) === norm(p.name)));
+  if (dupe) { toast('Already on this service'); return; }
+  const rec = { name: p.name };
+  if (oem) rec.oem = oem;
+  if (p.priceEach != null) rec.cost = p.priceEach;
+  if (p.vendorId) rec.vendorId = p.vendorId;
+  if (p.website) rec.url = p.website;
+  if (p.imageUrl) rec.photo = p.imageUrl;
+  realTask.detail.partRefs.push(rec);
+  reindex('models', mo); logAction(mo, `Attached catalog part ${auditVal(p.name)} to ${realTask.name}`);
+  toast('Part attached.');
+  state.overlay = { kind: 'service', unitId, taskId };
+  renderOverlay();
+}
 /** R6: required-until-entered — white bg + dark ink, stays loud until satisfied. */
 function reqBtn(label, { js, data, icon } = {}) {
   return `<button class="req${js ? ' ' + js : ''}" data-r="R6"${dataAttrs(data)}>${icon || ''}${esc(label)}</button>`;
@@ -4779,9 +4962,12 @@ function actionPill(kind, label, { js, data, h } = {}) {
 }
 /** R18: the ONE quiet/neutral action — Cancel, Close, secondary tools.
  *  `disabled` greys it (is-disabled) and drops the js hook so it's inert; pair with `tip`
- *  (R23 data-tip) to explain why (e.g. "No email on file"). */
-function ghostPill(label, { js, data, tip, disabled } = {}) {
-  return `<button class="pill ghost${disabled ? ' is-disabled' : ''}${js && !disabled ? ' ' + js : ''}" data-r="R18"${dataAttrs(data)}${tip ? ` data-tip="${esc(tip)}"` : ''}${disabled ? ' aria-disabled="true"' : ''}>${esc(label)}</button>`;
+ *  (R23 data-tip) to explain why (e.g. "No email on file"). `icon` renders an icon-only
+ *  circular chip (same ghost weight, sized to match a badge) instead of the text label —
+ *  the label still becomes the a11y name + the R23 tooltip (e.g. a row's Duplicate action). */
+function ghostPill(label, { js, data, tip, disabled, icon } = {}) {
+  const tipAttr = icon ? (tip || label) : tip;
+  return `<button class="pill ghost${icon ? ' icon-only' : ''}${disabled ? ' is-disabled' : ''}${js && !disabled ? ' ' + js : ''}" data-r="R18"${dataAttrs(data)}${tipAttr ? ` data-tip="${esc(tipAttr)}"` : ''}${icon ? ` aria-label="${esc(label)}"` : ''}${disabled ? ' aria-disabled="true"' : ''}>${icon || esc(label)}</button>`;
 }
 /** The popup PLATE — every overlay's shell, so they all read as one bolted data-plate.
  *  Hazard cap (red `danger` variant for abort/destroy) + corner rivets + stamped Saira
@@ -4829,7 +5015,7 @@ const RULE_META = {
   R15: ['Journey', 'yardToolHtml / miniJourneyHtml', 'yard +Start/+FC/+End + Jac─Site─Jac transport; white = video owed'],
   R16: ['Window calendar', 'rdcal-edit / winPickerEl (inline)', 'the rental window — an INLINE editable month calendar in the detail (popup retired 2026-06-25); tap start→end, the left Units/Categories card shows availability live, fragile rentals stage with an inline Confirm panel below the calendar'],
   R17: ['Action pill', 'actionPill', 'commit = blue · money = green · danger = solid red; .locked = gated'],
-  R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear'],
+  R18: ['Ghost', 'ghostPill', 'the ONE quiet action — Cancel / Close / Exit / Clear, or an icon-only row secondary (e.g. Duplicate)'],
   R19: ['Attention flash', 'attnFlash / flashOr', 'a glow that points AT the next action — replaces an error message when the fix is on screen'],
   R20: ['Context menu', 'openCtxMenu (right-click · long-press)', 'right-click/long-press any element: Cut · Copy · Paste · Search · Replace · Add Comment · Ask Mr. Wrangler'],
   R21: ['File drop', 'fileDrop', 'the MASSIVE popup add-file zone — R5b blue dashed at full size'],
@@ -4837,6 +5023,7 @@ const RULE_META = {
   R23: ['Tooltip', 'data-tip → the one styled tip', 'every hover hint goes through data-tip — a native title attribute is a violation'],
   R24: ['Close ✕', 'closeX', 'red circle · white ✕ — the deliberate close/remove; hover-reveal variant on tabs'],
   R25: ['Sync banner', 'renderSyncBanner / #sync-banner', 'persistent “Not saving” plate — red hazard-stripe danger cap; raised when the backend sync is failing, hides on recovery. The ONE non-toast alert; lives on <body>, outside #app'],
+  R26: ['Manual link', 'sourceLinkBtn', 'small ghost-circle external-link icon beside a service task — opens its cited OEM manual page (task.sourceUrl) in a new tab; renders only when the task actually carries one'],
 };
 /* ════════════ APP-12 · DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
    The Rulebook grew from "stamped element rules" (R0–R24 above) into the WHOLE
@@ -4961,7 +5148,7 @@ const RB_TABS = [
   { id: 'fields', label: 'Fields & Adds', intro: 'Where you type, link, and add.',
     items: [{ r: 'R5' }, { r: 'R5b' }, { r: 'R5c' }, { r: 'R6' }, { r: 'R7' }, { r: 'R8' }, { r: 'R14' }, { r: 'R22' }] },
   { id: 'actions', label: 'Actions', intro: 'Buttons that DO something — colored by intent.',
-    items: [{ r: 'R17' }, { r: 'R18' }, { r: 'R24' }] },
+    items: [{ r: 'R17' }, { r: 'R18' }, { r: 'R24' }, { r: 'R26' }] },
   { id: 'upload', label: 'Upload & Capture', intro: 'Add-file zones and photo/site captures.',
     items: [{ r: 'R21' }, { f: 'upload-capture' }] },
   { id: 'data', label: 'Data & Behaviors', intro: 'Visualizations, plus the app’s behaviors — it flashes instead of erroring, right-clicks, tooltips, and self-lints.',
@@ -5642,14 +5829,13 @@ const CARD_COLUMNS = {
     C('hours', 'Hours', 'num', (u) => u.currentHours ?? null, { agg: 'avg' }),
   ],
 };
-/** Columns for a card; the Shop card resolves to its active segment's entity. */
+/** Columns for a card. (Shop retirement: no segment resolution — cards map 1:1.) */
 function cardColumns(card, session) {
-  if (card === 'shop') { const seg = boardSegmentFor(session); return CARD_COLUMNS[seg] || []; }
   return CARD_COLUMNS[card] || [];
 }
 function boardSegmentFor(session) {
-  const cs = session?.cards?.shop; const seg = cs?.segment;
-  return (seg && seg !== 'all') ? seg : 'workOrders';
+  // Retired with the Shop card — kept only so stale saved Board Views resolve safely.
+  return 'workOrders';
 }
 /** Aggregate a column over rows → {kind, ...} for the totals + board summary. */
 function aggColumn(col, rows) {
@@ -6104,6 +6290,47 @@ function woSectionHtml(w) {
     </div>
   </div>`;
 }
+/* Per-unit SERVICES section (Shop retirement, Jac 2026-07-07): the recurring
+   countdown list — wash pinned to the top, then most-urgent first — with the
+   same js-svc-complete completion flow the Shop card used. Section header +
+   border follow the worst task's live status (R11). */
+const SVC_LIST_CAP = 6;   // real per-model schedules run 20+ tasks — cap the section, expand on demand
+function serviceTasksHtml(u, { title = 'Services' } = {}) {
+  const all = unitServiceRows(u);
+  const wash = all.find((s) => s.taskId === 'svc-wash');
+  const rows = wash ? [wash, ...all.filter((s) => s.taskId !== 'svc-wash')] : all;
+  const lastFor = (taskId) => { const ls = (u.serviceLog || []).filter((l) => l.taskId === taskId); return ls.length ? ls[ls.length - 1] : null; };
+  const expanded = state.svcExpand === u.unitId;
+  const shown = expanded ? rows : rows.slice(0, SVC_LIST_CAP);
+  const list = shown.map((s) => {
+    const last = lastFor(s.taskId);
+    const washReq = s.taskId === 'svc-wash' && u.washRequested;
+    const sn = svcSnoozedUntil(u, s.taskId);   // backlog #43 — snoozed = alarm muted, row stays honest
+    const pillColor = sn ? 'gray' : (washReq ? 'blue' : s.color);
+    const pillLabel = sn ? 'Snoozed' : (washReq ? 'Wash Now' : getStatus('serviceStatus', s.status).label);
+    const sub = sn
+      ? `Snoozed thru ${esc(fmtShortDate(sn))} · was ${esc(svcText(s))} · every ${s.intervalHours} HRS`
+      : `Every ${s.intervalHours} HRS${last ? ` · last ${esc(fmtShortDate(last.date))} @ ${num(last.hours)} HRS` : ' · never serviced'}`;
+    return `<div class="svc-task">
+      <div class="svc-task-top">
+        <button class="pill c-${pillColor} js-svc-complete" data-unit="${u.unitId}" data-task="${s.taskId}" data-tip="${washReq ? 'Log the wash as done' : 'Log a completion'}" style="min-width:78px;justify-content:center">${esc(pillLabel)}</button>
+        <span class="svc-name">${esc(s.name)}</span>
+        <span class="spacer"></span>
+        ${washReq && !sn ? `<span class="pill c-blue" data-r="R3b"><span class="t">Wash Requested</span></span>` : sn ? '' : `<b>${esc(svcText(s))}</b>`}
+        ${sourceLinkBtn(s.sourceUrl, s.source)}
+        <button class="pill ghost js-svc-snooze" data-r="R18" data-rec="${u.unitId}" data-task="${s.taskId}" data-snoozed="${sn ? 1 : 0}" data-tip="${sn ? 'Snoozed — wake or extend' : 'Quiet this alarm for a while'}">${sn ? 'Wake' : 'Snooze'}</button>
+      </div>
+      <div class="svc-task-sub muted">${sub}</div>
+    </div>`;
+  }).join('');
+  const more = rows.length > SVC_LIST_CAP
+    ? `<div class="kv" style="justify-content:center">${ghostPill(expanded ? 'Show fewer' : `Show all ${rows.length} tasks`, { js: 'js-svc-expand', data: { rec: u.unitId } })}</div>`
+    : '';
+  // section tint = worst NON-wash, NON-snoozed task (snooze silences the section too — Jac's law)
+  const worst = rows.find((s) => s.taskId !== 'svc-wash' && !svcSnoozedUntil(u, s.taskId)) || rows[0];
+  const tint = worst && ['red', 'yellow', 'green'].includes(worst.color) ? ` sec-${worst.color}` : '';
+  return `<div class="section${tint}"><h4>${esc(title)}</h4><div class="hlog">${list}</div>${more}</div>`;
+}
 /* ITEM BALANCE — every invoice line item carries its own balance. A partial
    payment is assigned per line item through the payment popup; allocations are
    PRE-TAX dollars keyed per LINE (a rental + its transport share a `ref`, so the
@@ -6480,7 +6707,7 @@ const DETAIL = {
       ${efld('units', u, 'unitId', 'serial', 'Add serial', { pfx: 'S/N' })}
       ${efld('units', u, 'unitId', 'year', 'Year', { type: 'number' })}
       ${efld('units', u, 'unitId', 'make', 'Make')}
-      ${efld('units', u, 'unitId', 'model', 'Model')}
+      ${efld('units', u, 'unitId', 'modelId', 'Model', { editKind: 'unitModel', admin: true, link: true, fmt: (id) => IDX.model.get(id)?.name || 'Unknown model' })}
       ${efld('units', u, 'unitId', 'weight', 'Weight')}
       <div class="kv"><span class="v inline-edit" data-edit="unitHours" data-rec="${u.unitId}">${num(u.currentHours)} HRS</span></div>
     </div></div>`;
@@ -6544,6 +6771,16 @@ const DETAIL = {
     const invested = Number(u.trueCost) || Number(u.purchasePrice) || 0;
     const profit = totalRev - repair - invested;
     const roi = invested ? Math.round((profit / invested) * 100) : null;
+    /* Sell a unit (spec units-fleet D3): a dedicated capture flow instead of a bare
+       Sold flip — money-gated (D2: sale price is margin-sensitive), so a non-money
+       login sees fleet status but never the Sell action or a sale figure. Once sold,
+       the realized sale price/date show here in place of the Sell action. */
+    const sellAction = (canMoney() && u.fleetStatus !== 'Sold')
+      ? actionPill('commit', 'Sell', { js: 'js-open-sell', data: { rec: u.unitId } })
+      : '';
+    const soldInfo = (u.fleetStatus === 'Sold' && canMoney() && (u.salePrice != null || u.saleDate))
+      ? `${u.salePrice != null ? kv(money(u.salePrice), { pfx: 'Sale price', derived: true }) : ''}${u.saleDate ? kv(yr(u.saleDate), { pfx: 'Sale date', derived: true }) : ''}`
+      : '';
     const investment = `<div class="section"><h4>Investment</h4>
       <div class="split">
         <div class="side">
@@ -6551,6 +6788,7 @@ const DETAIL = {
           ${efld('units', u, 'unitId', 'purchaseDate', 'Purchase date', { type: 'date', sfx: 'purchased', fmt: yr })}
           ${efld('units', u, 'unitId', 'trueCost', 'True cost', { type: 'number', sfx: 'true cost', fmt: money, money: true })}
           ${efld('units', u, 'unitId', 'purchaseHours', 'Hours at purchase', { type: 'number', sfx: 'at purchase', fmt: (v) => num(v) + ' HRS' })}
+          ${soldInfo}
         </div>
         <div class="side r">
           ${kv(money(totalRev), { pfx: 'Total Revenue', derived: true })}
@@ -6559,7 +6797,7 @@ const DETAIL = {
           ${kv(`${money(profit)}${roi != null && canMoney() ? ` · (${roi}%)` : ''}`, { pfx: 'Profit', derived: true })}
         </div>
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:8px">${gatePill('unitFleetStatus', u.fleetStatus, 'js-fleetstatus', { rec: u.unitId })}</div></div>`;
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">${sellAction}${gatePill('unitFleetStatus', u.fleetStatus, 'js-fleetstatus', { rec: u.unitId })}</div></div>`;
     /* INSPECTION — live condition + wash toggles, timestamp in the header */
     const li2 = latestInspForUnit(u.unitId);
     const stampDate = u.condAt || li2?.date || '';
@@ -6586,6 +6824,7 @@ const DETAIL = {
         ${li2?.description ? `<div class="kv" style="justify-content:center"><span class="muted">Latest:</span> <span style="font-size:12.5px">${esc(li2.description)}</span></div>` : ''}
       </div>
     </div>`;
+    const svcSec = serviceTasksHtml(u);   // Shop retirement (Jac 2026-07-07): services live ON the unit
     const woSecs = openWOsForUnit(u.unitId).map(woSectionHtml).join('');
     const notes = notesSection('units', u, 'unitId');
     const hchips = [
@@ -6599,6 +6838,7 @@ const DETAIL = {
       <div class="detail-head"><span class="d-title">${esc(u.name)}</span></div>
       ${notes.top}
       ${inspSec}
+      ${svcSec}
       ${woSecs}
       <div class="add-row">${addBtn('Work Order', { js: 'js-new-wo-unit', link: true, data: { rec: u.unitId } })}</div>
       <div class="detail-cols">${specs}${gps}</div>
@@ -6811,7 +7051,7 @@ const DETAIL = {
     const actEntry = state.actOpen === c.customerId
       ? `<div class="act-entry"><input class="act-in js-act-in" data-rec="${c.customerId}" placeholder="${state.actMode === 'schedule' ? 'Schedule an action…' : 'Log an action…'}" /></div>`
       : '';
-    const hit = (a, strip) => `<div class="hitem"><span class="htime">${esc(fmtShortDate(a.when))}</span><span>${esc(strip ? a.text.replace(/^Scheduled:\s*/, '') : a.text)}</span></div>`;
+    const hit = (a, strip) => `<div class="hitem"><span class="htime">${esc(fmtShortDate(a.when))}</span><span>${esc(histText(strip ? a.text.replace(/^Scheduled:\s*/, '') : a.text))}</span></div>`;
     const acts = (c.activityLog || []).filter((a) => !/^Scheduled:/.test(a.text)).map((a) => hit(a)).join('');
     const scheds = (c.activityLog || []).filter((a) => /^Scheduled:/.test(a.text)).map((a) => hit(a, true)).join('');
     const activity = acts || scheds ? `<div class="act-cols"><div class="act-col">${acts}</div><div class="act-col">${scheds}</div></div>` : '';
@@ -6864,6 +7104,25 @@ const DETAIL = {
       ${(c.lostDemand || []).length ? kv(`${(c.lostDemand || []).length}`, { sfx: 'lost-demand asks', derived: true }) : ''}
       ${c.description ? kv(c.description, { wrap: true }) : ''}
     </div></div>`;
+    // MODELS (Jac 2026-07-07): the category derives which models a unit can pick —
+    // real per-model maintenance schedules live here, editable via the modelSchedule popup.
+    const catModels = (DATA.models || []).filter((mo) => mo.categoryId === c.categoryId);
+    // Duplicate (Jac 2026-07-07): a per-row R18 icon-only action reuses the SAME inline
+    // "+ Add Model" input below — js-model-dup just pre-arms it with a source to clone
+    // from (cs.dupFrom) rather than opening a separate popup.
+    const modelRows = catModels.map((mo) => `<div class="kv unit-line">${linkName(mo.name, { js: 'js-model-open', data: { rec: mo.modelId } })}${badge(mo.tasks.length + (mo.tasks.length === 1 ? ' task' : ' tasks'))}${ghostPill('Duplicate', { js: 'js-model-dup', data: { rec: mo.modelId }, icon: I.copy })}</div>`).join('');
+    const dupSrc = cs?.dupFrom ? IDX.model.get(cs.dupFrom) : null;
+    const addModelRow = cs?.addingModel
+      ? `<div class="kv pillrow" style="gap:7px">
+          ${dupSrc ? `<span class="muted" style="font-size:11px;width:100%">Duplicating ${esc(dupSrc.name)} — rename below</span>` : ''}
+          <input class="lf-in js-am-name" placeholder="Model name" style="flex:1" value="${dupSrc ? esc(dupSrc.name + ' copy') : ''}">
+          ${ghostPill('Cancel', { js: 'js-am-cancel' })}${actionPill('commit', 'Add', { js: 'js-am-save', data: { rec: c.categoryId } })}
+        </div>`
+      : kvPills(addBtn('Model', { line: true, js: 'js-add-model', h: 26, data: { rec: c.categoryId } }));
+    const models = `<div class="section"><h4>Models</h4><div class="fieldstack">
+      ${modelRows || '<span class="muted" style="font-size:12px">No models yet — units in this category use the generic service schedule.</span>'}
+      ${addModelRow}
+    </div></div>`;
     // every unit in the category — R2 linked pill + R4 derived status pill (Jac 2026-06-12)
     const catUnits = DATA.units.filter((u) => u.categoryId === c.categoryId);
     const unitRows = catUnits.map((u) => {
@@ -6898,6 +7157,7 @@ const DETAIL = {
       ${bars}
       ${notes.top}
       <div class="detail-cols">${pricing}${fleet}</div>
+      ${models}
       ${investment}
       ${notes.bottom}
       ${historySection('categories', c, cs)}
@@ -7042,26 +7302,11 @@ const DETAIL = {
        pill + hours live in the title; Reference moved into the completion popup). The
        STATUS pill gates the popup; each task shows its last service date+hours. ── */
   serviceOrders: (u, cs) => {
-    const all = unitServiceRows(u);
-    const wash = all.find((s) => s.taskId === 'svc-wash');     // Wash pinned to the top of the list
-    const rows = wash ? [wash, ...all.filter((s) => s.taskId !== 'svc-wash')] : all;
-    const top = topServiceForUnit(u) || rows[0];
+    // Shop retirement (Jac 2026-07-07): the task list now lives in serviceTasksHtml
+    // (shared with the unit detail). This renderer dies with the Shop card.
+    const top = topServiceForUnit(u) || unitServiceRows(u)[0];
     const ar = activeRentalForUnit(u.unitId);
-    const lastFor = (taskId) => { const ls = (u.serviceLog || []).filter((l) => l.taskId === taskId); return ls.length ? ls[ls.length - 1] : null; };
-    const list = rows.map((s) => {
-      const last = lastFor(s.taskId);
-      const washReq = s.taskId === 'svc-wash' && u.washRequested;
-      return `<div class="svc-task">
-        <div class="svc-task-top">
-          <button class="pill c-${washReq ? 'blue' : s.color} js-svc-complete" data-unit="${u.unitId}" data-task="${s.taskId}" data-tip="${washReq ? 'Log the wash as done' : 'Log a completion'}" style="min-width:78px;justify-content:center">${esc(washReq ? 'Wash Now' : getStatus('serviceStatus', s.status).label)}</button>
-          <span class="svc-name">${esc(s.name)}</span>
-          <span class="spacer"></span>
-          ${washReq ? `<span class="pill c-blue" data-r="R3b"><span class="t">Wash Requested</span></span>` : `<b>${esc(svcText(s))}</b>`}
-        </div>
-        <div class="svc-task-sub muted">Every ${s.intervalHours} HRS${last ? ` · last ${esc(fmtShortDate(last.date))} @ ${num(last.hours)} HRS` : ' · never serviced'}</div>
-      </div>`;
-    }).join('');
-    const tasks = `<div class="section"><h4>Service Tasks</h4><div class="hlog">${list}</div></div>`;
+    const tasks = serviceTasksHtml(u, { title: 'Service Tasks' });
     const headTop = top ? (top.washRequested ? `<span class="pill c-blue">Wash Requested</span>` : `<span class="pill c-${top.color}">${esc(getStatus('serviceStatus', top.status).label)}</span>`) : '';
     const notes = notesSection('units', u, 'unitId');
     return `<div class="detail">
@@ -7128,7 +7373,7 @@ function historySection(card, rec, cs, chips) {
   const q = (cs?.historySearch || '').trim().toLowerCase();
   const items = q ? base.filter((h) => (h.search || `${h.when} ${h.text}`).toLowerCase().includes(q)) : base;
   const log = items.length
-    ? items.map((h) => `<div class="hitem"><span class="htime">${esc(h.when)}</span>${h.pill || ''}<span>${esc(h.text)}</span>${h.by ? `<span class="hby">${esc(h.by)}</span>` : ''}</div>`).join('')
+    ? items.map((h) => `<div class="hitem"><span class="htime">${esc(h.when)}</span>${h.pill || ''}<span>${esc(histText(h.text))}</span>${h.by ? `<span class="hby">${esc(h.by)}</span>` : ''}</div>`).join('')
     : `<div class="muted" style="font-size:12px">${q || chip ? 'No matching history.' : 'No history yet.'}</div>`;
   const chipBar = chips?.length
     ? `<div class="hvals">${chips.map((c) => `<button class="hv ${c.cls || ''} ${cs?.histKind === c.kind ? 'on' : ''} js-hchip" data-card="${esc(card)}" data-kind="${esc(c.kind)}">${esc(c.label)}</button>`).join('')}</div>` : '';
@@ -7380,30 +7625,25 @@ function detailTitle(card, rec) {
 /* ════════════════════════════════════════════════════════════════════════
  * APP-18 · 3-COLUMN LAYOUT (display-only shell over the existing cards).
  * Each column paints ONE active "member" card; the rest are a tab/icon away.
- * The 3 shop members (inspections/serviceOrders/workOrders) still render via the
- * single 'shop' engine card with its segment pinned — NO engine/anchor/cascade
- * change. session.cols (set in freshSession) holds the active member per column.
+ * (Shop retirement, Jac 2026-07-07: the left column is Units + Categories —
+ * WO/service/inspection work lives inside each unit's detail view.)
+ * session.cols (set in freshSession) holds the active member per column.
  * ════════════════════════════════════════════════════════════════════════ */
 const GRID_CARD_BY_ID = Object.fromEntries(GRID_CARDS.map((c) => [c.id, c]));
 const MEMBER_TITLE = (() => {
-  const m = {}; GRID_CARDS.forEach((c) => { m[c.id] = c.title; });
-  SHOP_SEGMENTS.forEach((s) => { m[s.id] = s.label; }); m.calendar = 'Calendar'; return m;
+  const m = {}; GRID_CARDS.forEach((c) => { m[c.id] = c.title; }); m.calendar = 'Calendar'; return m;
 })();
 const memberIcon = (m) => (m === 'calendar' ? I.grid : (CARD_ICON[m] || ''));
 // Tab row count for a member (search-aware; mirrors the card's own count chip).
 function memberCount(member, session) {
   if (member === 'calendar') return dispatchEvents().length;
-  if (SHOP_TYPES.includes(member)) { try { return (shopItemsByType(session)[member] || []).length; } catch { return 0; } }
   try { let r = listFor(member, session); if (member === 'units') r = unitsVisible(r, session.cards.units); if (member === 'rentals') r = rentalsVisible(r, session, session.cards.rentals); return r.length; } catch { return 0; }
 }
-/** How many Shop items in this view NEED work — drives the red alert on the tab:
- *  pending inspections, open work orders, overdue/wash-requested services. */
-function shopAlertCount(member, session) {
-  let items = []; try { items = shopItemsByType(session)[member] || []; } catch { return 0; }
-  if (member === 'inspections') return items.filter((n) => !inspComplete(n)).length;
-  if (member === 'workOrders') return items.filter((w) => w.phase !== 'Complete' && !w.cancelled).length;
-  if (member === 'serviceOrders') return items.filter((u) => { const s = topServiceForUnit(u); return u.washRequested || (s && s.remaining < 0); }).length;
-  return 0;
+/** How many units NEED the crew — drives the red alert on the Units tab (the
+ *  retired Shop wrench's signal, moved home): Not Ready, wash requested, or a
+ *  past-due service on any Active unit. */
+function unitsAlertCount() {
+  try { return DATA.units.filter((u) => u.fleetStatus === 'Active' && (u.inspectionStatus === 'Not Ready' || u.washRequested || ((topServiceForUnit(u) || {}).remaining < 0))).length; } catch { return 0; }
 }
 /* ── Wave 2 (the modes died): the side lists stay FULL while the anchored
    Quote/invoice still needs links, so there's always something to DRAG on.
@@ -7467,38 +7707,28 @@ function colTabsEl(col, active, session) {
 /* The coltab buttons themselves (no wrapper) — shared by the desktop in-card tab row
    (colTabsEl) AND the phone footer (mobileDockEl), so a toggle looks identical in both. */
 function colTabButtonsHtml(col, active, session) {
-  // The 3 shop sub-types (inspections/workOrders/serviceOrders) fold into ONE wrench
-  // "Shop" toggle that opens the shop graph; the old Service-heart toggle + Not-Ready
-  // chip are absorbed into it (the graph's Services + Not Ready bars).
+  // Shop retirement: the wrench toggle is gone — the Units tab carries its red
+  // "needs attention" alert (unitsAlertCount) and the worklist graph lives on
+  // the Units card itself.
   const coltabBtn = (m, on, { alert = false, count = null } = {}) =>
     `<button class="coltab js-coltab${on ? ' on' : ''}${alert ? ' alert' : ''}" data-col="${col.id}" data-member="${m}" data-tip="${esc(MEMBER_TITLE[m] || m)}${alert ? ' — needs attention' : ''}">`
       + `<span class="ct-ico">${memberIcon(m)}</span>`
       + `<span class="ct-lbl">${esc(MEMBER_TITLE[m] || m)}</span>`
       + (count != null ? `<span class="ct-n">${count}</span>` : '')
       + `</button>`;
-  let out = col.members.filter((m) => !SHOP_TYPES.includes(m)).map((m) => coltabBtn(m, m === active, { count: memberCount(m, session) })).join('');
-  if (col.members.some((m) => SHOP_TYPES.includes(m))) {   // this column owns the shop → append the wrench Shop toggle
-    const shopActive = active === 'shop' || SHOP_TYPES.includes(active);
-    const alertN = SHOP_TYPES.reduce((a, ty) => a + shopAlertCount(ty, session), 0);   // total items needing the crew
-    out += coltabBtn('shop', shopActive, { alert: alertN > 0, count: alertN });
-  }
-  return out;
+  return col.members.map((m) => coltabBtn(m, m === active, { count: memberCount(m, session), alert: m === 'units' && unitsAlertCount() > 0 })).join('');
 }
 /* Jac 2026-06-12: the nav cluster (List / Anchor / New tab) rides the TOGGLE row,
    not the title row — the item header gets room to breathe and head gates align right. */
 function colActionsHtml(active, session) {
   if (active === 'calendar' || state.searchMode) return '';
-  const ec = SHOP_TYPES.includes(active) ? 'shop' : active;
-  const cs = session.cards[ec];
-  if (!cs || cs.mode !== 'standard' || cs.recId == null || (ec === 'shop' && !cs.recType)) return '';
-  const anchored = session.anchor?.card === ec;
-  const dt = ec === 'shop' ? ` data-type="${esc(cs.recType)}"` : '';
-  return `<div class="c-actions"><button class="hbtn js-tolist" data-tip="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}"${dt} data-tip="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}"${dt} data-tip="New tab (+)">${I.plus}</button></div>`;
+  const cs = session.cards[active];
+  if (!cs || cs.mode !== 'standard' || cs.recId == null) return '';
+  const anchored = session.anchor?.card === active;
+  return `<div class="c-actions"><button class="hbtn js-tolist" data-tip="${anchored ? 'Browse list (pick another to anchor)' : 'Back to list'}">${I.list}</button><button class="hbtn js-anchor" data-rec="${esc(cs.recId)}" data-tip="Anchor (⊞)">${I.circle}</button><button class="hbtn js-newtab" data-rec="${esc(cs.recId)}" data-tip="New tab (+)">${I.plus}</button></div>`;
 }
 function memberCardEl(member, session) {
   if (member === 'calendar') return calendarCardEl(session);
-  if (member === 'shop') return shopCardEl({ id: 'shop', title: 'Shop' }, session);   // the wrench "Shop" member = the COMBINED view (segment bar + 3-bar front-page graph), no forcedSeg
-  if (SHOP_TYPES.includes(member)) return shopCardEl({ id: 'shop', title: MEMBER_TITLE[member] }, session, member);
   return cardEl(GRID_CARD_BY_ID[member], session);
 }
 function calendarCardEl(session) {
@@ -7513,7 +7743,6 @@ function calendarCardEl(session) {
 
 function cardEl(cardDef, session) {
   const card = cardDef.id;
-  if (card === 'shop') return shopCardEl(cardDef, session);   // merged WO + Service + Inspections
   const cs = session.cards[card];
   const anchored = session.anchor?.card === card;
   const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === card ? ' card-focus' : ''));
@@ -7582,7 +7811,8 @@ function listView(cardDef, session) {
   wrap.appendChild(bar);
   // §13.4 — Graph carousel: an interactive panel ABOVE the list (the list renders below,
   // filtered by the chart's g-tagged search terms). Legacy cards still full-replace the list.
-  if (cs.graphView && !state.searchMode && RUS_TABS[card]) { const g = el('div', 'rus'); g.innerHTML = rusHtml(card, card, cs); wrap.appendChild(g); }   // §13.7 gauge strip — this card's Round-Up charts, 25% of the column
+  if (cs.graphView && !state.searchMode && graphViewsFor(card)) { const g = el('div', 'gv-panel'); g.innerHTML = graphPanelHtml(card, card, cs); wrap.appendChild(g); }   // units → the stackbars worklist (mechanic front page, ex-Shop)
+  else if (cs.graphView && !state.searchMode && RUS_TABS[card]) { const g = el('div', 'rus'); g.innerHTML = rusHtml(card, card, cs); wrap.appendChild(g); }   // §13.7 gauge strip — this card's Round-Up charts, 25% of the column
   // Phase 4 — Units narrowed to an invoice's linked units (Invoice +WO) → removable chip
   if (card === 'units' && state.unitPick) {
     const n = state.unitPick.ids.length;
@@ -7661,202 +7891,7 @@ function listView(cardDef, session) {
 const PLUS_NEW = new Set(['rentals', 'invoices', 'customers']);
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-19 · §10 SHOP CARD — merged Work Orders + Service Orders + Inspections
-   ────────────────────────────────────────────────────────────────────────
-   ITERATE HERE: this whole block is the Shop card's presentation. The grid
-   plumbing (anchor/cascade/tabs/standard-mode) routes through it via the
-   `recType` thread, so alternate Shop layouts only need these functions.
-   ════════════════════════════════════════════════════════════════════════ */
-
-/** Active queue vs completed archive. Default = the work queue (pending
- *  inspections, open WOs, all services). The "Completed" sort flips to the
- *  archive: resolved inspections + completed WOs (services aren't archived here). */
-function shopItemMode(ty, rec, complete) {
-  if (ty === 'inspections') return complete ? inspComplete(rec) : !inspComplete(rec);
-  if (ty === 'workOrders') return complete ? (rec.phase === 'Complete' || rec.cancelled) : (rec.phase !== 'Complete' && !rec.cancelled);   // cancelled = terminal: lives in the "done" list (findable + reopenable), out of "open"
-  if (ty === 'serviceOrders') return !complete;
-  return true;
-}
-/** The in-scope records for each Shop sub-type (cascade subset / search / all),
- *  filtered to the active queue or the completed archive. */
-function shopItemsByType(session) {
-  const complete = session.cards.shop.sort.field === 'complete';
-  const out = {};
-  const q = state.query.trim().toLowerCase();
-  const browsing = session.anchor?.card === 'shop' && session.cards.shop.mode === 'list';   // js-tolist "browse"
-  for (const ty of SHOP_TYPES) {
-    let recs;
-    if (state.searchMode) {
-      const blobKey = ty === 'serviceOrders' ? 'units' : ty;
-      recs = collection(ty).filter((rec) => matchesSearch(IDX.search.get(blobKey + ':' + idOf(ty, rec))));
-    } else if (browsing) {
-      recs = collection(ty);
-    } else if (session.anchor && session.cascade) {
-      recs = session.cascade[ty] || [];
-    } else {
-      recs = collection(ty);
-    }
-    out[ty] = recs.filter((rec) => shopItemMode(ty, rec, complete));
-  }
-  return out;
-}
-/** Urgency score for the default Shop sort (higher = needs attention sooner). */
-function shopUrgency(it) {
-  const r = it.rec;
-  if (it.type === 'inspections') return r.checklist === 'Fail' ? 90 : 20;
-  if (it.type === 'workOrders') return r.phase === 'Complete' ? 10 : (r.woType === 'Failed' ? 95 : 60);
-  if (it.type === 'serviceOrders') { if (r.washRequested) return 85; const s = topServiceForUnit(r); return s ? (s.status === 'past-due' ? 100 : 70) : 5; }
-  return 0;
-}
-function shopSort(items, sort) {
-  const val = (it) => {
-    const r = it.rec;
-    switch (sort.field) {
-      case 'urgency': return shopUrgency(it);
-      case 'date': case 'complete': return parseISO(r.date)?.getTime() || 0;
-      case 'unit': return (IDX.unit.get(r.unitId)?.name || '').toLowerCase();
-      case 'type': return it.type;
-      default: return shopUrgency(it);
-    }
-  };
-  const dir = sort.dir === 'desc' ? -1 : 1;
-  return [...items].sort((a, b) => { const va = val(a), vb = val(b); return va < vb ? -dir : va > vb ? dir : 0; });
-}
-
-function shopCardEl(cardDef, session, forcedSeg) {
-  const cs = session.cards.shop;
-  const anchored = session.anchor?.card === 'shop';
-  const byType = shopItemsByType(session);
-  const total = forcedSeg ? (byType[forcedSeg] || []).length : SHOP_TYPES.reduce((a, ty) => a + byType[ty].length, 0);
-  const node = el('div', 'card' + (anchored ? ' anchored' : '') + (state.searchMode ? ' search-glow' : '') + (state.focusedCard === 'shop' ? ' card-focus' : ''));
-  node.dataset.card = 'shop';
-
-  const inStandard = !state.searchMode && cs.mode === 'standard' && cs.recId != null && cs.recType && !cs.graphView;
-  // List mode → no header (column tab names it). Standard → slim header: record name
-  // (hidden when anchored, since the item tab shows it) + actions. (#2.3)
-  if (inStandard) {
-    const rec = recOf(cs.recType, cs.recId);
-    const nm = rec ? esc(detailTitle(cs.recType, rec) || MEMBER_TITLE[cs.recType] || cardDef.title) : '';
-    const head = el('div', 'card-head');
-    head.innerHTML = `
-      <span class="c-titlecard"><span class="c-icon">${CARD_ICON[cs.recType] || CARD_ICON.shop}</span><span class="c-title">${nm}</span></span>`;
-    node.appendChild(head);
-  }
-
-  const body = el('div', 'card-body');
-  if (inStandard) {
-    const rec = recOf(cs.recType, cs.recId);
-    body.innerHTML = rec && DETAIL[cs.recType] ? DETAIL[cs.recType](rec, cs) : '<div class="empty">Record not found.</div>';
-  } else {
-    body.appendChild(shopListView(session, byType, forcedSeg));
-  }
-  node.appendChild(body);
-  return node;
-}
-
-// §13.4 — a shop row matches like rowMatches (col terms OR within a column, AND across
-// columns, NOT excludes) but resolves each item by its own shop type + the
-// serviceOrders→units search blob. Lets the graph carousel's col-tagged terms filter the
-// shop list (the old path was blob-only and ignored col terms).
-function shopItemMatches(it, query, terms) {
-  const card = it.type, rec = it.rec, terms2 = dateScopedTerms(card, terms || []);   // §5.4d per-type date scoping (Shop mixes WOs/inspections with date-less types)
-  const byCol = {};
-  for (const t of terms2) { if (!t.col) continue; if (t.neg) { if (totColMatch(card, rec, t.col, t.value)) return false; } else (byCol[t.col] = byCol[t.col] || []).push(t.value); }
-  for (const col in byCol) { if (!byCol[col].some((v) => totColMatch(card, rec, col, v))) return false; }
-  return blobMatches(IDX.search.get((card === 'serviceOrders' ? 'units' : card) + ':' + idOf(card, rec)), query, terms2.filter((t) => !t.col));
-}
-
-function shopListView(session, byType, forcedSeg) {
-  const cs = session.cards.shop;
-  const gsrc = forcedSeg || (cs.segment && cs.segment !== 'all' ? cs.segment : 'shop');   // §13.4 the view source: a pinned tab or the active segment ('shop' = combined 'all')
-  gvSyncClosed(gsrc, cs);   // graph closed but g-terms linger → save + drop before the bar's pills render
-  const wrap = el('div');
-  const counts = { all: SHOP_TYPES.reduce((a, ty) => a + byType[ty].length, 0) };
-  SHOP_TYPES.forEach((ty) => { counts[ty] = byType[ty].length; });
-
-  // segment control — hidden when the column already pins a single type via its tab
-  if (!forcedSeg) {
-    const segbar = el('div', 'shopbar');
-    segbar.innerHTML = SHOP_SEGMENTS.map((s) => `<button class="shop-seg ${cs.segment === s.id ? 'on' : ''} js-shopseg" data-seg="${s.id}">${esc(s.label)}<span class="seg-n">${counts[s.id] || 0}</span></button>`).join('');
-    wrap.appendChild(segbar);
-  }
-
-  // search + sort (reuses the standard list-bar chrome)
-  const sf = SORT_FIELDS.shop; const curField = sf.find((f) => f.field === cs.sort.field) || sf[0];
-  // a Shop sub-type maps straight to a CARD_COLUMNS entity, so its Board View just
-  // opens that entity ('all' has no single shape → default to Work Orders).
-  const boardCard = forcedSeg || (cs.segment !== 'all' ? cs.segment : 'workOrders');
-  const bar = el('div', 'listbar');
-  const sterms = cs.filterTerms || [];
-  bar.innerHTML = `
-    <button class="bv-btn js-cardgraph${cs.graphView ? ' on' : ''}" data-card="shop" data-src="${esc(gsrc)}" data-tip="${cs.graphView ? 'Back to list' : 'Graph view'}">${I.graph}</button>
-    <div class="mini-searchwrap${sterms.length ? ' has-terms' : ''}${cs.search.trim() || sterms.length ? ' has-query' : ''}">
-      ${sterms.map((ft, i) => filterTermPill(ft, i, 'shop')).join('')}
-      <input class="mini-search" placeholder="${sterms.length ? 'Add filter — Enter to pin…' : 'Search shop…'}" value="${esc(cs.search)}" data-card="shop" />
-    </div>
-    <div class="sort">
-      <button class="sortbtn js-sortmenu" data-card="shop">${esc(curField.label)} ${I.chev}</button>
-      <button class="dir js-sortdir" data-card="shop"><span class="${cs.sort.dir === 'asc' ? 'on' : ''}">▲</span><span class="${cs.sort.dir === 'desc' ? 'on' : ''}">▼</span></button>
-    </div>`;
-  wrap.appendChild(bar);
-
-  // §13.4 — Graph carousel. Segment tabs stay visible; a specific segment shows its
-  // interactive carousel ABOVE the list (list filters to the graph terms below); the
-  // 'all' overview (and column-pinned shop tabs) keep the legacy combined dashboard.
-  if (cs.graphView && !state.searchMode) {
-    if (graphViewsFor(gsrc)) { const g = el('div', 'gv-panel'); g.innerHTML = graphPanelHtml('shop', gsrc, cs); wrap.appendChild(g); }   // 'all' → the stackbars worklist (mechanic landing) — untouched
-    else if (RUS_TABS[gsrc]) { const g = el('div', 'rus'); g.innerHTML = rusHtml('shop', gsrc, cs); wrap.appendChild(g); }   // §13.7 — a segment's gauge strip
-    else { cs.graphView = false; gvStripTerms(cs); }
-  }
-
-  // items for the active segment (a column tab pins forcedSeg)
-  const segActive = forcedSeg || cs.segment;
-  let items = segActive === 'all'
-    ? SHOP_TYPES.flatMap((ty) => byType[ty].map((rec) => ({ type: ty, rec })))
-    : byType[segActive].map((rec) => ({ type: segActive, rec }));
-  if (cs.search.trim() || (cs.filterTerms || []).length) {
-    items = items.filter((it) => shopItemMatches(it, cs.search, cs.filterTerms));
-  }
-  items = shopSort(items, cs.sort);
-
-  const list = el('div', 'list');
-  if (!items.length) {
-    // creation lives in ONE place — the header + New menu (no per-card +New)
-    list.appendChild(el('div', 'empty', `No shop items${session.anchor ? ' related' : ' — use <b>+ New</b> above'}.`));
-  } else {
-    appendWindowed(list, items, cs, 'shop', (it) => list.appendChild(shopRowEl(it.type, it.rec)));
-  }
-  wrap.appendChild(list);
-  return wrap;
-}
-
-/** A Shop list row = the entity's own list row + a small type glyph on the left. */
-/** The status color that tints a Shop row, so the user sees at a glance what each
- *  item needs: inspection result (Not Ready=yellow…), WO phase/bottleneck (Part
- *  Ordered=blue…), or service urgency (past-due=red…). */
-function shopRowColor(type, rec) {
-  if (type === 'inspections') return inspResult(rec).color;
-  if (type === 'workOrders') return getStatus('woPhase', rec.phase).color;
-  if (type === 'serviceOrders') { if (rec.washRequested) return 'blue'; const s = topServiceForUnit(rec); return s ? s.color : 'green'; }
-  return 'gray';
-}
-function shopRowEl(type, rec) {
-  const id = idOf(type, rec);
-  const color = shopRowColor(type, rec);
-  const node = el('div', 'row shop-row');
-  node.dataset.card = 'shop'; node.dataset.type = type; node.dataset.rec = id;
-  node.innerHTML = `<div class="row-viz" style="background:linear-gradient(90deg, var(--${color}-bg), transparent 62%)"></div>
-    <div class="shop-type" style="color:var(--${color})" data-tip="${esc(SHOP_SEGMENTS.find((s) => s.id === type)?.label || type)}">${(type === 'inspections' && !inspComplete(rec)) ? CARD_ICON.inspectionsPending : CARD_ICON[type]}</div>
-    <div class="r-actions">
-      <button class="rbtn js-roweye${state.previewsOn ? '' : ' off'}" data-tip="${state.previewsOn ? 'Hover: preview · Click: previews OFF app-wide' : 'Previews are OFF — click to turn on'}">${state.previewsOn ? I.eye : I.eyeOff}</button>
-      <button class="rbtn js-newtab" data-type="${type}" data-rec="${id}" data-tip="Open in new tab (+)">${I.plus}</button>
-    </div>
-    <div class="row-content">${rowInnerHTML(type, rec)}</div>`;
-  return node;
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   APP-20 · §11 HEADER, KPI & BOTTOM BAR
+   APP-19 · §11 HEADER, KPI & BOTTOM BAR
    ════════════════════════════════════════════════════════════════════════ */
 /** Apple-style band coloring (§11): 0-25 red · 25-50 orange · 50-75 yellow ·
  *  75-100 green · 95-100 glowing green. */
@@ -7981,7 +8016,7 @@ const KPI_HELP = {
 };
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-21 · §11b KPI METRIC ENGINE — admin-definable KPIs (Settings → KPIs & Rings).
+   APP-20 · §11b KPI METRIC ENGINE — admin-definable KPIs (Settings → KPIs & Rings).
    A SAFE, declarative spec (no eval, Pages-public-safe): a metric is filters +
    an aggregate over an entity allowlist, evaluated by kpiEval(). The shipped 15
    KPIs route through kind:'builtin' (the legacy math above), so with no admin
@@ -8145,7 +8180,7 @@ function scorePop(roleId, ringIdx, delta, unit) {
   btn.appendChild(pop);                                            // floats up + fades (CSS), then removed
   setTimeout(() => pop.remove(), 760);
 }
-/* ════════════ APP-22 · COMING 2026 — the roadmap morale plate (Jac 2026-06-23) ════════
+/* ════════════ APP-21 · COMING 2026 — the roadmap morale plate (Jac 2026-06-23) ════════
    The KPI rings ride behind a blur (the metrics engine isn't wired up yet). Rather
    than leave dead frosted glass up top, the rings wear a "Coming 2026" data-plate
    that opens this roadmap — what's on the docket plus every area of the yard we're
@@ -8304,29 +8339,24 @@ function wrChatResolved(c) {
 function activeMobileCard() {
   const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
   const s = activeSession();
-  const member = (s.cols && s.cols[colObj.id]) || colObj.default;
-  return SHOP_TYPES.includes(member) ? 'shop' : member;
+  return (s.cols && s.cols[colObj.id]) || colObj.default;
 }
-// §M1 — the card the phone is currently showing (the active column's member). Fold the
-// shop sub-types to 'shop' (mirror activeMobileCard) so the footer toggle highlight + the
-// swipe-step index track the single Shop entry instead of failing to match.
+// §M1 — the card the phone is currently showing (the active column's member).
 function currentMobileMember() {
   const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
   const s = activeSession();
-  const m = (s.cols && s.cols[colObj.id]) || colObj.default;
-  return SHOP_TYPES.includes(m) ? 'shop' : m;
+  return (s.cols && s.cols[colObj.id]) || colObj.default;
 }
-// §M1 — the flat card list the phone toggle bar offers. The 3 shop sub-types fold into one
-// 'shop' entry (the wrench), matching desktop; it opens the 3-bar shop graph.
-const MOBILE_CARDS = ['units', 'categories', 'shop', 'rentals', 'calendar', 'customers', 'invoices'];
+// §M1 — the flat card list the phone toggle bar offers. (Shop retirement: the wrench
+// entry is gone — the Units card carries the worklist graph.)
+const MOBILE_CARDS = ['units', 'categories', 'rentals', 'calendar', 'customers', 'invoices'];
 // §M1 — jump straight to a card (flattens the 3-column model on phones): set the column +
-// member, flip the visible column, and show that card's LIST (or, for Shop, its graph).
+// member, flip the visible column, and show that card's LIST.
 function goToCard(member) {
   const s = activeSession(); const col = COLUMN_OF[member];
   if (s.cols && col) s.cols[col] = member;
   const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx;
-  if (member === 'shop') { const sc = s.cards.shop; if (sc) { sc.segment = 'all'; sc.graphView = true; sc.mode = 'list'; sc.recId = null; sc.recType = null; } }
-  else { const mc = s.cards[member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
+  const mc = s.cards[member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; }
   render();
 }
 // §M1 phone footer — ONE card-toggle bar: every card collapsed to its icon, the SELECTED
@@ -8344,7 +8374,7 @@ function mobileDockEl() {
   return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
-   APP-23 · §17 INTERNAL TEAM DOCK (Jac, Phase 7) — a bottom-bar chat built on the Phase-6
+   APP-22 · §17 INTERNAL TEAM DOCK (Jac, Phase 7) — a bottom-bar chat built on the Phase-6
    record comments: a live "what's flagged" feed, a rail of TAGGED elements
    (records / lines / pills / prices) shown as colored tabs you add + remove so a
    thread carries its own context, and role buttons that toggle who's included.
@@ -9378,7 +9408,7 @@ function tabBadge(card, rec) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-24 · §13.3 CARD GRAPH VIEW — RETIRED (2026-07-03). The per-card tile
+   APP-23 · §13.3 CARD GRAPH VIEW — RETIRED (2026-07-03). The per-card tile
    dashboard (pieSVG/gvBars tiles + unit roster) was replaced by the §13.6
    Round-Up reporting board; the chapter number is kept so later APP-NN
    banners keep their ids. See PR #460–#464 + the removal PR for history.
@@ -9421,7 +9451,7 @@ function gvBuckets(days) {
   return out;
 }
 /* ════════════════════════════════════════════════════════════════════════
-   APP-25 · §13.4 GRAPH CAROUSEL (Jac 2026-06-16) — the per-card Graph is a deck of
+   APP-24 · §13.4 GRAPH CAROUSEL (Jac 2026-06-16) — the per-card Graph is a deck of
    INTERACTIVE views stacked ABOVE the list. Chevrons cycle the view; clicking a
    slice / bar / row / number TOGGLES a search entry (the one filtering pathway),
    so the chart drives the rows. Same-column toggles OR together. Each view
@@ -9435,27 +9465,30 @@ function gvSmallest(view) { const live = (view.segs || []).filter((s) => s.count
 // A graph view = { key, title, kind:'pie'|'bars'|'lead'|'nums', color?, segs:[{col,value,label,count,color}] }.
 // Each seg's {col,value} is exactly a filter term, so a click maps straight to the list.
 function graphViewsFor(card) {
-  // §13.6 — per-card views retired; the Round-Up board took over. Only the Shop 'all'
-  // stackbars worklist (the mechanic landing front page) still renders in-column.
-  if (card === 'shop') {
-    // The Shop "front page" (wrench toggle): one stacked-bar view of what needs the
-    // crew's attention right now — Not Ready · Services · Work Orders.
+  // §13.6 — per-card views retired; the Round-Up board took over. Only the UNITS
+  // stackbars worklist (the mechanic landing front page — moved home from the retired
+  // Shop card, Jac 2026-07-07) still renders in-column.
+  if (card === 'units') {
+    // The yard "front page" (Units graph toggle): one stacked-bar view of what needs
+    // the crew's attention right now — Not Ready · Services · Work Orders. Every
+    // segment click filters THE UNITS LIST (g-tagged term), so the chart drives the rows.
     const notReady = DATA.units.filter((u) => u.inspectionStatus === 'Not Ready').length;
     let svcOver = 0, svcDue = 0;
     DATA.units.forEach((u) => { if (u.washRequested) return; const s = topServiceForUnit(u); if (!s) return; if (s.status === 'past-due') svcOver++; else if (s.status === 'due-soon') svcDue++; });
     const woByPhase = {}; DATA.workOrders.filter((w) => w.phase !== 'Complete' && !w.cancelled).forEach((w) => { const ph = w.phase || '—'; woByPhase[ph] = (woByPhase[ph] || 0) + 1; });
-    const woParts = Object.keys(STATUS.woPhase).filter((ph) => ph !== 'Complete' && woByPhase[ph]).map((ph) => ({ col: '__wophase', value: ph, label: getStatus('woPhase', ph).label || ph, count: woByPhase[ph], color: getStatus('woPhase', ph).color || 'gray' }));
+    const woParts = Object.keys(STATUS.woPhase).filter((ph) => ph !== 'Complete' && woByPhase[ph]).map((ph) => ({ col: '__wop', value: ph, label: getStatus('woPhase', ph).label || ph, count: woByPhase[ph], color: getStatus('woPhase', ph).color || 'gray' }));
     const bars = [
-      // Not Ready reuses the established js-notready affordance (route to the Units list,
-      // filtered to Not-Ready) rather than a graph filter — same behavior the old chip had.
-      { label: 'Not Ready', count: notReady, color: 'yellow', js: 'js-notready', tip: `${notReady} Not Ready — open the Units list` },
+      // Not Ready reuses the established js-notready affordance (adds the removable
+      // __cond pill to the Units search bar) rather than a graph filter — same behavior
+      // the old chip had.
+      { label: 'Not Ready', count: notReady, color: 'yellow', js: 'js-notready', tip: `${notReady} Not Ready — filter the list` },
       { label: 'Services', parts: [
         { col: '__svcstat', value: 'past-due', label: 'Overdue', count: svcOver, color: 'red' },
         { col: '__svcstat', value: 'due-soon', label: 'Due', count: svcDue, color: 'yellow' },
       ] },
       { label: 'Work Orders', parts: woParts },
     ];
-    return [{ key: 'shopfront', title: 'Shop', kind: 'stackbars', segs: bars }];
+    return [{ key: 'worklist', title: 'Worklist', kind: 'stackbars', segs: bars }];
   }
   return null;
 }
@@ -9561,7 +9594,7 @@ function uCutoff(p) {
 // compact money for bar tops ($12,345 → $12k) — the full figure rides the hover tip
 const uMoneyK = (v) => v >= 10000 ? '$' + Math.round(v / 1000) + 'k' : v >= 1000 ? '$' + (Math.round(v / 100) / 10) + 'k' : '$' + Math.round(v);
 
-/* §13.6 THE ROUND-UP (Jac 2026-07-03) — part of the APP-25 Graph chapter, not a new chapter.
+/* §13.6 THE ROUND-UP (Jac 2026-07-03) — part of the APP-24 Graph chapter, not a new chapter.
    The clean-sheet full-screen reporting board (spec:
    docs/superpowers/specs/2026-07-03-roundup-reporting-board-design.md). One overlay kind
    ('roundup'): a left TIME SPINE (Today/Wk/Mo/30/60/90/All + a Custom R22 date-range) scoping
@@ -9847,7 +9880,7 @@ function ruWoTrend(rg) {
   const bk = ruBuckets(rg);
   const W = DATA.workOrders.filter((w) => !w.cancelled);
   const vals = bk.map((b) => W.filter((w) => { const d = (w.date || '').slice(0, 10); return d >= b.a && d < b.b; }).length);
-  const rows = bk.map((b, i) => ({ card: 'shop', seg: 'workOrders', col: '__daterange', navValue: b.key, name: `${b.label} — ${vals[i]} opened`, tip: `${b.label} — ${vals[i]} WOs opened` }));
+  const rows = bk.map((b, i) => ({ card: 'units', col: '__worange', navValue: b.key, name: `${b.label} — ${vals[i]} opened`, tip: `${b.label} — ${vals[i]} WOs opened` }));   // Shop retirement: drill to Units with WOs in the bucket
   const chart = vals.some((v) => v > 0) ? ruWireNav(ruLineSVG({ bk, vals, color: '--yellow' }), rows, 'circle') : ruEmpty('No work orders in this window.');
   const open = W.filter((w) => w.phase !== 'Complete');
   const byPhase = {}; open.forEach((w) => { const ph = w.phase || '—'; byPhase[ph] = (byPhase[ph] || 0) + 1; });
@@ -9955,7 +9988,7 @@ function ruWoPhase() {   // open WOs by bottleneck phase — open = inherently c
 function ruSvcUrgency() {   // a unit's service urgency — snapshot by nature
   let over = 0, soon = 0, ok = 0, wash = 0;
   DATA.units.forEach((u) => { if (u.washRequested) { wash++; return; } const s = topServiceForUnit(u); if (!s) { ok++; return; } if (s.status === 'past-due') over++; else if (s.status === 'due-soon') soon++; else ok++; });
-  const mk = (v, lbl, count, color) => ({ name: lbl, count, color, card: 'shop', seg: 'serviceOrders', col: '__svcstat', navValue: v, tip: `${lbl} — ${count} units` });
+  const mk = (v, lbl, count, color) => ({ name: lbl, count, color, card: 'units', col: '__svcstat', navValue: v, tip: `${lbl} — ${count} units` });   // Shop retirement: service urgency filters the Units list
   const segs = [mk('past-due', 'Overdue', over, 'red'), mk('due-soon', 'Due Soon', soon, 'yellow'), mk('on-schedule', 'On Schedule', ok, 'green'), mk('wash', 'Wash', wash, 'blue')];
   if (!DATA.units.length) return ruEmpty('No units yet.');
   return ruDonutSVG({ segs, noun: 'UNITS' });
@@ -10063,7 +10096,7 @@ function ruBilledWos(rg) {   // N8 — WOs billed to a customer, per bucket (cou
   const rows = bk.map((b) => {
     const hit = W.filter((w) => { const d = (w.date || '').slice(0, 10); return d >= b.a && d < b.b; });
     const parts = hit.reduce((a, w) => a + (w.lineItems || []).reduce((x, li) => x + (Number(li.cost) || 0), 0), 0);
-    return { label: b.label, name: `${b.label} — ${hit.length} billed`, value: hit.length, fill: green, card: 'shop', seg: 'workOrders', col: '__daterange', navValue: b.key, tip: `${b.label} — ${hit.length} billed WO${hit.length === 1 ? '' : 's'} · ${money(parts)} in parts` };
+    return { label: b.label, name: `${b.label} — ${hit.length} billed`, value: hit.length, fill: green, card: 'units', col: '__worange', navValue: b.key, tip: `${b.label} — ${hit.length} billed WO${hit.length === 1 ? '' : 's'} · ${money(parts)} in parts` };
   });
   if (!rows.some((r2) => r2.value > 0)) return ruEmpty('No billed work orders in this window.');
   return ruWireNav(ruBarsSVG({ data: rows }), rows);
@@ -10077,8 +10110,8 @@ function ruWorkByRole(rg) {   // N10 — the manager's "Units of Work": complete
   const returned = DATA.rentals.filter((r2) => inR(r2.endDate) && rentalDisplayStatus(r2) === 'Returned').length;
   const collected = DATA.invoices.filter((inv) => inR(inv.date) && invoiceTotals(inv).status === 'Paid').length;
   const rows = [
-    { label: 'WOs Done', name: 'Work orders completed (Mechanic)', value: woDone, card: 'shop', seg: 'workOrders', col: '__wop', navValue: 'Complete', tip: `${woDone} WOs opened in range, now Complete — Mechanic` },
-    { label: 'Inspections', name: 'Inspections performed (M-Tech)', value: insp, card: 'shop', seg: 'inspections', col: '__daterange', navValue: 'range', tip: `${insp} inspections in range — M-Tech` },
+    { label: 'WOs Done', name: 'Work orders completed (Mechanic)', value: woDone, card: 'units', col: '__wop', navValue: 'Complete', tip: `${woDone} WOs opened in range, now Complete — Mechanic` },
+    { label: 'Inspections', name: 'Inspections performed (M-Tech)', value: insp, card: 'units', col: '__insprange', navValue: 'range', tip: `${insp} inspections in range — M-Tech` },
     { label: 'Delivered', name: 'Rentals put on rent (Driver/Yard)', value: delivered, card: 'rentals', col: '__rentrange', navValue: 'range', tip: `${delivered} rentals started in range that went out — Driver/Yard` },
     { label: 'Returned', name: 'Rentals returned (Driver/Yard)', value: returned, card: 'rentals', col: '__rentrange', navValue: 'range', tip: `${returned} rentals returned in range — Driver/Yard` },
     { label: 'Collected', name: 'Invoices collected (Office)', value: collected, card: 'invoices', col: 'invoice', navValue: 'Paid', tip: `${collected} invoices issued in range, paid in full — Office` },
@@ -10210,9 +10243,6 @@ const RUS_TABS = {
   rentals: [{ p: 'bookings', l: 'Bookings' }, { p: 'voided', l: 'Voided' }, { p: 'rev-status', l: 'Revenue' }, { p: 'inv-status', l: 'Invoices' }, { p: 'rent-tiles', l: '#s' }],
   customers: [{ p: 'accounts', l: 'Accounts' }, { p: 'cust-active', l: 'Active' }, { p: 'memberships', l: 'Members' }, { p: 'card-health', l: 'Cards' }, { p: 'top-spend', l: 'Top Spend' }],
   invoices: [{ p: 'balances', l: 'Balances' }, { p: 'net-sales', l: 'Net' }, { p: 'refunds', l: 'Refunds' }, { p: 'aging', l: 'Aging' }, { p: 'top-spend', l: 'Top Spend' }],
-  inspections: [{ p: 'insp-trend', l: 'Inspections' }],
-  workOrders: [{ p: 'wo-trend', l: 'Opened' }, { p: 'wo-phase', l: 'Bottleneck' }, { p: 'billed-wos', l: 'Billed' }],
-  serviceOrders: [{ p: 'svc-urgency', l: 'Urgency' }],
 };
 const RUS_PER_LABEL = { today: 'Td', wk: 'Wk', mo: 'Mo', 30: '30d', 60: '60d', 90: '90d', all: 'All' };
 function rusHtml(card, src, cs) {
@@ -10264,7 +10294,7 @@ function ruMountCharts() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-26 · §12 OVERLAYS & BOARDS — renderOverlay kinds + back-office board popups
+   APP-25 · §12 OVERLAYS & BOARDS — renderOverlay kinds + back-office board popups
    ════════════════════════════════════════════════════════════════════════ */
 let _ovScroll = {}, _ovLastKind = null;   // keep a popup-body's scroll across its OWN re-renders (sign/selfie)
 let _popDrag = { x: 0, y: 0 }, _popDragKind = null;   // drag offset of the open popup; persists across its own re-renders, resets on kind change / close
@@ -10554,6 +10584,7 @@ function buildPopupEl(o, overlay, opts = {}) {
       R9b: flagsStack([flagEl('No Card', 'red', { alert: true })]),
       R22: dateField('exampleDate', ''),
       R24: closeX('', {}),
+      R26: sourceLinkBtn('#', 'Example — john deere 317g SERVICE SHEET.pdf, p.1'),
       R19: '<span class="pill c-blue" style="animation:attnGlow 1.1s ease-in-out infinite;border-radius:10px"><span class="t">+Card</span></span>',
       R20: '<div class="ctx-menu" style="position:static;display:inline-block;min-width:0;box-shadow:none;padding:4px"><button class="dd-item">📋 Copy</button><div class="menu-sep"></div><button class="dd-item">🤠 Ask Mr. Wrangler</button></div>',
       R23: '<span class="pill c-gray" data-tip="The one styled tip"><span class="t">hover me</span></span>',
@@ -10657,23 +10688,70 @@ function buildPopupEl(o, overlay, opts = {}) {
     // Part/Task popup (Jac 2026-06-11): photo + every field optional — anything
     // left empty gets filled by Mr. Wrangler (photo review · cost/url lookup ·
     // hours estimated from the category + industry install standards).
-    const w = IDX.wo.get(o.woId);
-    const li = o.idx != null ? (w?.lineItems || [])[o.idx] : null;
-    const ven = li?.vendorId ? DATA.vendors.find((v) => v.vendorId === li.vendorId) : null;
+    // Jac 2026-07-08 (service-detail-panel): ALSO doubles as the add/edit surface for a
+    // service task's partRefs (o.taskTarget = {unitId,taskId} instead of o.woId) — "this
+    // should nearly already exist because of Work Orders", so it's the same popup/fields,
+    // just saved to a model task's detail.partRefs instead of a WO's lineItems (see
+    // savePartForm). Hours doesn't apply to a parts/filters spec, so it's hidden there.
+    const forTask = !!o.taskTarget;
+    let li = null, pr = null, ven = null;
+    if (forTask) {
+      const tu = IDX.unit.get(o.taskTarget.unitId);
+      const { realTask } = svcRealTask(tu, { taskId: o.taskTarget.taskId });
+      pr = (o.idx != null && realTask?.detail?.partRefs) ? realTask.detail.partRefs[o.idx] : null;
+      ven = pr?.vendorId ? (IDX.vendor.get(pr.vendorId) || DATA.vendors.find((v) => v.vendorId === pr.vendorId)) : null;
+    } else {
+      const w = IDX.wo.get(o.woId);
+      li = o.idx != null ? (w?.lineItems || [])[o.idx] : null;
+      ven = li?.vendorId ? DATA.vendors.find((v) => v.vendorId === li.vendorId) : null;
+    }
+    const rec = pr || li;
     const pop = el('div', 'popup'); pop.style.width = '400px';
-    pop.innerHTML = popupShell({ icon: CARD_ICON.parts || CARD_ICON.workOrders, title: `${li ? 'Edit' : 'Add'} Part / Task`, tag: 'Work order · line',
-      foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', li ? 'Save' : 'Add line', { js: 'js-pf2-save' })}`,
+    pop.innerHTML = popupShell({ icon: CARD_ICON.parts || CARD_ICON.workOrders, title: `${rec ? 'Edit' : 'Add'} Part${forTask ? '' : ' / Task'}`, tag: forTask ? 'Service · part' : 'Work order · line',
+      foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', rec ? 'Save' : (forTask ? 'Add part' : 'Add line'), { js: 'js-pf2-save' })}`,
       body: `
-        ${fileDrop(state.partPhoto || li?.photo ? '✓ photo attached' : 'Add Photo (not required)', { js: 'js-pf2-file', capture: 'environment', done: !!(state.partPhoto || li?.photo), icon: I.camera })}
-        <p class="muted" style="text-align:center;font-size:11.5px;margin:7px 0 10px">✨ Mr. Wrangler will add the parts for you!</p>
-        <input class="lf-in js-pf2-desc" placeholder="Part/Task Name" value="${esc(li?.part || '')}" style="width:100%;margin-bottom:7px">
+        ${fileDrop(state.partPhoto || rec?.photo ? '✓ photo attached' : 'Add Photo (not required)', { js: 'js-pf2-file', capture: 'environment', done: !!(state.partPhoto || rec?.photo), icon: I.camera })}
+        ${forTask ? '' : `<p class="muted" style="text-align:center;font-size:11.5px;margin:7px 0 10px">✨ Mr. Wrangler will add the parts for you!</p>`}
+        <input class="lf-in js-pf2-desc" placeholder="Part/Task Name" value="${esc((forTask ? pr?.name : li?.part) || '')}" style="width:100%;margin-bottom:7px">
+        ${forTask && pr?.oem ? `<div class="muted" style="font-size:11px;margin:-3px 0 7px">OEM ${esc(pr.oem)} · from the manufacturer manual</div>` : ''}
         <div style="display:flex;gap:7px;margin-bottom:7px">
-          <input class="lf-in js-pf2-cost" type="number" min="0" placeholder="$Cost" value="${li?.cost ?? ''}" style="flex:1">
-          <input class="lf-in js-pf2-hours" type="number" min="0" step="0.5" placeholder="Hours" value="${li?.hours ?? ''}" style="flex:1">
+          <input class="lf-in js-pf2-cost" type="number" min="0" placeholder="$Cost" value="${(forTask ? pr?.cost : li?.cost) ?? ''}" style="flex:1">
+          ${forTask ? '' : `<input class="lf-in js-pf2-hours" type="number" min="0" step="0.5" placeholder="Hours" value="${li?.hours ?? ''}" style="flex:1">`}
         </div>
-        <input class="lf-in js-pf2-url" placeholder="URL link" value="${esc(li?.url || '')}" style="width:100%;margin-bottom:7px">
+        <input class="lf-in js-pf2-url" placeholder="URL link" value="${esc((forTask ? pr?.url : li?.url) || '')}" style="width:100%;margin-bottom:7px">
         <input class="lf-in js-pf2-vendor" placeholder="Vendor" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:4px">
-        <p class="muted" style="font-size:11px;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is reviewed for the description/cost/url, and hours are estimated from the category + industry standards.</p>` });
+        ${forTask ? '' : `<p class="muted" style="font-size:11px;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is reviewed for the description/cost/url, and hours are estimated from the category + industry standards.</p>`}` });
+    overlay.appendChild(pop);
+  } else if (o.kind === 'modelSchedule') {
+    // A model's real maintenance schedule (Jac 2026-07-07) — replaces the generic
+    // 250/500/1000hr placeholder for any unit that picks this model.
+    const mo = IDX.model.get(o.modelId);
+    // .woline is a fixed 3-col grid (name | nums | ✕) everywhere else in the app —
+    // the source link rides IN the 3rd cell alongside the ✕ (one wrapper = one
+    // grid child) rather than as a bare 4th child, so the row never wraps.
+    const rows = (mo?.tasks || []).map((t, idx) => `<div class="woline">
+        <span class="js-svctask-edit" data-rec="${esc(o.modelId)}" data-idx="${idx}" style="cursor:pointer">${esc(t.name)}</span>
+        <span class="nums"><b>${t.intervalHours != null ? t.intervalHours + 'h' : '—'}</b>${t.parts?.length ? `<span>${t.parts.length} part${t.parts.length === 1 ? '' : 's'}</span>` : ''}</span>
+        <span class="woline-acts">${sourceLinkBtn(t.sourceUrl, t.source)}${closeX('js-svctask-remove', { data: { rec: o.modelId, idx } })}</span>
+      </div>`).join('');
+    const pop = el('div', 'popup'); pop.style.width = '420px';
+    pop.innerHTML = popupShell({ icon: CARD_ICON.workOrders, title: mo?.name || 'Model schedule', tag: 'Category · model',
+      foot: `${ghostPill('Close', { js: 'js-close' })}`,
+      body: `
+        ${rows || '<p class="muted" style="font-size:12.5px;text-align:center;margin:6px 0 12px">No tasks yet — this model falls back to the generic schedule until you add some.</p>'}
+        <div class="wototals">${addBtn('Task', { anchor: true, js: 'js-add-svctask', h: 26, data: { rec: o.modelId } })}</div>` });
+    overlay.appendChild(pop);
+  } else if (o.kind === 'svctaskform') {
+    // Add/edit one maintenance-schedule task row on a model.
+    const mo = IDX.model.get(o.modelId);
+    const t = o.idx != null ? (mo?.tasks || [])[o.idx] : null;
+    const pop = el('div', 'popup'); pop.style.width = '380px';
+    pop.innerHTML = popupShell({ icon: CARD_ICON.workOrders, title: `${t ? 'Edit' : 'Add'} Task`, tag: 'Model · schedule',
+      foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', t ? 'Save' : 'Add task', { js: 'js-svctaskform-save' })}`,
+      body: `
+        <input class="lf-in js-st-name" placeholder="Task name" value="${esc(t?.name || '')}" style="width:100%;margin-bottom:7px">
+        <input class="lf-in js-st-hours" type="number" min="0" placeholder="Interval (hours)" value="${t?.intervalHours ?? ''}" style="width:100%;margin-bottom:7px">
+        <input class="lf-in js-st-parts" placeholder="Parts (comma-separated, optional)" value="${esc((t?.parts || []).join(', '))}" style="width:100%">` });
     overlay.appendChild(pop);
   } else if (o.kind === 'receiptform') {
     // Receipt popup (Jac: "Receipts use popups and reconcile against parts") — the
@@ -10882,7 +10960,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     } else {
     pop.innerHTML = `
       <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span>${board.id === 'files' ? addBtn('File', { link: true, js: 'js-file-add' }) : ''}${board.id === 'files' ? `<div class="bv-searchwrap"><span class="s-icon">${I.search}</span><input class="bv-query js-files-query" placeholder="Search files…" value="${esc(o.fileSearch || '')}" /></div>` : ''}<span class="spacer"></span><button class="x js-close">${I.x}</button></div>
-      <div class="popup-body board-body">${board.id === 'files' && o.fileForm ? `<div class="kv pillrow" style="gap:7px;margin:0 0 10px"><input class="lf-in js-ff-name" placeholder="File name" style="flex:2;min-width:140px"><input class="lf-in js-ff-link" placeholder="Link (URL)" style="flex:2;min-width:140px">${fileDrop(o.fileUpload ? '✓ ' + esc(o.fileUpload.name) : 'Upload photo / document', { js: 'js-ff-file', accept: 'image/*,application/pdf,.doc,.docx,.xls,.xlsx,.csv,.txt', done: !!o.fileUpload, icon: I.camera })}${ghostPill('Cancel', { js: 'js-ff-cancel' })}${actionPill('commit', 'Add file', { js: 'js-ff-save' })}</div>` : ''}${boardTable(board.id, o.fileSearch)}</div>`;
+      <div class="popup-body board-body">${o.pickTarget && board.id === 'parts' ? `<div class="muted board-pickhint">Tap <b>Attach</b> to add a catalog part to this service.</div>` : ''}${board.id === 'files' && o.fileForm ? `<div class="kv pillrow" style="gap:7px;margin:0 0 10px"><input class="lf-in js-ff-name" placeholder="File name" style="flex:2;min-width:140px"><input class="lf-in js-ff-link" placeholder="Link (URL)" style="flex:2;min-width:140px">${fileDrop(o.fileUpload ? '✓ ' + esc(o.fileUpload.name) : 'Upload photo / document', { js: 'js-ff-file', accept: 'image/*,application/pdf,.doc,.docx,.xls,.xlsx,.csv,.txt', done: !!o.fileUpload, icon: I.camera })}${ghostPill('Cancel', { js: 'js-ff-cancel' })}${actionPill('commit', 'Add file', { js: 'js-ff-save' })}</div>` : ''}${boardTable(board.id, o.fileSearch, o.pickTarget)}</div>`;
     }
     overlay.appendChild(pop);
   } else if (o.kind === 'roundup') {
@@ -11168,12 +11246,17 @@ function buildPopupEl(o, overlay, opts = {}) {
       foot: `<button class="pill ignition js-svc-save" data-r="R17" data-unit="${u.unitId}" data-task="${task.taskId}">Record completion</button>`,
       body: `
         <div class="pillrow" style="margin-bottom:12px">${unitPill(u.unitId)}<span class="pill c-${task.color}">${esc(task.name)}</span><span class="muted" style="font-size:12px;margin-left:auto">${esc(svcText(task))}</span></div>
-        <div class="svc-ref"><div class="svc-ref-head">Reference</div><div class="svc-ref-body">${task.parts && task.parts.length ? `Parts: ${esc(task.parts.join(' · '))}<br>` : ''}Filters · Hyperlinks · Instructions · Photo — set per-task in the backend (§7.7)</div></div>
+        <div class="svc-ref"><div class="svc-ref-head">What you need${sourceLinkBtn(task.sourceUrl, task.source)}</div><div class="svc-ref-body">${svcNeedHtml(u, task)}</div></div>
         <label class="svc-field"><span>Hours at completion</span><input type="number" class="js-svc-hours" value="${num(u.currentHours)}"></label>
         <label class="svc-field"><span>Date completed</span><input type="date" class="js-svc-date" value="${TODAY_ISO}"></label>
         ${media}
         <textarea class="insp-desc js-svc-notes" placeholder="Notes (parts used, observations)…"></textarea>` });
     overlay.appendChild(pop);
+    if (o.partRef && o.partRef.idx != null) {   // the part-detail side panel — rendered BESIDE the service popup (cardSub precedent, §14)
+      const partRefs = (task.detail && task.detail.partRefs) || [];
+      const pr = partRefs[o.partRef.idx];
+      if (pr) { overlay.appendChild(svcPartPanelEl(u, task, pr, o.partRef.idx)); }
+    }
   } else if (o.kind === 'schedule') {
     // §12.1 Schedule — a single date+time follow-up logged to the customer Activity Log
     const c = IDX.customer.get(o.customerId);
@@ -11185,6 +11268,23 @@ function buildPopupEl(o, overlay, opts = {}) {
       body: `
         <label class="svc-field"><span>Date &amp; time</span>${dateField('when', o.when, { withTime: true, time: o.whenTime })}</label>
         <textarea class="insp-desc js-sch-note" placeholder="What's the follow-up? (quote call, pickup, demo…)">${esc(o.note || '')}</textarea>` });
+    overlay.appendChild(pop);
+  } else if (o.kind === 'sellUnit') {
+    // Sell a unit (spec units-fleet D3): captures sale price + date, closes the unit's
+    // ROI out cleanly (see categoryStats' residual swap), and IS the accounting seam —
+    // the accounting area reads salePrice/saleDate off a Sold unit to book sale revenue;
+    // no parallel accounting record is created here. Money-gated (D2): canMoney() is
+    // re-checked here as defence-in-depth, same as every other money popup/action.
+    const u = IDX.unit.get(o.unitId);
+    if (!u || !canMoney()) { return false; }
+    if (o.saleDate === undefined) o.saleDate = TODAY_ISO;
+    const pop = el('div', 'popup'); pop.style.width = '360px';
+    pop.innerHTML = popupShell({ icon: CARD_ICON.units || '', title: `Sell — ${u.name}`, tag: 'Unit · sale',
+      foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-sell-save" data-r="R17" data-rec="${u.unitId}">Record sale</button>`,
+      body: `
+        <label class="svc-field"><span>Sale price</span><input type="number" class="js-sell-price" placeholder="$0" min="0" step="1"></label>
+        <label class="svc-field" style="margin-top:8px"><span>Sale date</span>${dateField('saleDate', o.saleDate)}</label>
+        <textarea class="insp-desc js-sell-note" placeholder="Buyer / notes (optional)…"></textarea>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'splitUnit') {
     // §20 split — give one unit its own window on a NEW sibling rental, same invoice.
@@ -11314,7 +11414,7 @@ function buildPopupEl(o, overlay, opts = {}) {
   return true;
 }
 const openOverlay = (o) => { state.datepick = null; _ovScroll[o.kind] = 0; state.overlay = o; renderOverlay(); };   // fresh open starts at top
-/* ════════════ APP-27 · RB-WINDOWS catalog (Jac 2026-06-22) — the admin Rulebook's index of
+/* ════════════ APP-26 · RB-WINDOWS catalog (Jac 2026-06-22) — the admin Rulebook's index of
    EVERY popup window. One entry per renderOverlay kind so the "Windows" tab can list
    it and (on expand) show an inert live preview via buildPopupEl. sample() returns
    representative args from the demo seed (DATA.*); a kind whose record we don't have
@@ -11329,6 +11429,8 @@ const WINDOW_CATALOG = [
   { kind: 'gpsConnect',    label: 'Connect GPS device',      tag: 'Unit · GPS',                sample: () => ({ unitId: ((DATA.units || [])[0] || {}).unitId, step: 'provider', provider: 'Hapn' }) },
   { kind: 'rulebook',      label: 'The R-Rulebook',          tag: 'SPEC v8 · design system',  sample: () => ({}) },
   { kind: 'partform',      label: 'Add / Edit Part · Task',  tag: 'Work order · line',         sample: () => ({ woId: ((DATA.workOrders || [])[0] || {}).woId }) },
+  { kind: 'modelSchedule', label: 'Model maintenance schedule', tag: 'Category · model',       sample: () => ({ modelId: ((DATA.models || [])[0] || {}).modelId }) },
+  { kind: 'svctaskform',   label: 'Add / Edit schedule task', tag: 'Model · schedule',          sample: () => ({ modelId: ((DATA.models || [])[0] || {}).modelId, idx: null }) },
   { kind: 'receiptform',   label: 'New / Edit Receipt',      tag: 'Expense · receipt',         sample: () => ({}) },
   { kind: 'capture',       label: 'Log yard journey',        tag: 'Yard journey · log',        sample: () => ({ rentalId: ((DATA.rentals || [])[0] || {}).rentalId, cap: 'start' }) },
   { kind: 'wodone',        label: 'Complete Work Order?',    tag: 'Work order · confirm',      sample: () => ({ woId: ((DATA.workOrders || [])[0] || {}).woId }) },
@@ -11351,6 +11453,7 @@ const WINDOW_CATALOG = [
   { kind: 'inspection',    label: 'Failure report',          tag: 'Inspection · failure',      sample: () => ({ recId: ((DATA.inspections || [])[0] || {}).inspectionId }) },
   { kind: 'service',       label: 'Complete service',        tag: 'Service · complete',        sample: () => ({ unitId: ((DATA.units || [])[0] || {}).unitId, taskId: 'svc-wash' }) },
   { kind: 'schedule',      label: 'Schedule follow-up',      tag: 'Customer · follow-up',      sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
+  { kind: 'sellUnit',      label: 'Sell a unit',             tag: 'Unit · sale',               sample: () => ({ unitId: ((DATA.units || [])[0] || {}).unitId, saleDate: TODAY_ISO }) },
   { kind: 'splitUnit',     label: 'Different dates (split)',  tag: 'Rental · split window',     sample: () => ({ rentalId: ((DATA.rentals || [])[0] || {}).rentalId, unitId: ((DATA.units || [])[0] || {}).unitId }) },
   { kind: 'addCard',       label: 'Add card',                tag: 'Customer · card on file',   sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
   { kind: 'addAch',        label: 'Add bank account',        tag: 'Customer · ACH bank',       sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
@@ -11415,7 +11518,7 @@ async function sendFeedback() {
   } catch (e) { o.busy = false; o.error = 'Couldn’t send — check your connection and try again.'; renderOverlay(); }
 }
 /* ════════════════════════════════════════════════════════════════════════
-   APP-28 · §18 MR. WRANGLER — the in-app AI (Claude via the Apps Script backend).
+   APP-27 · §18 MR. WRANGLER — the in-app AI (Claude via the Apps Script backend).
    The API key NEVER touches this public repo: the frontend POSTs to BACKEND_URL
    (action 'wrangler'); Code.gs calls api.anthropic.com with the key from a Script
    Property. Carries a compact data digest + (when opened from a record) its detail.
@@ -11578,7 +11681,7 @@ function wranglerErrMsg(reason) {
   return "Mr. Wrangler couldn't answer — check the connection / backend.";
 }
 
-/* Mr. Wrangler AGENTIC LOOP (Stage 1 — read tools) — part of APP-29 (Wrangler ACTS).
+/* Mr. Wrangler AGENTIC LOOP (Stage 1 — read tools) — part of APP-28 (Wrangler ACTS).
    Instead of one blind shot at a capped snapshot, Mr. Wrangler can LOOK THINGS UP: the
    backend `wrangler` action is now a generic Anthropic pass-through (Stage 0), so the
    whole tool catalog + the loop live here in app.js and ship via Pages — no clasp. Stage 1
@@ -11878,7 +11981,7 @@ const stripWranglerAction = (text) => String(text || '')
   .replace(/```wrangler-action\s*[\s\S]*$/, '')   // #152 also drop a truncated, unclosed fence
   .trim();
 
-/* ════════════ APP-29 · Mr. Wrangler ACTS on your data (Jac 2026-06-16) ════════════════
+/* ════════════ APP-28 · Mr. Wrangler ACTS on your data (Jac 2026-06-16) ════════════════
    add / update / bulk-import items — NEVER delete, NEVER money/card/auth/WO. Only
    safe, allowlisted fields. Every op previews in the chat before it writes. */
 const WR_FUNNEL = ['Inbound Lead', 'Outbound Lead', "Don't Contact", 'Contacted', 'Not A No!', 'Payment Discussed', 'Paid'];
@@ -11930,7 +12033,7 @@ function wrPlanNeedsApply(plan) {
   }
   return records > 1;   // several records in one go → let the user review them together
 }
-const WR_IDX = { customers: () => IDX.customer, units: () => IDX.unit, categories: () => IDX.category, rentals: () => IDX.rental, vendors: () => IDX.vendor, parts: () => IDX.part, expenses: () => IDX.expense, inspections: () => IDX.insp, workOrders: () => IDX.wo };
+const WR_IDX = { customers: () => IDX.customer, units: () => IDX.unit, categories: () => IDX.category, rentals: () => IDX.rental, vendors: () => IDX.vendor, parts: () => IDX.part, expenses: () => IDX.expense, inspections: () => IDX.insp, workOrders: () => IDX.wo, models: () => IDX.model };
 const wrGet = (entity, id) => (WR_IDX[entity] ? WR_IDX[entity]().get(id) : null);
 // ── Name resolution (Jac 2026-06-26) — Mr. Wrangler talks in NAMES (the digest gives names), so the
 // operations + foreign-key fields resolve a human reference (id | name | phone-suffix for customers) to the
@@ -12346,8 +12449,8 @@ const WR_OPERATIONS = {
   },
 };
 // "Bring them to it" (Jac) — jump the user to whatever Wrangler just touched, for EVERY board: grid cards
-// focus in place, shop types anchor a tab, back-office boards open their detail popup. Best-effort, never throws.
-const WR_SHOP_TYPES = new Set(['inspections', 'workOrders', 'serviceOrders']);
+// focus in place, WO/inspection/service records open their owning UNIT (via pillTo — Shop retirement),
+// back-office boards open their detail popup. Best-effort, never throws.
 const WR_BOARD_TYPES = new Set(['vendors', 'parts', 'expenses', 'files']);
 function wrFocusRecord(entity, id) {
   if (!entity || !id) return;
@@ -12781,23 +12884,29 @@ const BOARD_DEF = {
     row: (f) => [f.link ? linkName(f.name, { js: 'js-open-link', data: { url: /^https?:\/\//i.test(f.link) ? f.link : 'https://' + f.link } }) : esc(f.name), statusPill('companyFileType', f.type), esc(f.group || '—'), f.reviewByDate ? esc(fmtShortDate(f.reviewByDate)) + (reviewState(f.reviewByDate) ? ' ' + reviewState(f.reviewByDate) : '') : '—'],
   },
 };
-function boardTable(boardId, query) {
+function boardTable(boardId, query, pickTarget) {
   const def = BOARD_DEF[boardId]; let rows = boardRows(boardId);
   if (!def) return '<p class="muted">—</p>';
   const q = (query || '').trim().toLowerCase();
   if (q) rows = rows.filter((r) => Object.values(r).some((v) => v != null && String(v).toLowerCase().includes(q)));
-  const head = `<tr>${def.cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>`;
+  // Parts-picker mode (Jac 2026-07-08): opened from a service task with pickTarget=
+  // {unitId,taskId}, each part row grows a blue Attach commit pill that stamps the
+  // catalog part onto the model task's detail.partRefs (see attachCatalogPart). The
+  // row still opens its detail on the name; Attach stopsPropagation so it doesn't.
+  const picking = boardId === 'parts' && pickTarget;
+  const head = `<tr>${def.cols.map((c) => `<th>${esc(c)}</th>`).join('')}${picking ? '<th></th>' : ''}</tr>`;
   // §7.10–§7.13 v2 — every board row opens the record's detail inside the popup
   const ROW_ID = { vendors: 'vendorId', expenses: 'expenseId', parts: 'partId', files: 'fileId' };
   const rowAttr = ROW_ID[boardId] ? (r) => ` class="js-board-row" data-rec="${esc(String(r[ROW_ID[boardId]]))}"` : () => '';
-  const body = rows.map((r) => `<tr${rowAttr(r)}>${def.row(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  const pickCell = picking ? (r) => `<td class="board-pickcell">${actionPill('commit', 'Attach', { js: 'js-svc-pick-part', data: { part: r.partId, unit: pickTarget.unitId, task: pickTarget.taskId }, h: 24 })}</td>` : () => '';
+  const body = rows.map((r) => `<tr${rowAttr(r)}>${def.row(r).map((c) => `<td>${c}</td>`).join('')}${pickCell(r)}</tr>`).join('');
   return `<table class="board-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 
 /* ── §13.2 BOARD VIEW — a per-card spreadsheet popup (sortable columns, search,
    a highlighted summary footer with switchable Sum/Avg/…, plus Add-Column /
    Add-Row scratch space for formulas). Driven by the CARD_COLUMNS registry. ── */
-function boardEntity(card, session) { return card === 'shop' ? boardSegmentFor(session) : card; }
+function boardEntity(card, session) { return card === 'shop' ? boardSegmentFor(session) : card; }   // 'shop' = stale saved Board Views only (card retired) → resolves to workOrders
 const ENTITY_LABEL = { inspections: 'Inspections', workOrders: 'Work Orders', serviceOrders: 'Service', units: 'Units', customers: 'Customers', rentals: 'Rentals', categories: 'Categories', invoices: 'Invoices' };
 function boardViewTitle(card, session) {
   if (card === 'shop') return ENTITY_LABEL[boardSegmentFor(session)] || 'Shop';
@@ -12953,7 +13062,7 @@ function bvCustomizePanel(card) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-30 · §13 DROPDOWNS — openDropdown + status/fleet/funnel/sort menus
+   APP-29 · §13 DROPDOWNS — openDropdown + status/fleet/funnel/sort menus
    ════════════════════════════════════════════════════════════════════════ */
 /** Shared floating dropdown (matches board chrome) — used by the status pill
  *  dropdown and the in-card Sort menu. */
@@ -13143,7 +13252,7 @@ function addInterestedCategory(custId, catId) {
 // A view captures search + pinned chips + SORT (D1). The old shared-set localStorage
 // mirror seeds the personal set on first run (nothing is lost in the switch).
 const VIEWS_LS_ALL = 'jactec.views.all';
-const VIEW_CARDS = ['units', 'categories', 'rentals', 'customers', 'invoices', 'shop', 'expenses'];
+const VIEW_CARDS = ['units', 'categories', 'rentals', 'customers', 'invoices', 'expenses'];   // Shop retirement: 'shop' dropped
 let GLOBAL_VIEWS = null;
 function _viewsMap() {
   if (GLOBAL_VIEWS) return GLOBAL_VIEWS;
@@ -13218,7 +13327,7 @@ function setFocusedCard(cardId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-31 · §14 RENDER PIPELINE + toast
+   APP-30 · §14 RENDER PIPELINE + toast
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
 const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list vs which record)
@@ -13413,11 +13522,11 @@ function toast(msg) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-32 · §15 EVENT HANDLERS — onClick/onInput/onChange (single listener tree)
+   APP-31 · §15 EVENT HANDLERS — onClick/onInput/onChange (single listener tree)
    ⚠ §16 ACTIONS/MUTATIONS interleave from here to §17 — see the SPEC v8 map
    ════════════════════════════════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════════
-   APP-33 · §15c DRAG & DROP LINK ENGINE (DRAGDROP-DESIGN.md) — custom pointer engine.
+   APP-32 · §15c DRAG & DROP LINK ENGINE (DRAGDROP-DESIGN.md) — custom pointer engine.
    Native HTML5 DnD rejected: the mid-drag column swap re-renders the source
    row, which silently kills native drags (and draggable breaks inline-edit).
    Everything drag-critical (ghost chip + cancel arc) lives in #drag-layer on
@@ -13700,7 +13809,6 @@ function dragSourceAt(target) {
   const row = target.closest('.row');                                   // .rtl rentals rows still carry card/rec on the .row wrapper
   if (row && row.dataset.rec != null) {
     let rc = row.dataset.card;
-    if (rc === 'shop') { const seg = activeSession().cards.shop?.segment; rc = (seg && seg !== 'all') ? seg : null; }   // §17 — a shop row resolves to its pinned segment (serviceOrders/workOrders/inspections)
     if (rc && DRAG_SOURCES.has(rc)) return { card: rc, rec: row.dataset.rec };
   }
   const cardNode = target.closest('.card[data-card]');
@@ -13930,7 +14038,7 @@ function zipToCard(entity) {
   if (idx < 0) return;
   if (s.cols) s.cols[COLUMNS[idx].id] = entity;
   state.mobileCol = idx;
-  const mc = s.cards[SHOP_TYPES.includes(entity) ? 'shop' : entity];
+  const mc = s.cards[entity];
   if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; }   // list mode → rows to drop on
   render();   // §15c hook re-stamps drop decor + rebuilds the zip rails for the new column
 }
@@ -14383,6 +14491,10 @@ function onClick(e) {
   if (closest('.js-chat-close')) { e.stopPropagation(); state.chat.open = false; return render(); }
   if (closest('.js-chat-back')) { e.stopPropagation(); state.chat.activeId = null; return render(); }   // back to the all-flags overview (chat persists)
   if (closest('.js-chat-send')) { e.stopPropagation(); return chatSend(); }
+  if (closest('[data-chat-untag]')) { e.stopPropagation(); const id = closest('[data-chat-untag]').dataset.chatUntag; const c = activeChat(); if (c) c.tags = c.tags.filter((t) => t.id !== id); pushChatsSoon(); return render(); }
+  if (closest('[data-chat-role]')) { e.stopPropagation(); return chatToggleRole(closest('[data-chat-role]').dataset.chatRole); }
+  if (closest('[data-chat-open]')) { e.stopPropagation(); const [card, recId] = closest('[data-chat-open]').dataset.chatOpen.split('|'); return SHOP_TYPES.includes(card) ? anchorRecord('units', unitOfShopRec(card, recId)) : anchorRecord(card, recId, null); }   // Shop retirement: chat flags on WO/insp/svc land on the owning unit
+  if (closest('[data-team-open]')) { e.stopPropagation(); return openChat(closest('[data-team-open]').dataset.teamOpen); }   // §17 comms rail: open a team thread in its own tab
   if (closest('[data-held-clear]')) { e.stopPropagation(); state.held = null; return render(); }   // drop the pasted-element attachment before sending
   if (closest('.js-chat-settings')) { e.stopPropagation(); return chatSettingsMenu(closest('.js-chat-settings')); }   // the gear menu
   if (closest('.js-chat-leave')) { e.stopPropagation(); closeMenus(); return chatLeave(); }   // voluntary exit — drops the chat off your rail
@@ -14391,7 +14503,6 @@ function onClick(e) {
   if (closest('.js-chat-rename')) { e.stopPropagation(); closeMenus(); setTimeout(() => { const i = document.querySelector('.chat-title-in'); if (i) { i.focus(); i.select(); } }, 0); return; }
   if (closest('.js-chat-end')) { e.stopPropagation(); closeMenus(); return commsEndConv(closest('.js-chat-end').dataset.chat, 'team'); }   // admin ends the chat (phone-safe: cat pinned)
   if (closest('[data-chat-member]')) { e.stopPropagation(); return chatToggleMember(closest('[data-chat-member]').dataset.chatMember); }
-  if (closest('[data-chat-open]')) { e.stopPropagation(); const [card, recId] = closest('[data-chat-open]').dataset.chatOpen.split('|'); return anchorRecord(SHOP_TYPES.includes(card) ? 'shop' : card, recId, SHOP_TYPES.includes(card) ? card : null); }
   // D8/D9 THE COMMS RAIL — toolbar chips · session tabs · the single window · ALL menu
   if (closest('.js-comms-chip')) { e.stopPropagation(); return commsToggleCat(closest('.js-comms-chip').dataset.cat); }
   if (closest('.js-comms-new')) { e.stopPropagation(); return commsNewChat(); }   // D9 ALL menu: + New chat (team → newChat(), wrangler → wranglerNewChat())
@@ -14434,7 +14545,14 @@ function onClick(e) {
   if (closest('.js-req-chat')) { e.stopPropagation(); return openWranglerFromRequest(Number(closest('.js-req-chat').dataset.n)); }   // §18e continue the conversation
   if (closest('.js-req-approve')) { e.stopPropagation(); return approveRequest(Number(closest('.js-req-approve').dataset.n)); }
   if (closest('.js-req-dismiss')) { e.stopPropagation(); return dismissRequest(Number(closest('.js-req-dismiss').dataset.n)); }
-  if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^(https?:\/\/|mailto:)/i.test(url)) window.open(url, '_blank', 'noopener'); return; }
+  if (closest('.js-open-link')) { e.stopPropagation(); const url = closest('.js-open-link').dataset.url || ''; if (/^(https?:\/\/|mailto:|tel:)/i.test(url)) window.open(url, '_blank', 'noopener'); return; }
+  if (closest('.js-svc-part')) { e.stopPropagation(); const b = closest('.js-svc-part'); const o = state.overlay; if (o?.kind === 'service') { o.partRef = { idx: Number(b.dataset.idx) }; renderOverlay(); } return; }   // service popup — click a part chip to open its vendor/cost side panel
+  if (closest('.js-svc-part-close')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'service') { o.partRef = null; renderOverlay(); } return; }
+  if (closest('.js-svc-part-remove')) { e.stopPropagation(); const b = closest('.js-svc-part-remove'); return removeSvcPartRef(b.dataset.unit, b.dataset.task, Number(b.dataset.idx)); }
+  if (closest('.js-svc-addpart')) { const b = closest('.js-svc-addpart'); e.stopPropagation(); state.partPhoto = null; return openOverlay({ kind: 'partform', taskTarget: { unitId: b.dataset.unit, taskId: b.dataset.task }, idx: null }); }
+  if (closest('.js-svc-partedit')) { const b = closest('.js-svc-partedit'); e.stopPropagation(); state.partPhoto = null; return openOverlay({ kind: 'partform', taskTarget: { unitId: b.dataset.unit, taskId: b.dataset.task }, idx: Number(b.dataset.idx) }); }
+  if (closest('.js-svc-browseparts')) { const b = closest('.js-svc-browseparts'); e.stopPropagation(); return openOverlay({ kind: 'board', board: 'parts', pickTarget: { unitId: b.dataset.unit, taskId: b.dataset.task } }); }   // "Browse catalog" → the parts board in pick mode, to attach an existing part
+  if (closest('.js-svc-pick-part')) { const b = closest('.js-svc-pick-part'); e.stopPropagation(); return attachCatalogPart(b.dataset.unit, b.dataset.task, b.dataset.part); }   // Attach a catalog part onto a service task (must run BEFORE js-board-row so it doesn't also open detail)
   if (closest('.js-board')) { const b = closest('.js-board'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return openOverlay({ kind: 'board', board: b.dataset.board }); }
   if (closest('.js-vendor-open')) { e.stopPropagation(); return openOverlay({ kind: 'board', board: 'vendors', recId: closest('.js-vendor-open').dataset.rec }); }   // WO-line vendor names → vendor detail in the board popup
   if (closest('.js-expense-open')) { e.stopPropagation(); return openOverlay({ kind: 'board', board: 'expenses', recId: closest('.js-expense-open').dataset.rec }); }   // part-detail receipt link → expense detail in the board popup
@@ -14472,10 +14590,9 @@ function onClick(e) {
   if (closest('.js-coltab')) {
     const ct = closest('.js-coltab'); e.stopPropagation();
     const cs = activeSession(); if (cs.cols) cs.cols[ct.dataset.col] = ct.dataset.member;
-    if (ct.dataset.member === 'shop') { const sc = cs.cards.shop; if (sc) { sc.segment = 'all'; sc.graphView = true; sc.mode = 'list'; sc.recId = null; sc.recType = null; } }   // wrench Shop → the combined 3-bar graph front page
     // §M1 — on phones the footer toggle is the primary nav (no in-card List button): tapping a
     // card shows its LIST (the back chevron returns from a record). Desktop keeps per-member state.
-    else if (document.body.classList.contains('is-phone')) { const mc = cs.cards[ct.dataset.member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
+    if (document.body.classList.contains('is-phone')) { const mc = cs.cards[ct.dataset.member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
     return render();
   }
   // §2.3 dispatch timeline — day nav + open a stop's rental (Phase 6)
@@ -14533,6 +14650,7 @@ function onClick(e) {
   if (closest('.js-setintcat')) { const b = closest('.js-setintcat'); e.stopPropagation(); return addInterestedCategory(b.dataset.rec, b.dataset.val); }
   if (closest('.js-act-open')) { const b = closest('.js-act-open'); e.stopPropagation(); state.actMode = b.dataset.val; state.actOpen = b.dataset.rec; const rec = b.dataset.rec; render(); document.querySelector(`.js-act-in[data-rec="${rec}"]`)?.focus(); return; }
   if (closest('.js-schedule-save')) { const b = closest('.js-schedule-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup'); const c = IDX.customer.get(b.dataset.rec); const date = o?.when, time = o?.whenTime || '09:00'; const note = (root.querySelector('.js-sch-note')?.value || '').trim(); if (!c || !date) { flashOr('.datefield', 'Pick a date first.'); return; } c.activityLog = c.activityLog || []; c.activityLog.push({ when: date, text: `Scheduled: ${note || 'follow-up'} @ ${date} ${to12(time)}` }); reindex('customers', c); toast('Scheduled — added to the Activity Log.'); state.datepick = null; closeOverlay(); render(); }
+  if (closest('.js-sell-save')) { const b = closest('.js-sell-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup'); const price = root.querySelector('.js-sell-price')?.value; const date = o?.saleDate; const note = (root.querySelector('.js-sell-note')?.value || '').trim(); if (!date) { flashOr('.datefield', 'Pick a sale date first.'); return; } if (!price || Number(price) <= 0) { flashOr('.js-sell-price', 'Enter a sale price first.'); return; } return sellUnit(b.dataset.rec, price, date, note); }
   // Wave 2 — empty slots on a Quote/invoice: the UNIT slot points you at the
   // Units list (drag IS the link path); the CUSTOMER slot opens quick-add-link.
   if (closest('.js-slot-unit')) {
@@ -14555,6 +14673,18 @@ function onClick(e) {
   if (closest('.js-bill-wo')) { e.stopPropagation(); return billWOToInvoice(closest('.js-bill-wo').dataset.rec); }
   if (closest('.js-wo-bill')) { const b = closest('.js-wo-bill'); e.stopPropagation(); const w = IDX.wo.get(b.dataset.rec); if (w) { w.billCustomer = w.billCustomer === 'Yes' ? 'No' : 'Yes'; reindex('workOrders', w); logAction(w, `Bill customer → ${w.billCustomer}`); render(); } return; }
   if (closest('.js-svc-complete')) { const b = closest('.js-svc-complete'); e.stopPropagation(); state.svcPhoto = null; return openOverlay({ kind: 'service', unitId: b.dataset.unit, taskId: b.dataset.task }); }
+  // SNOOZE (backlog #43): quiet one task's alarm for a while — 7/14/30 days, or wake it
+  if (closest('.js-svc-snooze')) {
+    const b = closest('.js-svc-snooze'); e.stopPropagation();
+    const mk = (days, lbl) => `<button class="dd-item js-svc-snooze-pick" data-rec="${esc(b.dataset.rec)}" data-task="${esc(b.dataset.task)}" data-days="${days}">${lbl}</button>`;
+    return openDropdown(b, (b.dataset.snoozed === '1' ? mk('', 'Wake now — alarm live') : '') + mk('7', 'Snooze 7 days') + mk('14', 'Snooze 14 days') + mk('30', 'Snooze 30 days'), { align: 'right' });
+  }
+  if (closest('.js-svc-snooze-pick')) {
+    const b = closest('.js-svc-snooze-pick'); e.stopPropagation();
+    document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
+    return snoozeService(b.dataset.rec, b.dataset.task, b.dataset.days === '' ? null : Number(b.dataset.days));
+  }
+  if (closest('.js-svc-expand')) { const b = closest('.js-svc-expand'); e.stopPropagation(); state.svcExpand = state.svcExpand === b.dataset.rec ? null : b.dataset.rec; return render(); }
   if (closest('.js-svc-save')) { const b = closest('.js-svc-save'); e.stopPropagation(); if (!state.svcPhoto) { flashOr('.overlay .insp-photo, .overlay .insp-rephoto, .overlay .cap-drop', 'Photo proof is required to complete a service.'); return; } const root = b.closest('.popup'); return recordServiceCompletion(b.dataset.unit, b.dataset.task, root.querySelector('.js-svc-hours')?.value, root.querySelector('.js-svc-date')?.value, root.querySelector('.js-svc-notes')?.value, state.svcPhoto); }
   // invoice line-item add buttons → point at the card to DRAG FROM (Wave 2)
   if (closest('.js-add-line')) {
@@ -14587,6 +14717,16 @@ function onClick(e) {
   if (closest('.js-pf2-save')) { e.stopPropagation(); return savePartForm(); }
   if (closest('.js-part-save')) { const b = closest('.js-part-save'); e.stopPropagation(); const root = b.closest('.lineform'); const part = root.querySelector('.js-pf-part')?.value; const cost = Number(root.querySelector('.js-pf-cost')?.value) || 0; const hours = Number(root.querySelector('.js-pf-hours')?.value) || 0; state.woPartForm = null; return addPartToWO(b.dataset.rec, part || 'Part', cost, hours); }
   if (closest('.js-part-cancel')) { e.stopPropagation(); state.woPartForm = null; return render(); }
+  // MODELS (Jac 2026-07-07): category-scoped models + their editable maintenance schedules.
+  if (closest('.js-add-model')) { e.stopPropagation(); activeSession().cards.categories.addingModel = true; return render(); }
+  if (closest('.js-model-dup')) { const b = closest('.js-model-dup'); e.stopPropagation(); const cs = activeSession().cards.categories; cs.dupFrom = b.dataset.rec; cs.addingModel = true; return render(); }
+  if (closest('.js-am-cancel')) { e.stopPropagation(); const cs = activeSession().cards.categories; cs.addingModel = false; cs.dupFrom = null; return render(); }
+  if (closest('.js-am-save')) { const b = closest('.js-am-save'); e.stopPropagation(); return saveNewModel(b.dataset.rec); }
+  if (closest('.js-model-open')) { const b = closest('.js-model-open'); e.stopPropagation(); return openOverlay({ kind: 'modelSchedule', modelId: b.dataset.rec }); }
+  if (closest('.js-add-svctask')) { const b = closest('.js-add-svctask'); e.stopPropagation(); return openOverlay({ kind: 'svctaskform', modelId: b.dataset.rec, idx: null }); }
+  if (closest('.js-svctask-edit')) { const b = closest('.js-svctask-edit'); e.stopPropagation(); return openOverlay({ kind: 'svctaskform', modelId: b.dataset.rec, idx: Number(b.dataset.idx) }); }
+  if (closest('.js-svctask-remove')) { const b = closest('.js-svctask-remove'); e.stopPropagation(); return removeSvcTask(b.dataset.rec, Number(b.dataset.idx)); }
+  if (closest('.js-svctaskform-save')) { e.stopPropagation(); return saveSvcTaskForm(); }
   // inspection gated flow (§9): Wash → Checklist → result
   if (closest('.js-open-insp')) { e.stopPropagation(); return openOverlay({ kind: 'inspection', recId: closest('.js-open-insp').dataset.rec }); }
   if (closest('[data-ctx]')) return runCtxAction(closest('[data-ctx]').dataset.ctx);   // R20 context menu
@@ -14624,7 +14764,7 @@ function onClick(e) {
   if (closest('.js-migrate-go')) { const o = state.overlay; if (!o || o.kind !== 'migrateUnits') return; const res = applyUnitMigration(o.plan); state.overlay = null; renderOverlay(); render(); toast(`Rounded up ${res.created} unit${res.created === 1 ? '' : 's'} and linked ${res.linked} rental${res.linked === 1 ? '' : 's'}.`); return; }
   if (closest('.js-split-open')) { const b = closest('.js-split-open'); e.stopPropagation(); const r = IDX.rental.get(b.dataset.rec); if (r) openOverlay({ kind: 'splitUnit', rentalId: b.dataset.rec, unitId: b.dataset.unit, splitStart: r.startDate, splitEnd: r.endDate }); return; }
   if (closest('.js-split-go')) { const o = state.overlay; if (!o || o.kind !== 'splitUnit') return; const sib = splitUnitToNewRental(o.rentalId, o.unitId, o.splitStart, o.splitEnd); if (sib) { closeOverlay(); try { anchorRecord('rentals', sib.rentalId); } catch (err) { render(); } } return; }
-  if (closest('.js-hchip')) { const b = closest('.js-hchip'); const o = state.overlay; if (o?.kind === 'board') { o.histKind = o.histKind === b.dataset.kind ? null : b.dataset.kind; return renderOverlay(); } const session = activeSession(); const cs = session.cards[b.dataset.card] || session.cards.shop; cs.histKind = cs.histKind === b.dataset.kind ? null : b.dataset.kind; return render(); }
+  if (closest('.js-hchip')) { const b = closest('.js-hchip'); const o = state.overlay; if (o?.kind === 'board') { o.histKind = o.histKind === b.dataset.kind ? null : b.dataset.kind; return renderOverlay(); } const session = activeSession(); const cs = session.cards[b.dataset.card] || session.cards.units; cs.histKind = cs.histKind === b.dataset.kind ? null : b.dataset.kind; return render(); }
   // .js-complete-rental / .js-cancel-rental RETIRED (Jac 2026-07-03) — terminal gates
   // on every unit are the completion; rentals clear from the default list on their own.
   if (closest('.js-insp-wash')) { const b = closest('.js-insp-wash'); e.stopPropagation(); return setInspWash(b.dataset.rec, b.dataset.val); }
@@ -14636,6 +14776,7 @@ function onClick(e) {
   if (closest('.js-unit-status')) { const b = closest('.js-unit-status'); e.stopPropagation(); return openUnitStatusDropdown(b.dataset.rec, b.dataset.unit, b); }
   if (closest('.js-fleetstatus')) { const b = closest('.js-fleetstatus'); e.stopPropagation(); return openFleetDropdown(b.dataset.rec, b); }
   if (closest('.js-setfleet')) { const b = closest('.js-setfleet'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return setUnitFleet(b.dataset.rec, b.dataset.val); }
+  if (closest('.js-open-sell')) { e.stopPropagation(); if (!canMoney()) { toast('Selling a unit is Office/Admin only.'); return; } return openOverlay({ kind: 'sellUnit', unitId: closest('.js-open-sell').dataset.rec, saleDate: TODAY_ISO }); }   // D2 money-gate, re-checked as defence-in-depth
   if (closest('.js-wophase')) { const b = closest('.js-wophase'); e.stopPropagation(); return openWoPhaseDropdown(b.dataset.rec, b, null); }
   if (closest('.js-wophase-line')) { const b = closest('.js-wophase-line'); e.stopPropagation(); return openWoPhaseDropdown(b.dataset.rec, b, Number(b.dataset.idx)); }
   if (closest('.js-setwophase')) { const b = closest('.js-setwophase'); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return setWoPhase(b.dataset.rec, b.dataset.val); }
@@ -14694,7 +14835,6 @@ function onClick(e) {
   if (xEl) { e.stopPropagation(); return handlePillX(xEl); }
 
   // shop segment switch — clicking the active segment toggles back to All
-  if (closest('.js-shopseg')) { const seg = closest('.js-shopseg').dataset.seg; const cs = activeSession().cards.shop; const next = (cs.segment === seg) ? 'all' : seg; if (cs.graphView) gvStripTerms(cs);   /* §13.7 — the strip (or 'all' worklist) stays open across a segment switch */ cs.segment = next; cs.listLimit = undefined; return render(); }
 
   // row / header action buttons (anchor / new tab) — recType is set for Shop items
   const anchorBtn = closest('.js-anchor');
@@ -14819,7 +14959,7 @@ function onClick(e) {
     if (state.overlay?.kind === 'board') closeOverlay();   // a link pill inside the board popup navigates the grid — close the popup first
     const pc = pill.dataset.pillCard, prec = castId(pc, pill.dataset.pillRec);
     const psect = pill.dataset.sect;
-    const anchor = SHOP_TYPES.includes(pc) ? { card: 'shop', recId: prec, recType: pc } : { card: pc, recId: prec, recType: null };
+    const anchor = SHOP_TYPES.includes(pc) ? { card: 'units', recId: unitOfShopRec(pc, prec), recType: null } : { card: pc, recId: prec, recType: null };   // Shop retirement: WO/insp/svc pills anchor their owning unit
     return deferOrAnchor('pill:' + pc + ':' + prec, () => { pillTo(pc, prec); if (psect) scrollToSect(pc, psect); }, anchor);
   }
 
@@ -14841,8 +14981,8 @@ function castId(card, raw) { return raw; }   // all our IDs are strings
 
 function handlePillX(xEl) {
   const kind = xEl.dataset.x;
-  // operate on the record open in the card that contains this pill. The Shop card
-  // holds 3 entity types, so resolve through its recType (recOf('shop',…) fails).
+  // operate on the record open in the card that contains this pill (recType resolves
+  // any legacy multi-entity card state via entityCardOf).
   const cardNode = xEl.closest('.card');
   const card = cardNode?.dataset.card;
   const session = activeSession();
@@ -14954,6 +15094,49 @@ function startInlineEdit(span) {
     span.replaceWith(sel); sel.focus();
     sel.addEventListener('change', commitCat);
     sel.addEventListener('blur', commitCat);
+    return;
+  } else if (kind === 'unitModel') {
+    // Category-scoped model link for a unit (Jac 2026-07-07): a <select> of the
+    // unit's OWN category's models, plus a "+ Add new model…" sentinel that swaps
+    // to a plain text input (find-or-create, mirrors savePartForm's idiom). A unit
+    // with no category yet can't pick a model — the category derives the options.
+    const u = IDX.unit.get(recId);
+    if (!u || !u.categoryId) { toast('Set a category first.'); render(); return; }
+    const opts2 = (DATA.models || []).filter((mo) => mo.categoryId === u.categoryId);
+    const sel = el('select', 'inline-input');
+    sel.innerHTML = ['<option value="">— No model —</option>']
+      .concat(opts2.map((mo) => `<option value="${esc(mo.modelId)}"${u.modelId === mo.modelId ? ' selected' : ''}>${esc(mo.name)}</option>`))
+      .concat(['<option value="__new__">+ Add new model…</option>'])
+      .join('');
+    const commitModel = () => {
+      if (done) return; done = true;
+      if (u) { const old = u.modelId; const v = sel.value || null; if ((old || '') !== (v || '')) { u.modelId = v; reindex('units', u); logAction(u, `Model: ${auditVal(IDX.model.get(old)?.name || '')} → ${auditVal(IDX.model.get(v)?.name || '')}`); } }
+      render();
+    };
+    sel.addEventListener('change', () => {
+      if (sel.value !== '__new__') return commitModel();
+      // swap the select for a name input; committing creates the model then assigns it
+      done = true;
+      const input = el('input', 'inline-input'); input.placeholder = 'New model name';
+      let idone = false;
+      const commitNew = () => {
+        if (idone) return; idone = true;
+        const name = input.value.trim();
+        if (name && u) {
+          const mo = { modelId: 'MOD-C' + (state.seq++), categoryId: u.categoryId, name, tasks: [], mock: true };
+          DATA.models.push(mo); IDX.model.set(mo.modelId, mo); reindex('models', mo);
+          logAction(mo, `Model added to ${IDX.category.get(u.categoryId)?.name || 'category'}`);
+          const old = u.modelId; u.modelId = mo.modelId; reindex('units', u);
+          logAction(u, `Model: ${auditVal(IDX.model.get(old)?.name || '')} → ${auditVal(mo.name)}`);
+        }
+        render();
+      };
+      sel.replaceWith(input); input.focus();
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitNew(); } else if (e.key === 'Escape') { idone = true; render(); } });
+      input.addEventListener('blur', commitNew);
+    });
+    span.replaceWith(sel); sel.focus();
+    sel.addEventListener('blur', commitModel);
     return;
   } else { return; }
   if (kind === 'field' && span.dataset.dot === '1') {
@@ -15152,7 +15335,7 @@ function clearFieldCall(rentalId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-34 · §16 ACTIONS / MUTATIONS — every state change funnels through here
+   APP-33 · §16 ACTIONS / MUTATIONS — every state change funnels through here
    (status setters, drag links, Quotes, captures, site, WO/invoice lines, +New)
    ════════════════════════════════════════════════════════════════════════ */
 /* ── v2 BUILD actions: condition/wash segs · yard captures · site popup · WO complete ── */
@@ -15211,6 +15394,26 @@ function setUnitWash(unitId, val) {
   logAction(u, val === 'Wash' ? 'Wash requested' : 'Marked: don’t wash');
   toast(val === 'Wash' ? 'Wash queued — shows in the Wash list.' : 'Don’t wash — request cleared.');
   reanchorRender();
+}
+/* Sell a unit (spec units-fleet D3): sets the unit Sold + records the sale terms —
+   the SOURCE OF TRUTH the accounting area reads (unit.salePrice/saleDate on a Sold
+   unit) to book sale revenue; this is the whole integration seam, no parallel
+   accounting/expense record is written here. Money-gated (D2) — re-checked as
+   defence-in-depth even though the popup that calls this already gates canMoney(). */
+function sellUnit(unitId, price, date, note) {
+  if (!canMoney()) return;
+  const u = IDX.unit.get(unitId); if (!u) return;
+  const p = Number(price);
+  if (!(p > 0) || !date) return;
+  u.fleetStatus = 'Sold';
+  u.salePrice = p;
+  u.saleDate = date;
+  if (note) u.soldNote = note;
+  reindex('units', u);
+  logAction(u, `Sold for ${money(p)} on ${fmtShortDate(date)}`);
+  closeOverlay();
+  toast('Unit sold — ROI closed out.');
+  render();
 }
 /* yard journey: +Start/+Log Delivery and +End/+Log Recovery are the SAME capture
    either way (one event, shared video); +FC = markFieldCall. Popup gates every log. */
@@ -15412,12 +15615,48 @@ async function autofillPartLine(w, li, photo) {
   toast('✨ Mr. Wrangler filled in the part.');
 }
 
+/** Name-match or create a vendor by typed name — the idiom shared by the WO part
+ *  line, the service-task part ref, and the receipt form. Returns the vendorId, or
+ *  null if no name was typed. */
+function resolveOrCreateVendorByName(name) {
+  if (!name) return null;
+  let v = DATA.vendors.find((x) => (x.name || '').toLowerCase() === name.toLowerCase());
+  if (!v) { v = { vendorId: 'VEN-C' + (state.seq++), name, mock: true }; DATA.vendors.push(v); reindex('vendors', v); }
+  return v.vendorId;
+}
 function savePartForm() {
   const o = state.overlay; if (!o || o.kind !== 'partform') return;
-  const w = IDX.wo.get(o.woId); if (!w) return closeOverlay();
   const g = (c) => (document.querySelector(c)?.value || '').trim();
-  const desc = g('.js-pf2-desc'), cost = g('.js-pf2-cost'), hours = g('.js-pf2-hours'), url = g('.js-pf2-url'), vendor = g('.js-pf2-vendor');
+  const desc = g('.js-pf2-desc'), cost = g('.js-pf2-cost'), url = g('.js-pf2-url'), vendor = g('.js-pf2-vendor');
   if (!desc && !state.partPhoto) return attnFlash('.js-pf2-desc, .file-drop');   // R19: need a name OR a photo for the AI
+  if (o.taskTarget) {
+    // Service-task part ref (Jac 2026-07-08): same popup/fields as the WO part line,
+    // saved onto the REAL model task's detail.partRefs (unitServiceRows' rows are a
+    // derived copy — mutating those wouldn't persist), via the same reindex('models', …)
+    // idiom the model-schedule editors use (saveSvcTaskForm/removeSvcTask).
+    const { unitId, taskId } = o.taskTarget;
+    const u = IDX.unit.get(unitId); if (!u) return closeOverlay();
+    const { mo, realTask } = svcRealTask(u, { taskId });
+    if (!realTask) { toast('No editable schedule for this unit.'); return closeOverlay(); }
+    realTask.detail = realTask.detail || {};
+    realTask.detail.partRefs = realTask.detail.partRefs || [];
+    const pr = o.idx != null ? realTask.detail.partRefs[o.idx] : null;
+    const rec = pr || { name: '', oem: '' };
+    rec.name = desc || rec.name || 'Part';
+    if (cost !== '') rec.cost = Number(cost) || 0;
+    if (url) rec.url = url;
+    const vendorId = resolveOrCreateVendorByName(vendor);
+    if (vendorId) rec.vendorId = vendorId;
+    if (state.partPhoto) rec.photo = state.partPhoto;
+    if (o.idx == null) realTask.detail.partRefs.push(rec);
+    reindex('models', mo); logAction(mo, `${o.idx != null ? 'Edited' : 'Added'} part ${auditVal(rec.name)} on ${realTask.name}`);
+    state.partPhoto = null;
+    toast('Part saved.');
+    state.overlay = { kind: 'service', unitId, taskId };
+    return renderOverlay();
+  }
+  const w = IDX.wo.get(o.woId); if (!w) return closeOverlay();
+  const hours = g('.js-pf2-hours');
   w.lineItems = w.lineItems || [];
   const li = o.idx != null ? w.lineItems[o.idx] : { phase: 'Part Needed?', eta: '' };
   if (!li) return closeOverlay();                  // stale edit index — the line was removed after the popup opened
@@ -15427,11 +15666,8 @@ function savePartForm() {
   li.url = url || li.url || '';
   if (state.partPhoto) li.photo = state.partPhoto;
   li.aiPending = !desc || cost === '' || hours === '';
-  if (vendor) {
-    let v = DATA.vendors.find((x) => (x.name || '').toLowerCase() === vendor.toLowerCase());
-    if (!v) { v = { vendorId: 'VEN-C' + (state.seq++), name: vendor, mock: true }; DATA.vendors.push(v); reindex('vendors', v); }
-    li.vendorId = v.vendorId;
-  }
+  const liVendorId = resolveOrCreateVendorByName(vendor);
+  if (liVendorId) li.vendorId = liVendorId;
   if (desc) {
     let p = li.partId ? DATA.parts.find((r) => r.partId === li.partId) : null;   // the li↔part link (stamped below) survives renames
     if (!p) p = DATA.parts.find((r) => (r.name || '').toLowerCase() === desc.toLowerCase());
@@ -15461,6 +15697,55 @@ function savePartForm() {
   // in-memory base64 FIRST, so chain the offload after the autofill resolves.
   const offloadLinePhoto = () => { if (photo) offloadPhoto(li, 'photo', 'wopart_' + w.woId + '_' + lineKey(li), w, 'workOrders'); };
   if (willFill) autofillPartLine(w, li, photo).then(offloadLinePhoto, offloadLinePhoto); else offloadLinePhoto();   // §18g fire-and-forget photo autofill (offload even if the AI read fails)
+}
+/* MODELS (Jac 2026-07-07): a category derives which models a unit can pick; each
+   model carries its own real maintenance-schedule task list (service-countdown.js
+   shape: {taskId,name,intervalHours,parts}), editable here, replacing the generic
+   placeholder for any unit that picks it (see unitServiceRows). */
+function saveNewModel(categoryId) {
+  const cs = activeSession().cards.categories;
+  const name = (document.querySelector('.js-am-name')?.value || '').trim();
+  if (!name) return attnFlash('.js-am-name');   // R19: need a name
+  // Duplicate (Jac 2026-07-07): cs.dupFrom names a source model to clone tasks from —
+  // a shallow per-task clone ({...t}) is enough since task fields are primitives/string
+  // arrays; taskIds are reused verbatim (they only need to be unique within a unit's
+  // own service-completion bookkeeping, not globally).
+  const dupSrc = cs.dupFrom ? IDX.model.get(cs.dupFrom) : null;
+  const tasks = dupSrc ? dupSrc.tasks.map((t) => ({ ...t })) : [];
+  const mo = { modelId: 'MOD-C' + (state.seq++), categoryId, name, tasks, mock: true };
+  DATA.models.push(mo); IDX.model.set(mo.modelId, mo); reindex('models', mo);
+  logAction(mo, dupSrc ? `Model duplicated from ${dupSrc.name}` : `Model added to ${IDX.category.get(categoryId)?.name || 'category'}`);
+  cs.addingModel = false; cs.dupFrom = null;
+  toast(dupSrc
+    ? `${name} added — duplicated ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} from ${dupSrc.name}.`
+    : `${name} added — open it to build its maintenance schedule.`);
+  render();
+}
+function removeSvcTask(modelId, idx) {
+  const mo = IDX.model.get(modelId); if (!mo || !mo.tasks[idx]) return;
+  const [gone] = mo.tasks.splice(idx, 1);
+  reindex('models', mo); logAction(mo, `Removed task: ${auditVal(gone.name)}`);
+  toast('Task removed.'); renderOverlay();
+}
+function saveSvcTaskForm() {
+  const o = state.overlay; if (!o || o.kind !== 'svctaskform') return;
+  const mo = IDX.model.get(o.modelId); if (!mo) return closeOverlay();
+  const g = (c) => (document.querySelector(c)?.value || '').trim();
+  const name = g('.js-st-name'), hours = g('.js-st-hours'), partsRaw = g('.js-st-parts');
+  if (!name) return attnFlash('.js-st-name');   // R19: a task needs a name
+  mo.tasks = mo.tasks || [];
+  const parts = partsRaw ? partsRaw.split(',').map((p) => p.trim()).filter(Boolean) : [];
+  if (o.idx != null) {
+    const t = mo.tasks[o.idx]; if (!t) return closeOverlay();   // stale edit index — removed after the popup opened
+    t.name = name; t.intervalHours = hours !== '' ? Number(hours) || 0 : null; t.parts = parts;
+    logAction(mo, `Edited task: ${auditVal(name)}`);
+  } else {
+    mo.tasks.push({ taskId: 'svc-c' + (state.seq++), name, intervalHours: hours !== '' ? Number(hours) || 0 : null, parts, source: 'Added in-app' });
+    logAction(mo, `Added task: ${auditVal(name)}`);
+  }
+  reindex('models', mo);
+  state.overlay = { kind: 'modelSchedule', modelId: o.modelId };   // back to the list, not fully closed
+  toast('Schedule saved.'); renderOverlay();
 }
 /* Receipt popup save (§7.11): creates/updates the expense; vendor name-match or
    auto-create (the savePartForm idiom); empty AI-fillable fields flag aiPending ✨;
@@ -16105,7 +16390,7 @@ function saveNewCustomer() {
   else { anchorRecord('customers', id); toast(`${c.name} added.`); }
 }
 /* ════════════════════════════════════════════════════════════════════════
- * APP-35 · §17 STRIPE / PAYMENTS — card-on-file + invoice charging (client side).
+ * APP-34 · §17 STRIPE / PAYMENTS — card-on-file + invoice charging (client side).
  * Card data is entered ONLY in Stripe's iframe (Card Element) and tokenized in
  * the browser; raw PAN/CVC never touches our code or the backend. The backend
  * owns the money math — the client never sends an amount.
@@ -16823,7 +17108,7 @@ function startNewInspection(unitId) {
   const draft = { inspectionId: id, unitId: u.unitId, date: TODAY_ISO, wash: '', checklist: '', billCustomer: 'No', customerId: null, woId: null, photo: '', description: '', mock: true };
   DATA.inspections.push(draft); IDX.insp.set(id, draft); reindex('inspections', draft);
   logAction(draft, 'Inspection created');
-  anchorRecord('shop', id, 'inspections');
+  anchorRecord('units', u.unitId);   // Shop retirement: the unit detail's Inspection section drives the flow
   toast(`New inspection for ${u.name} — run Wash → Checklist.`);
 }
 function startNewWorkOrder(unitId) {
@@ -16951,6 +17236,10 @@ function logAction(rec, text) { if (!rec) return; rec.actions = rec.actions || [
 // Humanize a field key + format a value for an audit line ("Phone: (337)… → (337)…").
 const humanizeField = (f) => ({ po: 'PO', eta: 'ETA', 'insurance.policyRef': 'Policy #', 'insurance.effective': 'Coverage effective', 'insurance.expires': 'Coverage expires', 'insurance.insuredValue': 'Insured value', 'insurance.premium': 'Premium', accountNotes: 'Notes', assignedMechanic: 'Mechanic', gpsType: 'GPS type', gpsPlacement: 'GPS placement', purchasePrice: 'Purchase price', purchaseDate: 'Purchase date', trueCost: 'True cost', purchaseHours: 'Hours at purchase', currentHours: 'Hours', startHours: 'Start hours', returnHours: 'Return hours', rentalName: 'Name', woReport: 'Report', firstName: 'First name', lastName: 'Last name' }[f] || (f.charAt(0).toUpperCase() + f.slice(1).replace(/([A-Z])/g, ' $1')));
 const auditVal = (v) => { const s = String(v ?? '').trim(); return s ? (s.length > 28 ? s.slice(0, 28) + '…' : s) : '(empty)'; };
+/* Margin gate (units-fleet, Jac 2026-07-08): non-money roles never see dollar
+   amounts in the History/audit log — a client-side DISPLAY redaction only (the raw
+   action text still stores & syncs), same philosophy as the D1 bottomDollar gate. */
+function histText(t) { return canMoney() ? String(t) : String(t).replace(/\$\d[\d,]*(?:\.\d{1,2})?/g, '$•••'); }
 
 /* §12.6 — WO phase changes (header pill + per-line journey pills) via a woPhase
    dropdown; reaching Complete reverts a Failed unit to Not Ready (§9). */
@@ -17223,7 +17512,7 @@ function winPickerEl(r) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-36 · §5.4d — DATE SEARCH PICKER. A standalone calendar that REUSES the rental
+   APP-35 · §5.4d — DATE SEARCH PICKER. A standalone calendar that REUSES the rental
    window-picker's look (.winpicker/.wp-*) but none of its rental/availability
    coupling. Type "date"/"dates"→Enter (or click a date chip) to open; tap one
    day or two to set a range; Done pins a `__date` filter term on the scope.
@@ -17341,7 +17630,9 @@ function recordServiceCompletion(unitId, taskId, hours, date, note, photo) {
   u.serviceLog = u.serviceLog || [];
   u.serviceLog.push({ taskId, hours: Number(hours) || 0, date: when, note: note || '', photo: photo || '' });
   if (taskId === 'svc-wash') u.washRequested = false;   // a logged wash clears the request + resets the 100-HR countdown
-  const tn = UNIT_SVC_TASKS.find((x) => x.taskId === taskId);
+  if (u.serviceSnoozes && u.serviceSnoozes[taskId]) delete u.serviceSnoozes[taskId];   // completing wakes the alarm (backlog #43)
+  // name from the unit's REAL schedule first (per-model tasks aren't in the generic list)
+  const tn = unitServiceRows(u).find((x) => x.taskId === taskId) || UNIT_SVC_TASKS.find((x) => x.taskId === taskId);
   logAction(u, `Serviced: ${tn?.name || taskId} @ ${num(hours)} HRS (${fmtShortDate(when)})`);
   toast(taskId === 'svc-wash' ? 'Wash logged — countdown reset.' : 'Service completed — countdown reset.');
   state.overlay = null;
@@ -17673,16 +17964,16 @@ function mergeInvoiceInto(keepId, absorbId) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   APP-37 · §18 PERSISTENCE & BOOT
+   APP-36 · §18 PERSISTENCE & BOOT
    ════════════════════════════════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════════
-   APP-38 · §18b BACKEND SYNC — Google Sheets via the Apps Script web app
+   APP-37 · §18b BACKEND SYNC — Google Sheets via the Apps Script web app
    ════════════════════════════════════════════════════════════════════════
    The app loads its data from the Sheet on sign-in, seeds the Sheet from the
    demo data on first run, and auto-saves (debounced) after every change.
    Single shared password (sent with every call; the URL alone is useless). */
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzHahzgJqOYe9o4GKlRVGh-A7USRn1k4Dvyy4ajLh8EYCqVxofouM28qs8trNlObZw/exec';
-const PERSIST_KEYS = ['categories', 'units', 'customers', 'invoices', 'rentals', 'workOrders', 'inspections', 'vendors', 'parts', 'companyFiles', 'expenses'];
+const PERSIST_KEYS = ['categories', 'units', 'customers', 'invoices', 'rentals', 'workOrders', 'inspections', 'vendors', 'parts', 'companyFiles', 'expenses', 'models'];
 let backendPassword = sessionStorage.getItem('jactec.pw') || '';
 let booting = true;                       // suppresses saves during initial load
 let saveTimer = null, saving = false, savePending = false;
@@ -18303,7 +18594,7 @@ async function loadFromBackend() {
 // a snapshot of what the backend last held and, on each flush, send only the
 // records that changed (upserts) or vanished (deletes). A one-field edit becomes
 // a few-hundred-byte, sub-second call.
-const PERSIST_ID = { categories: 'categoryId', units: 'unitId', customers: 'customerId', invoices: 'invoiceId', rentals: 'rentalId', workOrders: 'woId', inspections: 'inspectionId', vendors: 'vendorId', parts: 'partId', companyFiles: 'fileId', expenses: 'expenseId' };
+const PERSIST_ID = { categories: 'categoryId', units: 'unitId', customers: 'customerId', invoices: 'invoiceId', rentals: 'rentalId', workOrders: 'woId', inspections: 'inspectionId', vendors: 'vendorId', parts: 'partId', companyFiles: 'fileId', expenses: 'expenseId', models: 'modelId' };
 let lastSaved = null;   // { entity: Map(id → JSON) } — the last successfully-persisted state
 function snapshotSaved() {
   lastSaved = {};
@@ -18327,7 +18618,7 @@ function computeChanges() {
 // other user reloaded). Poll the backend and adopt remote changes for records the
 // local user HASN'T touched (clean === lastSaved); keep in-progress local edits;
 // NEVER delete on refresh (a transient blip can't wipe data).
-const IDX_MAP = { categories: 'category', units: 'unit', customers: 'customer', invoices: 'invoice', rentals: 'rental', workOrders: 'wo', inspections: 'insp', vendors: 'vendor', parts: 'part', companyFiles: 'file', expenses: 'expense' };
+const IDX_MAP = { categories: 'category', units: 'unit', customers: 'customer', invoices: 'invoice', rentals: 'rental', workOrders: 'wo', inspections: 'insp', vendors: 'vendor', parts: 'part', companyFiles: 'file', expenses: 'expense', models: 'model' };
 let refreshing = false, refreshTimer = null;
 async function refreshFromBackend() {
   if (refreshing || booting || !backendPassword || saving || savePending || !lastSaved) return;
@@ -18705,14 +18996,15 @@ async function shareSession() {
     caption: tabs.length ? `Scan to open your ${tabs.length} open tab${tabs.length === 1 ? '' : 's'} on another device — sign in with the shared password.`
       : 'Scan to open Rental Wrangler on another device — sign in with the shared password.' });
 }
-// Shop roles (Mechanic / M.Tech) get the Shop card + its 3-bar graph as the landing view
-// — quick access to the crew's worklist. A default only; they can navigate anywhere after.
+// Shop roles (Mechanic / M.Tech) land on the UNITS card with the service lens open —
+// the stackbars worklist graph + Service-Due sort (Shop retirement, Jac 2026-07-07).
+// A default only; they can navigate anywhere after.
 function applyShopRoleLanding() {
   if (currentRole !== 'mechanic' && currentRole !== 'mtech') return;
   const s = activeSession(); if (!s) return;
-  if (s.cols) s.cols.left = 'shop';
-  const sc = s.cards.shop; if (sc) { sc.segment = 'all'; sc.graphView = true; sc.mode = 'list'; sc.recId = null; sc.recType = null; }
-  const li = COLUMNS.findIndex((c) => c.id === 'left'); if (li >= 0) state.mobileCol = li;   // phone: make the Shop column the active one
+  if (s.cols) s.cols.left = 'units';
+  const uc = s.cards.units; if (uc) { uc.graphView = true; uc.mode = 'list'; uc.recId = null; uc.recType = null; uc.sort = { field: 'countdown', dir: 'asc' }; }
+  const li = COLUMNS.findIndex((c) => c.id === 'left'); if (li >= 0) state.mobileCol = li;   // phone: make the Units column the active one
   render();
 }
 async function attemptLogin() {
@@ -18745,7 +19037,7 @@ async function attemptLogin() {
     gpsLogin(pw).then((ok) => { if (ok) { refreshGpsLive(); startGpsViewPoll(); refreshDrivingScore(); } });   // silent GPS login (§5) → live snapshot (step 3) + view-scoped refresh (step 4) + fleet driving score (step 7); fire-and-forget, never blocks main login
     await loadFromBackend();
     finishLoad();
-    applyShopRoleLanding();   // shop roles (Mechanic / M.Tech) land on the Shop graph
+    applyShopRoleLanding();   // shop roles (Mechanic / M.Tech) land on the Units service lens
   } catch (e) {
     backendPassword = ''; sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
     renderLogin(/unauthorized/i.test(String(e && e.message)) ? 'That password wasn’t recognized.' : "Couldn't reach the database. Check your connection and try again.");
@@ -19134,7 +19426,7 @@ function exposeTestApi() {
       latestCustomerSelfie, woBackdrop, offloadPhotoNow, base64PhotoTargets, wrStore, wranglerRailLoad, wrOffloadChatImages, wrEvictChatBlobs, driveViewUrl, mergeWranglerRails,
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, addMonthsISO, openMembershipEnroll, membershipEnrollCommit, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, setRole: (r) => { currentRole = r || ''; render(); },
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, addMonthsISO, openMembershipEnroll, membershipEnrollCommit, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyShopRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
       openCustomerForm, renderOverlay, render, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature, __state: state };   // UI drivers for headless screenshot/e2e tests
 
   } catch (e) { /* no window (non-browser) */ }
@@ -19249,7 +19541,7 @@ async function reseedFromFile() {
   }
 }
 /* ════════════════════════════════════════════════════════════════════════
-   APP-39 · D8/D9 THE COMMS RAIL (spec comms-notifications D8 + D9, Jac
+   APP-38 · D8/D9 THE COMMS RAIL (spec comms-notifications D8 + D9, Jac
    2026-07-07) — the four-category comms surface on the bottom bar: Team ·
    Texts · Email · Mr. Wrangler as glyph chips (bottom-left, saddle-stitch
    divider), each summoning its category's LAST SESSION of conversation tabs

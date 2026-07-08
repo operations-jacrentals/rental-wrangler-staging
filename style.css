@@ -219,6 +219,17 @@ input { font-family: inherit; }
 .close-x.hoveronly { opacity: 0; transition: opacity .12s; }
 .has-closex:hover .close-x.hoveronly, .close-x.hoveronly:hover { opacity: 1; }
 .tab.active .close-x { background: rgba(0,0,0,.28); }
+/* R26: MANUAL LINK — icon-only ghost circle beside a service task, opens its
+   cited OEM manual page in a new tab. Same footprint as .close-x (a task row's
+   other icon-sized affordance) but neutral ghost coloring, not red — this isn't
+   a remove. (Jac 2026-07-07) */
+.icon-link { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--txt-3); flex-shrink: 0; text-decoration: none; transition: color .12s, border-color .12s; }
+.icon-link svg { width: 11px; height: 11px; }
+.icon-link:hover { color: var(--txt); border-color: var(--accent-line); }
+.icon-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* the modelSchedule task row's 3rd grid cell — link + ✕ share it so .woline's
+   fixed 3-column grid (name | nums | actions) never gains a 4th, wrapping child. */
+.woline-acts { display: inline-flex; align-items: center; gap: 6px; }
 /* cascade chip — the anchor's cascade made visible + clearable at the front of a cascaded card's search bar */
 .casc-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px 2px 8px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 11.5px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
 .casc-chip .cc-name { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
@@ -403,6 +414,13 @@ body.is-phone { touch-action: manipulation; }
 .is-phone .overlay { align-items: flex-end; padding: 0; gap: 0; }
 .is-phone .popup { max-width: 100%; width: 100%; max-height: 92dvh; border-radius: 18px 18px 0 0; border-bottom: 0;
   padding-bottom: env(safe-area-inset-bottom); animation: sheetUp .2s cubic-bezier(.2,.7,.2,1); }
+/* a SECOND popup beside the first (the service-detail part panel, cardSub §14) has
+   nowhere to go side-by-side on a phone-width sheet — stack them instead of letting
+   two full-width sheets overflow horizontally; each keeps its own scroll region and
+   gets half the viewport so both stay reachable without a page-level scroll. */
+.is-phone .overlay:has(.popup + .popup) { flex-direction: column; overflow-y: auto; }
+.is-phone .overlay:has(.popup + .popup) .popup { max-height: 46dvh; flex-shrink: 0; }
+.is-phone .overlay:has(.popup + .popup) .popup:last-child { border-radius: 18px 18px 0 0; }
 .sheet-backdrop { position: fixed; inset: 0; z-index: 9490; background: rgba(0,0,0,.5); }   /* §M3 winpicker phone backdrop */
 .is-phone .winpicker-float, .is-phone .datesearch-float { left: 0; right: 0; top: auto; bottom: 0; width: 100%; z-index: 9500; }
 .is-phone .winpicker { border-radius: 18px 18px 0 0; max-height: 92dvh; overflow: auto;
@@ -882,17 +900,6 @@ select.lf-in { appearance: none; cursor: pointer; }
 .gt-a .gt-node { color: var(--on-orange); background: linear-gradient(180deg, #ff9038, var(--accent)); box-shadow: 0 0 0 3px var(--accent-soft); }
 .gt-a .gt-lbl { color: var(--accent); font-family: 'Saira Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .6px; font-weight: 800; font-size: 13.5px; }
 
-/* ── Shop card (merged Work Orders + Service Orders + Inspections) ───────── */
-.shopbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px; flex-wrap: wrap; }
-.shop-seg { display: inline-flex; align-items: center; height: 28px; padding: 0 11px; border-radius: var(--chip-radius); background: var(--panel); border: 1px solid var(--line); color: var(--txt-2); font-size: 11px; font-weight: 600; box-shadow: var(--chip-shadow); white-space: nowrap; }
-.shop-seg:hover { border-color: var(--accent-line); color: var(--txt); }
-.shop-seg.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
-.shop-seg .seg-n { margin-left: 6px; opacity: .7; font-weight: 700; }
-/* each Shop row carries a small type glyph (inspection/WO/service) on the left */
-.row .shop-type { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); z-index: 1; width: 18px; height: 18px; color: var(--txt-3); }
-.row .shop-type svg { width: 18px; height: 18px; }
-.row.shop-row .row-content { padding-left: 26px; }
-
 /* ── §6.2 Item rows are cards/chips ──────────────────────────────────────── */
 .list { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 7px; }   /* even title→search→firstRow gaps (≈10px each) */
 .row {
@@ -954,6 +961,8 @@ select.lf-in { appearance: none; cursor: pointer; }
 .pill.c-danger { background: var(--red); color: #fff; border-color: transparent; font-weight: 800; }         /* S4: confirm-refund = solid red */
 .pill.ghost { background: transparent; border-color: var(--line); color: var(--txt-2); }                     /* R18: quiet action (Cancel/Close) */
 .pill.ghost:hover { color: var(--txt); border-color: var(--accent-line); }
+.pill.ghost.icon-only { width: 19px; padding: 0; }                                                            /* R18 icon-only — circular chip, matches a row badge's height */
+.pill.ghost.icon-only:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pill.locked { opacity: .55; cursor: not-allowed; }                                                          /* R17 locked-gate state (no inline hacks) */
 .req { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 10px; background: #fff; color: #16181d; border: 1px solid #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }  /* rule 15/16/22: required-until-entered = white bg + dark ink */
 .req svg { width: 15px; height: 15px; }
@@ -1033,10 +1042,10 @@ select.lf-in { appearance: none; cursor: pointer; }
 .detail { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 .detail-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .detail-head .d-title { font-size: 16px; font-weight: 700; }
-/* §0.6 — the open record's title now lives in the card header (non-shop cards), so
-   hide the in-body title; collapse the head entirely when only the title was there. */
-.card:not([data-card="shop"]) .detail-head .d-title { display: none; }
-.card:not([data-card="shop"]) .detail-head:has(> .d-title:only-child) { display: none; }
+/* §0.6 — the open record's title lives in the card header, so hide the in-body
+   title; collapse the head entirely when only the title was there. */
+.card .detail-head .d-title { display: none; }
+.card .detail-head:has(> .d-title:only-child) { display: none; }
 /* the open record's title in the card header */
 .card-head .c-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -2229,6 +2238,9 @@ body.is-phone .set-tab-l { flex: 0 0 auto; }
 .board-table .badge { margin-left: 6px; }
 /* §7.10 v2 vendors — clickable board rows + the in-popup record detail */
 .board-table tbody tr.js-board-row { cursor: pointer; }
+/* parts-picker mode (Jac 2026-07-08): the Attach commit pill sits in a right-edge cell */
+.board-pickhint { padding: 9px 14px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.board-table td.board-pickcell { text-align: right; white-space: nowrap; }
 .board-detail { max-width: 820px; margin: 0 auto; }
 
 /* §13 — Board-View icon (left of each card's search) + List-View totals row */
@@ -2574,8 +2586,27 @@ select.nc-in { cursor: pointer; }
 .svc-field input { height: 32px; width: 150px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--txt); font: inherit; font-size: 13px; padding: 0 9px; color-scheme: dark; }
 [data-theme="light"] .svc-field input { color-scheme: light; }
 .svc-ref { margin-bottom: 12px; padding: 10px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
-.svc-ref-head { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--txt-3); margin-bottom: 5px; }
+.svc-ref-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--txt-3); margin-bottom: 5px; }
 .svc-ref-body { font-size: 12px; color: var(--txt-2); line-height: 1.5; }
+/* "What you need" (Jac 2026-07-08, service-detail-panel): fluid + parts spec inside
+   the service-completion popup's .svc-ref panel — the capacity is what a mechanic
+   acts on, so it reads at "big value" weight (matches .kv .v), everything else stays
+   at the panel's quiet muted register. */
+.svc-fluid { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--txt); }
+.svc-fluid svg { width: 16px; height: 16px; color: var(--accent); flex-shrink: 0; }
+.svc-fluid-txt { font-size: 13px; }
+.svc-fluid-txt b { font-size: 15px; font-weight: 700; }
+.svc-notes { font-size: 11.5px; margin-bottom: 8px; }
+.svc-parts-head { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--txt-3); margin: 10px 0 3px; }
+.svc-editnote { text-transform: none; font-weight: 600; letter-spacing: 0; color: var(--txt-3); opacity: .8; }
+.svc-partadd { margin-top: 6px; display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+/* the part-detail side panel — a second .popup beside the service popup (cardSub §14
+   side-by-side precedent: the .overlay is already flex + gap, so a 2nd child lays out
+   beside the 1st with no new layout machinery). */
+.svc-part-popup .popup-body { padding-top: 4px; }
+.svc-part-row { margin: 6px 0; font-size: 12.5px; }
+.svc-vendor-block { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; margin-top: 4px; }
+.svc-vendor-name { font-weight: 700; color: var(--txt); font-size: 13px; }
 /* §12.7 service task rows (status pill gates the completion popup) */
 .svc-task { padding: 4px 0; border-bottom: 1px solid var(--line-soft); }
 .svc-task:last-child { border-bottom: none; }
