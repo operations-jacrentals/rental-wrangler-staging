@@ -969,10 +969,17 @@ function transportLineItems(r) {
  *  is billed as a FRESH rental of just the added days (prevEnd→newEnd), originals frozen. */
 function retroPricingOn() { return ((state.settings && state.settings.company) || {}).retroactivePricing !== false; }
 /** Dollars already billed for a unit's rental TIME on an invoice (rental + extension
- *  lines for that unit) — the baseline retroactive pricing diffs against. */
-function unitBilledRental(inv, rentalId, unitId) {
+ *  lines for that unit) — the baseline retroactive pricing diffs against. On a
+ *  SINGLE-unit rental, match on the rental alone (not unitId) — a unit SWAP (remove
+ *  old + add new) keeps the old unit's PAID line in place (refund-first, §7.4) but
+ *  re-tags nothing, so a strict unitId match would make that money invisible to every
+ *  later extension/credit calc, re-billing the customer for time they already paid
+ *  for under the equipment's old name (Jac bug 2026-07-10). A genuine multi-unit
+ *  rental keeps strict per-unit matching — each unit's own payment stays its own. */
+function unitBilledRental(inv, r, unitId) {
+  const singleUnit = rentalUnits(r).length <= 1;
   return (inv.lineItems || []).reduce((a, li) =>
-    a + ((li.ref === rentalId && li.unitId === unitId && (li.kind === 'rental' || li.kind === 'extension')) ? (Number(li.amount) || 0) : 0), 0);
+    a + ((li.ref === r.rentalId && (singleUnit || li.unitId === unitId) && (li.kind === 'rental' || li.kind === 'extension')) ? (Number(li.amount) || 0) : 0), 0);
 }
 /** The per-unit extension charge for a window change, honoring the retroactive setting.
  *  `prevEnd` = the end date BEFORE this extension (the standalone segment's start when OFF).
@@ -981,7 +988,7 @@ function unitExtensionDelta(inv, r, eu, ns, ne, prevEnd, retro) {
   const u = IDX.unit.get(eu.unitId); if (!u) return { amount: 0, rate: '—' };
   if (retro) {                                              // cheapest(full window) − already billed
     const p = rentalPrice({ categoryId: u.categoryId, startDate: ns, endDate: ne, customerId: r.customerId });
-    return { amount: Math.round(((p ? p.price : 0) - unitBilledRental(inv, r.rentalId, eu.unitId)) * 100) / 100, rate: p ? p.rate : '—' };
+    return { amount: Math.round(((p ? p.price : 0) - unitBilledRental(inv, r, eu.unitId)) * 100) / 100, rate: p ? p.rate : '—' };
   }
   // OFF — price ONLY the added segment (prevEnd → newEnd) as a fresh rental; originals frozen.
   const p = (prevEnd && ne > prevEnd) ? rentalPrice({ categoryId: u.categoryId, startDate: prevEnd, endDate: ne, customerId: r.customerId }) : null;
@@ -1023,7 +1030,7 @@ function invoiceChunks(startISO, endISO) {
   return out.length ? out : [{ idx: 0, start: startISO, end: endISO, days: Math.max(1, total) }];
 }
 /** Dollars already billed for a unit's TIME across the WHOLE rental series. */
-function unitBilledSeries(r, unitId) { return rentalInvoices(r).reduce((a, inv) => a + unitBilledRental(inv, r.rentalId, unitId), 0); }
+function unitBilledSeries(r, unitId) { return rentalInvoices(r).reduce((a, inv) => a + unitBilledRental(inv, r, unitId), 0); }
 /** Open a continuation invoice for [covStart,covEnd] (a fresh ≤28-day chunk). */
 function createContinuationInvoice(r, covStart, covEnd) {
   const id = nextInvoiceId();
@@ -8928,13 +8935,10 @@ function wrChatResolved(c) {
   return filed.length > 0 && filed.every((n) => !wranglerRequests.some((rq) => rq.number === n));
 }
 // §M1 — phone-only per-column bottom strip: Yard→internal chat · Rentals→tool bar · Customers→external chats (shell).
-// §M1/§M3 — the active phone column's card id (state.cards key), for the grid Back/Fwd swipe.
-function activeMobileCard() {
-  const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
-  const s = activeSession();
-  return (s.cols && s.cols[colObj.id]) || colObj.default;
-}
-// §M1 — the card the phone is currently showing (the active column's member).
+// §M1 — the card the phone is currently showing (the active column's member). Also what the
+// grid swipe folds through mainCardOfMember() — it's the same "what am I on" state regardless
+// of whether the swipe started in the footer or the grid (2026-07-10: activeMobileCard(), a
+// byte-identical twin used only by the old grid Back/Fwd swipe, was removed as dead code).
 function currentMobileMember() {
   const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
   const s = activeSession();
@@ -8950,7 +8954,14 @@ const MOBILE_TOGGLE_GROUPS = [
   { col: 'middle', members: ['rentals', 'calendar'] },
   { col: 'right',  members: ['customers', 'sales'] },
 ];
-// The 3 MAIN cards, left→right — what the footer swipe steps between (never a sub-card).
+// §M1/§M3 — the FULL ordered swipe sequence, incl. sub-cards, derived (never hardcoded)
+// from MOBILE_TOGGLE_GROUPS so it stays correct if that list ever changes: left-to-right,
+// main-then-sub per column → ['units','categories','rentals','calendar','customers','sales'].
+// This is what a FOOTER swipe steps through (Jac, 2026-07-10 refinement — swiping the dock
+// should reach the ACTUAL next card, subs included, not just the 3 mains).
+const MOBILE_SWIPE_ORDER = MOBILE_TOGGLE_GROUPS.flatMap((g) => g.members);
+// The 3 MAIN cards, left→right — what a swipe ANYWHERE ELSE (grid/list/detail) steps between
+// (never a sub-card); the footer swipe uses MOBILE_SWIPE_ORDER above instead.
 const MAIN_CARDS = ['units', 'rentals', 'customers'];
 // Which main card a member (incl. a sub-card) belongs to.
 function mainCardOfMember(m) {
@@ -8972,7 +8983,10 @@ function goToCard(member) {
 // every group, stays icon-only (keeps 3 narrow toggles from fighting each other for label
 // width). Tap an icon to jump straight to that card's list. The card's search/sort row is
 // moved DOWN into .mdock-searchslot by render(). Swipe the dock left/right to step through
-// the 3 MAIN cards; the grid swipe is Back/Forward.
+// the FULL MOBILE_SWIPE_ORDER sequence incl. sub-cards; a swipe anywhere ELSE (the grid) instead
+// steps through the 3 MAIN cards only (2026-07-10 refinement — two different swipe zones, see
+// the pointerup handler in boot(); swipe Back/Forward through history stays retired, the jog
+// buttons cover that).
 function mobileDockEl() {
   const cur = currentMobileMember();
   const barHtml = (members) => {
@@ -11418,7 +11432,7 @@ function wirePopupDrag(overlay) {
    remain. Closing by other means (Esc/✕/backdrop) consumes the dangling entry so the
    stack stays balanced. Phone-only — desktop keeps Esc/click. Wired in boot(). ── */
 let backGuard = false, backConsuming = false;
-let swipeFired = false;   // §M1/§M3 — a footer (column) or grid (Back/Fwd) swipe sets this so the trailing click is swallowed once
+let swipeFired = false;   // §M1/§M3 — a footer or grid section-switch swipe sets this so the trailing click is swallowed once
 function anyDismissable() { return !!(state.overlay || state.datesearch || state.chat.open || state.wrangler.open); }
 function dismissTopSheet() {
   if (state.datesearch) { closeDateSearch(); return true; }
@@ -15131,6 +15145,65 @@ function render() {
   perfRecordRender(dt);   // histogram (P0) — arithmetic only, no DOM work
   if (dt > CFG.PERF_BUDGET_MS) console.warn(`[perf] render ${renderCount} took ${dt.toFixed(1)}ms (budget ${CFG.PERF_BUDGET_MS}ms)`);
 }
+/* Lean re-render used ONLY while typing in the GLOBAL search bar. Rebuilds just the
+   results grid (+ the phone dock's listbar / desktop footer counts) and deliberately
+   leaves the HEADER — and with it the live, focused #globalsearch node — mounted and
+   UNTOUCHED. A full render() tears down all of #app (header included), destroying and
+   recreating the focused input; on a phone that recreation interrupts the OS key-repeat
+   (hold-backspace dies after one delete) and swallows keystrokes that land during the
+   swap. Not rebuilding the header keeps the input node continuously connected, so focus,
+   caret, key-repeat and in-flight keys all survive untouched. The header's own
+   search-tools (the Clear ✕, the placeholder) refresh on the next full render(); the
+   has-query highlight is toggled in place below so it stays honest mid-type. Anything a
+   search can't change while you type (KPI header, docks, maps, comms) is left as-is. */
+function renderResults() {
+  const app = $('#app');
+  const oldGrid = app && app.querySelector(':scope > .grid');
+  if (!oldGrid) { render(); return; }                 // not on the grid surface → full render is correct
+  refreshToday();
+  const scrollOld = {};
+  document.querySelectorAll('.card[data-card]').forEach((c) => {
+    const b = c.querySelector('.card-body'); if (!b) return;
+    const v = c.dataset.view || 'list'; scrollOld[c.dataset.card] = v;
+    scrollMemo[c.dataset.card + '|' + v] = b.scrollTop;
+  });
+  availWin = activeDraftWindow();
+  const session = activeSession();
+  const phone = document.body.classList.contains('is-phone');
+  const grid = el('div', 'grid');
+  const shown = phone ? [COLUMNS[Math.max(0, Math.min(2, state.mobileCol))]] : COLUMNS;
+  for (const col of shown) grid.appendChild(columnEl(col, session));
+  oldGrid.replaceWith(grid);
+  if (phone) {   // re-home the freshly-built listbar into the dock, exactly as render() does
+    const oldDock = app.querySelector(':scope > .mobile-dock');
+    const dock = mobileDockEl();
+    if (oldDock) oldDock.replaceWith(dock); else app.appendChild(dock);
+    const lb = grid.querySelector('.listbar');
+    if (lb) dock.querySelector('.mdock-searchslot').appendChild(lb);
+    else {
+      const cardNode = grid.querySelector('.card[data-card]');
+      const dc = cardNode && cardNode.dataset.card, cs = dc && activeSession().cards[dc];
+      if (cs && cs.mode === 'standard') {
+        const jog = cardJog(dc, cs);
+        if (jog) { const bar = el('div', 'listbar mdock-jogbar'); bar.innerHTML = jog; dock.querySelector('.mdock-searchslot').appendChild(bar); }
+      }
+    }
+  } else {
+    const bb = app.querySelector(':scope > .bottombar');
+    if (bb) bb.replaceWith(bottomBarEl());
+  }
+  document.querySelectorAll('.card[data-card]').forEach((c) => {   // restore scroll by view (mirrors render())
+    const b = c.querySelector('.card-body'); if (!b) return;
+    const cardId = c.dataset.card, v = c.dataset.view || 'list', key = cardId + '|' + v;
+    if (v === scrollOld[cardId] || v === 'list') b.scrollTop = scrollMemo[key] || 0;
+    else b.scrollTop = 0;
+  });
+  const sw = document.querySelector('.searchwrap');   // keep the search box's has-query highlight honest without rebuilding the header
+  if (sw) sw.classList.toggle('has-query', !!(state.query.trim() || state.filterTerms.length));
+  ruMountStrips();      // §13.7 — re-mount any open gauge strip's chart into the rebuilt grid
+  mountDispatchMap();   // §2.3 — re-parent the singleton dispatch map if its card is in the rebuilt grid
+  applyTitles();
+}
 /** Flag any element that's actually truncated with data-tip (full text) so the
  *  custom app-styled tooltip can show it on hover. Nothing lost to ellipsis. */
 function applyTitles() {
@@ -15499,8 +15572,8 @@ function initDrag() {
    • holding STILL ~500ms = the right-click/context menu (armMenuTimer),
    • a quick press-and-release never arms past the click discriminator (= tap/action). ── */
 // §M3 — touch DRAG is now a long-press: a press must be HELD ~300ms before a horizontal
-// move lifts a drag. A quick horizontal flick (before this fires) is a Back/Forward swipe
-// instead (see the grid swipe tracker in boot). Frees the horizontal axis for navigation.
+// move lifts a drag. A quick horizontal flick (before this fires) is a section-switch swipe
+// instead (see the swipe tracker in boot). Frees the horizontal axis for navigation.
 function armReadyTimer(arm) { return setTimeout(() => { if (DRAG.armed === arm) arm.ready = true; }, 300); }
 function armMenuTimer(arm) {   // §M3 — hold-still opens the context menu: touch long-press OR mouse click-and-hold (the right-click equivalent). On phones this is now the PRIMARY linking entry (menu-driven linking replaced drag, 2026-06-29).
   return setTimeout(() => {
@@ -15993,7 +16066,7 @@ function dispatchDrop(p, t) {
 }
 
 function onClick(e) {
-  if (swipeFired) { swipeFired = false; e.stopPropagation(); e.preventDefault(); return; }   // §M1/§M3 — swallow the click that ends a column / Back-Fwd swipe
+  if (swipeFired) { swipeFired = false; e.stopPropagation(); e.preventDefault(); return; }   // §M1/§M3 — swallow the click that ends a section-switch swipe
   const t = e.target;
   const closest = (sel) => t.closest(sel);
 
@@ -17113,10 +17186,17 @@ function handlePillX(xEl) {
     } else {
       rec.lineItems.splice(idx, 1);
       if (li.kind === 'rental') {
-        // last unit on the rental → detach the whole rental from the invoice (legacy single-unit path)
         rec.lineItems = rec.lineItems.filter((l) => !(l.kind === 'transport' && l.ref === li.ref));
-        rec.rentalIds = (rec.rentalIds || []).filter((id) => id !== li.ref);
-        if (r2 && r2.invoiceId === rec.invoiceId) { r2.invoiceId = null; reindex('rentals', r2); logAction(r2, `Removed from invoice ${invoiceShort(rec.invoiceId)}`); }
+        // Detach the whole rental from the invoice ONLY when no other line still bills it (legacy
+        // single-unit path) — a rental can carry more than one 'rental' line on the SAME invoice
+        // (e.g. an original paid line plus a later added-then-removed one), and severing rentalIds/
+        // invoiceId unconditionally orphans the invoice's OWN remaining paid line for this rental,
+        // making it invisible to every future extension credit calc (Jac bug 2026-07-10 — Kerrigan).
+        const stillBilled = rec.lineItems.some((l) => l.ref === li.ref);
+        if (!stillBilled) {
+          rec.rentalIds = (rec.rentalIds || []).filter((id) => id !== li.ref);
+          if (r2 && r2.invoiceId === rec.invoiceId) { r2.invoiceId = null; reindex('rentals', r2); logAction(r2, `Removed from invoice ${invoiceShort(rec.invoiceId)}`); }
+        }
       }
     }
     logAction(rec, `Removed ${li.kind === 'rental' ? 'rental' : 'line'}: ${li.label} (${money(li.amount)})`);
@@ -17937,32 +18017,31 @@ function completeWOAttempt(woId) {
   openOverlay({ kind: 'wodone', woId });           // "Are you sure? Not all items are completed."
 }
 
-// Re-render debounced, then land focus + cursor back on `findEl()` (the input gets
-// torn down and recreated by the full-app render, same as the old synchronous path).
-function debouncedSearchRerender(schedule, renderFn, findEl) {
-  schedule(() => {
-    const el2 = findEl(); const sel = el2 ? el2.selectionStart : null;
-    renderFn();
-    const el3 = findEl(); if (el3 && sel != null) { el3.focus(); el3.setSelectionRange(sel, sel); }
-  });
-}
-const scheduleHistorySearchRender = debounce(150);
-const scheduleMiniSearchRender = debounce(150);
 function onInput(e) {
   if (e.target.id === 'globalsearch') {
+    // The state updates on every keystroke; the (debounced) re-render rebuilds ONLY the
+    // results grid via renderResults(), leaving THIS input node mounted — so no focus/
+    // caret restore is needed and the phone's key-repeat + in-flight keys are never lost.
     setQueryValue(e.target.value);
-    debouncedSearchRerender(scheduleGlobalSearchRender, render, () => document.getElementById('globalsearch'));
+    scheduleGlobalSearchRender(renderResults);
     return;
   }
+  // The per-card list / history searches recreate their own (in-grid) input on render, so
+  // they can't ride renderResults() (it rebuilds the grid). They stay on the ORIGINAL
+  // synchronous per-keystroke render + caret-restore — each filters one card's list (far
+  // cheaper than the global scan), and staying synchronous avoids the async-recreate
+  // keystroke-drop that debouncing a full render would introduce on a focused in-grid input.
   if (e.target.classList.contains('js-history-search')) {
     if (state.overlay?.kind === 'board') {   // vendor detail in the board popup — history search rides the overlay state
       state.overlay.historySearch = e.target.value;
-      debouncedSearchRerender(scheduleHistorySearchRender, renderOverlay, () => document.querySelector('.overlay .js-history-search'));
+      const sel = e.target.selectionStart; renderOverlay();
+      const hs = document.querySelector('.overlay .js-history-search'); if (hs) { hs.focus(); hs.setSelectionRange(sel, sel); }
       return;
     }
     const card = e.target.closest('.card')?.dataset.card; if (!card) return;
     activeSession().cards[card].historySearch = e.target.value;
-    debouncedSearchRerender(scheduleHistorySearchRender, render, () => document.querySelector(`.card[data-card="${card}"] .js-history-search`));
+    const sel = e.target.selectionStart; render();
+    const hs = document.querySelector(`.card[data-card="${card}"] .js-history-search`); if (hs) { hs.focus(); hs.setSelectionRange(sel, sel); }
     return;
   }
   if (e.target.classList.contains('mini-search')) {
@@ -17971,11 +18050,13 @@ function onInput(e) {
     // rides state.calSearch directly instead of a per-card cs (Phase 1, spec §2.2).
     if (card === 'calendar') {
       state.calSearch = e.target.value;
-      debouncedSearchRerender(scheduleMiniSearchRender, render, () => document.querySelector('.mini-search[data-card="calendar"]'));
+      const sel = e.target.selectionStart; render();
+      const ms = document.querySelector('.mini-search[data-card="calendar"]'); if (ms) { ms.focus(); ms.setSelectionRange(sel, sel); }
       return;
     }
     const mcs = activeSession().cards[card]; mcs.search = e.target.value; mcs.listLimit = undefined;
-    debouncedSearchRerender(scheduleMiniSearchRender, render, () => document.querySelector(`.mini-search[data-card="${card}"]`));
+    const sel = e.target.selectionStart; render();
+    const ms = document.querySelector(`.mini-search[data-card="${card}"]`); if (ms) { ms.focus(); ms.setSelectionRange(sel, sel); }
     return;
   }
   // Feedback description → store as they type (so a re-render keeps it).
@@ -19497,6 +19578,12 @@ function createInvoiceForRental(rentalId) {
   if (!r.customerId) { flashOr('[data-slot="customer"]', 'The Quote needs a customer first — drag one on (or quick-add).'); return; }
   if (!r.startDate || !r.endDate) { flashOr('.rdcal, .timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   if (!rentalUnitIds(r).length) { flashOr('.stall-empty, [data-slot="unit"]', 'Add at least one unit before invoicing.'); return; }
+  // Money-safe duplicate guard (Jac bug 2026-07-10 — Kerrigan): this mints a FRESH invoice
+  // billed at the full window price with no credit for anything already paid — correct only
+  // when the rental has never been invoiced. If a prior invoice already covers this rental
+  // (even one r.invoiceId no longer points at — e.g. after an unlink), the right tool is the
+  // extension flow (bills only the delta, retro-priced), never a second fresh invoice.
+  if (rentalInvoices(r).length) { flashOr('[data-slot="unit"]', 'This rental already has an invoice — extend its window to bill more (never +Invoice again).'); return; }
   // §20 voided units aren't billed — so a rental where EVERY unit is No Show/Cancelled would
   // mint a silently-EMPTY invoice (Jac bug 2026-07-06: a stale Reserved rental derives No Show
   // → rentalLineItems() filters everything → attached invoice with zero lines). Refuse loudly
@@ -22330,15 +22417,25 @@ function boot() {
     if (backConsuming) { backConsuming = false; return; }
     if (anyDismissable()) { backGuard = false; dismissTopSheet(); }   // entry already popped by the browser → re-pushed by render if more remain
   });
-  // §M1/§M3 — phone horizontal swipes. On the FOOTER dock: change column (the only place
-  // columns change now). On the GRID/column: Back/Forward of the active card. A real drag
-  // (long-press then move) is excluded; a fired swipe swallows the trailing click.
+  // §M1/§M3 — phone horizontal swipes: TWO different behaviors depending on where the swipe
+  // STARTS (Jac, 2026-07-10 refinement — "swiping should work on any mobile screen, not just
+  // in details. Swiping the footer should bring you to the ACTUAL next card, including
+  // subcards. Swiping anywhere else switches your MAIN card."):
+  //   - footer (.mobile-dock): steps through MOBILE_SWIPE_ORDER — the FULL sequence incl.
+  //     sub-cards (units→categories→rentals→calendar→customers→sales), with wraparound.
+  //   - everywhere else (.grid — the whole content area, list OR record view): steps
+  //     through MAIN_CARDS only (Units → Rentals → Customers), folding a sub-card to its
+  //     main first — unchanged from the prior grid-swipe behavior.
+  // (swipe-based Back/Forward through view history is retired — "not needed, we have
+  // buttons" — the jog Back/Forward buttons (cardJog → .js-cardback/.js-cardfwd) cover
+  // that). A real drag (long-press then move) is excluded; a fired swipe swallows the
+  // trailing click.
   let swipeStart = null;
   document.addEventListener('pointerdown', (e) => {
     if (!document.body.classList.contains('is-phone')) { swipeStart = null; return; }
-    const inFooter = !!(e.target.closest && e.target.closest('.mobile-dock'));
-    const inGrid = !inFooter && !!(e.target.closest && e.target.closest('.grid'));
-    swipeStart = (inFooter || inGrid) ? { x: e.clientX, y: e.clientY, id: e.pointerId, footer: inFooter } : null;
+    const footer = !!(e.target.closest && e.target.closest('.mobile-dock'));
+    const grid = !footer && !!(e.target.closest && e.target.closest('.grid'));
+    swipeStart = (footer || grid) ? { x: e.clientX, y: e.clientY, id: e.pointerId, footer } : null;
   }, true);
   document.addEventListener('pointerup', (e) => {
     const s = swipeStart; swipeStart = null;
@@ -22347,13 +22444,14 @@ function boot() {
     if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.3) return;            // not a clean horizontal swipe
     swipeFired = true;                                                             // swallow the trailing click (row/toggle)
     if (s.footer) {
+      const order = MOBILE_SWIPE_ORDER;
+      let i = order.indexOf(currentMobileMember()); if (i < 0) i = 0;              // left → next, right → previous, wraps around
+      const next = (i + (dx < 0 ? 1 : -1) + order.length) % order.length;
+      goToCard(order[next]); haptic(8);
+    } else {
       const cur = mainCardOfMember(currentMobileMember()); let i = MAIN_CARDS.indexOf(cur); if (i < 0) i = 0;   // fold a sub-card to its main card first; left → next, right → previous
       const next = Math.max(0, Math.min(MAIN_CARDS.length - 1, i + (dx < 0 ? 1 : -1)));
       if (next !== i) { goToCard(MAIN_CARDS[next]); haptic(8); }
-    } else {
-      const card = activeMobileCard();
-      if (dx > 0) cardBack(card); else cardFwd(card);                              // swipe right → Back, left → Forward
-      haptic(8);
     }
   }, true);
   initDrag();   // §15c drag & drop link engine — #drag-layer singleton + document pointer listeners
