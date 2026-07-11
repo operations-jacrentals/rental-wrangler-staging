@@ -8897,6 +8897,16 @@ function listView(cardDef, session) {
     wrap.appendChild(chip);
   }
 
+  wrap.appendChild(cardListEl(cardDef, session));
+  return wrap;
+}
+/* The rows-only `.list` element of a card's list view — factored out of listView so a
+   mini-search keystroke can rebuild ONLY the rows (renderCardList) without touching the
+   .listbar / its focused input. Owns the filter → visibility → sort → window/group pipeline
+   and the empty-state prompts; the sort/search bar + filter chips stay in listView. */
+function cardListEl(cardDef, session) {
+  const card = cardDef.id;
+  const cs = session.cards[card];
   let rows = listFor(card, session);
   if (card === 'units') rows = unitsVisible(rows, cs);   // default: Active only — hide non-Active fleet (or reveal via the sort) (#2/#34)
   if (card === 'rentals') rows = rentalsVisible(rows, session, cs);   // default: live work queue — cleared (all-terminal) rentals hidden; cascade/search/"Completed" sort reveal
@@ -8955,8 +8965,7 @@ function listView(cardDef, session) {
   } else {
     appendWindowed(list, rows, cs, card, (rec) => list.appendChild(rowEl(card, rec)));
   }
-  wrap.appendChild(list);
-  return wrap;
+  return list;
 }
 const PLUS_NEW = new Set(['rentals', 'invoices', 'customers']);
 
@@ -15753,6 +15762,28 @@ function renderResults() {
   mountDispatchMap();   // §2.3 — re-parent the singleton dispatch map if its card is in the rebuilt grid
   applyTitles();
 }
+/* §perf — lean per-card list re-render, the CARD-search twin of renderResults() (which
+   serves the GLOBAL bar). Used ONLY while typing in a card's .mini-search: rebuilds just
+   THAT card's .list (rows) via the shared cardListEl builder and swaps it in, leaving the
+   .listbar — and its focused .mini-search input — mounted, so focus/caret/key-repeat survive
+   and NO full render() (all columns + docks + maps + KPI rings + applyTitles) fires per
+   keystroke. Falls back to a full render() whenever the surgical path can't apply (card
+   off-screen, not a plain list, graph view). Debounced like the global bar so fast typing
+   coalesces (scheduleCardListRender). */
+const scheduleCardListRender = debounce(150);
+function renderCardList(card) {
+  const session = activeSession();
+  const cs = session.cards[card];
+  const cardNode = document.querySelector(`.card[data-card="${card}"]`);
+  const cardDef = GRID_CARD_BY_ID[card];
+  if (!cardNode || !cardDef || !cs || cs.mode !== 'list' || cs.graphView) { render(); return; }   // not a plain on-screen list → full render
+  const body = cardNode.querySelector('.card-body');
+  const oldList = body && body.querySelector('.list');
+  if (!body || !oldList) { render(); return; }
+  oldList.replaceWith(cardListEl(cardDef, session));   // rebuild ONLY the rows; the input stays mounted → focus/caret untouched
+  body.scrollTop = 0;   // new query → show results from the top (mirrors the full-render list reset)
+  applyTitles();        // re-arm truncation tooltips on the fresh rows (rAF-deferred, hover-only — no cost on touch)
+}
 /** Flag any element that's actually truncated with data-tip (full text) so the
  *  custom app-styled tooltip can show it on hover. Nothing lost to ellipsis.
  *  Perf (Jac 2026-07-11): the data-tips here are consumed ONLY by the hover tooltip
@@ -18730,11 +18761,12 @@ function onInput(e) {
     scheduleGlobalSearchRender(renderResults);
     return;
   }
-  // The per-card list / history searches recreate their own (in-grid) input on render, so
-  // they can't ride renderResults() (it rebuilds the grid). They stay on the ORIGINAL
-  // synchronous per-keystroke render + caret-restore — each filters one card's list (far
-  // cheaper than the global scan), and staying synchronous avoids the async-recreate
-  // keystroke-drop that debouncing a full render would introduce on a focused in-grid input.
+  // The per-card list search (.mini-search) now rides its OWN lean twin of renderResults():
+  // renderCardList() rebuilds only that card's .list rows and leaves the .listbar input
+  // mounted (§perf) — so it's debounced + keystroke-safe like the global bar, no longer a
+  // full render() per keystroke. The record HISTORY search (js-history-search) stays on the
+  // original synchronous render + caret-restore below — it's a small in-record list, and its
+  // input isn't a stable standalone node to keep mounted (rebuilt with the record body).
   if (e.target.classList.contains('js-history-search')) {
     if (state.overlay?.kind === 'board') {   // vendor detail in the board popup — history search rides the overlay state
       state.overlay.historySearch = e.target.value;
@@ -18759,8 +18791,13 @@ function onInput(e) {
       return;
     }
     const mcs = activeSession().cards[card]; mcs.search = e.target.value; mcs.listLimit = undefined;
-    const sel = e.target.selectionStart; render();
-    const ms = document.querySelector(`.mini-search[data-card="${card}"]`); if (ms) { ms.focus(); ms.setSelectionRange(sel, sel); }
+    // §perf — the input stays mounted (renderCardList rebuilds only the rows), so keep the
+    // has-query affordance honest in place, then schedule a lean rows-only re-render instead
+    // of a full render() per keystroke — the same reuse-the-input pattern the global bar uses
+    // via renderResults(). No caret restore needed: this input is never destroyed.
+    const sw = e.target.closest('.mini-searchwrap');
+    if (sw) sw.classList.toggle('has-query', !!(e.target.value.trim() || (mcs.filterTerms || []).length));
+    scheduleCardListRender(() => renderCardList(card));
     return;
   }
   // Feedback description → store as they type (so a re-render keeps it).
@@ -23154,7 +23191,7 @@ function boot() {
   // index, not by resetting the member). Sub-cards (Categories/Calendar/Sales) stay reachable via
   // the dock's tap nav + the in-column tabs. A record drag (long-press → DRAG.active) is excluded;
   // touch-action:pan-y frees the horizontal axis so this never fights vertical scroll.
-  const PAGE = { on: false, id: null, x0: 0, y0: 0, locked: false, edge: false, dir: 0, nIdx: -1, grid: null, ghost: null, w: 1, lastX: 0, lastT: 0, vx: 0 };
+  const PAGE = { on: false, id: null, x0: 0, y0: 0, locked: false, edge: false, fromEdge: false, dir: 0, nIdx: -1, grid: null, ghost: null, w: 1, lastX: 0, lastT: 0, vx: 0 };
   function pageCleanup(settle) {
     const g = PAGE.grid, gh = PAGE.ghost;
     if (g) { if (settle) { g.classList.add('paging-settle'); g.style.transform = 'translateX(0)'; } else { g.classList.remove('paging-settle'); g.style.transform = ''; } }
@@ -23163,10 +23200,17 @@ function boot() {
     document.body.classList.remove('is-paging');
     PAGE.on = false; PAGE.locked = false; PAGE.edge = false; PAGE.ghost = null; PAGE.grid = null; PAGE.dir = 0; PAGE.nIdx = -1;
   }
+  // §M3 — how close to the L/R screen edge a drag must START to count as an iOS-style
+  // "back-swipe": from the edge, paging engages near-instantly (the reliable entry Jac
+  // asked for). An edge-started horizontal drag doesn't trip native vertical scroll, so no
+  // overlay/gutter is needed (which would swallow taps + edge scrolling) — this is a pure
+  // start-position test.
+  const EDGE_ZONE = 30;
   document.addEventListener('pointerdown', (e) => {
-    if (!document.body.classList.contains('is-phone') || DRAG.active || DRAG.armed) { PAGE.on = false; return; }
-    if (!(e.target.closest && (e.target.closest('.grid') || e.target.closest('.mobile-dock')))) { PAGE.on = false; return; }
-    PAGE.on = true; PAGE.id = e.pointerId; PAGE.x0 = e.clientX; PAGE.y0 = e.clientY;
+    if (!document.body.classList.contains('is-phone') || DRAG.active || DRAG.armed || document.body.classList.contains('sheet-open')) { PAGE.on = false; return; }   // no paging while a sheet/overlay owns the screen
+    const fromEdge = e.clientX <= EDGE_ZONE || e.clientX >= window.innerWidth - EDGE_ZONE;
+    if (!fromEdge && !(e.target.closest && (e.target.closest('.grid') || e.target.closest('.mobile-dock')))) { PAGE.on = false; return; }   // middle drags still need to start on the grid/dock; an edge drag can start over anything
+    PAGE.on = true; PAGE.id = e.pointerId; PAGE.x0 = e.clientX; PAGE.y0 = e.clientY; PAGE.fromEdge = fromEdge;
     PAGE.locked = false; PAGE.edge = false; PAGE.lastX = e.clientX; PAGE.lastT = e.timeStamp; PAGE.vx = 0;
   }, true);
   document.addEventListener('pointermove', (e) => {
@@ -23174,8 +23218,16 @@ function boot() {
     if (DRAG.active) { pageCleanup(false); return; }                               // a record drag took over → abandon paging
     const dx = e.clientX - PAGE.x0, dy = e.clientY - PAGE.y0;
     if (!PAGE.locked) {
-      if (Math.abs(dx) < 7 && Math.abs(dy) < 7) return;                            // wait for a clear intent
-      if (Math.abs(dy) >= Math.abs(dx)) { PAGE.on = false; return; }               // vertical-dominant → leave it to native scroll
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      const need = PAGE.fromEdge ? 6 : 10;                                         // edge engages almost immediately; a middle drag reads a touch longer for a clean direction
+      if (adx < need && ady < need) return;                                        // deadzone — no clear intent yet
+      // §M3 — RELAXED horizontal test (Jac: the old `ady >= adx` kill made the swipe
+      // near-impossible to start). Edge swipes engage on just a hint of horizontal; middle
+      // swipes engage unless the motion is CLEARLY vertical (~>1.25:1), then hand off to
+      // native scroll. Engaging easily is safe: a drag that doesn't clear ~35% just rubber-
+      // bands back (pageEnd), so an accidental peek is self-correcting.
+      const horizontal = PAGE.fromEdge ? (adx >= ady * 0.4) : (adx * 1.25 >= ady);
+      if (!horizontal) { PAGE.on = false; return; }                               // vertical-dominant → leave it to native scroll
       const idx = Math.max(0, Math.min(2, state.mobileCol));
       PAGE.dir = dx < 0 ? 1 : -1;                                                  // drag left → next screen, drag right → previous
       PAGE.nIdx = idx + PAGE.dir;
