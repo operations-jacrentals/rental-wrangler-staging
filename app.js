@@ -2295,7 +2295,7 @@ const state = {
   custAgOpen: {},             // Phase 1 — which Agreements row is expanded inside the Account section — { [customerId]: cardId | '__new__' | null } (one open at a time, mirrors custInvOpen); '__new__' = the +Agreement/Card creation panel
   custAgDraft: {},            // Phase 2b — the in-progress NEW-agreement draft — { [customerId]: {accountType, startDate, selfie, signature} }; view-local, cleared on sign/cancel
   svcSecOpen: {},             // Unit detail — is the Services (service-order) section expanded? { [unitId]: true }; collapsed by default (mirrors custAcctOpen), view-local, reset on a fresh unit open
-  woSecOpen: {},              // Unit detail — which Work Orders are expanded — { [woId]: true }; each collapsed by default, view-local, reset on a fresh unit open
+  woRowOpen: {},              // Unit detail — which Work Order row is expanded (accordion, one per unit, mirrors custInvOpen) — { [unitId]: woId | null }; collapsed by default, view-local, reset on a fresh unit open
   calSearch: '',               // Trips card mini-search (calendar is card-stateless — no session.cards.calendar — so this rides on state directly)
   calOpenTrip: null,           // §2.2b cab sheet — the ONE trip row expanded to its unit-facts sheet (row-body tap toggles; second tap collapses)
   autoRunFlags: null,          // §2.7 Auto-Run — { [tripId]: {reason:'unpinned'|'deadline', deadline?, projectedArrival?} }, session-only report on the last run (never a stored record field)
@@ -2529,7 +2529,7 @@ function openStandard(card, recId, recType) {
   if (card === 'customers' && state.funnelTab) delete state.funnelTab[recId];   // §3.5 — a fresh customer open resets the funnel toggle to Rental
   if (card === 'customers') { if (state.custInvOpen) delete state.custInvOpen[recId]; if (state.custInvMenu) delete state.custInvMenu[recId]; }   // §3.3 — collapse the embedded Invoices accordion on a fresh open (openInvoice re-sets it after)
   if (card === 'customers') { if (state.custAcctOpen) delete state.custAcctOpen[recId]; if (state.custAgOpen) delete state.custAgOpen[recId]; if (state.custAgDraft) delete state.custAgDraft[recId]; }   // Phase 1/2b — collapse the Account section + its Agreements accordion + any in-progress draft on a fresh open
-  if (card === 'units') { if (state.svcSecOpen) delete state.svcSecOpen[recId]; if (state.woSecOpen) openWOsForUnit(recId).forEach((w) => delete state.woSecOpen[w.woId]); }   // collapse the Services section + this unit's Work Orders on a fresh open (mirrors the Account collapse above)
+  if (card === 'units') { if (state.svcSecOpen) delete state.svcSecOpen[recId]; if (state.woRowOpen) delete state.woRowOpen[recId]; }   // collapse the Services section + any open Work Order row on a fresh open (mirrors the Account/Invoices collapse above)
   ackComments(recOf(entityCardOf(card, recType), recId));   // viewing = acknowledged (Phase 6)
   // §10 + #54 — opening a Category while the rental-window picker is live (a window's
   // picked, so availWin is set) pivots the left column to Units, pre-filled with the
@@ -7184,7 +7184,14 @@ function collapseSection({ open, toggleCls, rec, extraCls = '', lbl, summary, ch
     + (open ? `<div class="acct-body">${body}</div>` : '')
     + `</div>`;
 }
-function woSectionHtml(w) {
+// The bottleneck phase word shown on a WO row/chip: the worst open line's phase,
+// else 'Ready' when every line is done, else the WO-level phase for an empty WO.
+function woPhaseLabel(w, bottleIdx) {
+  if (w.cancelled) return 'Cancelled';
+  if (bottleIdx >= 0) return getStatus('woPhase', w.lineItems[bottleIdx].phase).label;
+  return (w.lineItems || []).length ? 'Ready' : getStatus('woPhase', w.phase || 'Part Needed?').label;
+}
+function woExpandedHtml(w) {
   const bn = woBottleneck(w);
   const secColor = bn.color === 'red' ? 'red' : bn.color === 'green' ? 'green' : 'yellow';
   const parts = (w.lineItems || []).reduce((a, li) => a + (Number(li.cost) || 0), 0);
@@ -7218,26 +7225,63 @@ function woSectionHtml(w) {
   const dateFlag = stale
     ? flagEl('No lines', 'yellow', { alert: true, title: staleTip })
     : flagEl(fmtShortDate(w.date), 'gray');
-  // COLLAPSED-BY-DEFAULT (mirrors the customer Account section): a one-line bar
-  // whose status chip = the bottleneck phase, colored by the WO's live urgency; the
-  // full body (report edit + flags + line items + foot) rides behind the chevron.
-  const open = !!(state.woSecOpen && state.woSecOpen[w.woId]);
-  const report = (w.woReport || '').trim();
-  const summary = `<b>${report ? esc(report) : 'No report'}</b><span class="acct-dot">·</span>${esc(fmtShortDate(w.date))}`;
+  // EXPANDED work-order row (accordion, one per unit — mirrors the customer Invoices
+  // section's open invoice): a collapse header (WO · editable report · phase chip ·
+  // close) over the full body (flags + line items + totals + bill/cancel/complete foot).
   const chip = w.cancelled
     ? { text: 'Cancelled', tone: 'mute' }
-    : { text: bottleIdx >= 0 ? getStatus('woPhase', w.lineItems[bottleIdx].phase).label : 'Ready', tone: { red: 'bad', yellow: 'warn', green: 'ok' }[secColor] };
-  const body = `<div class="wo-openhead"><span style="font-weight:800;margin-right:1px">WO:</span> <span class="inline-edit" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span>
-      <span class="right">${flagsStack([typeFlag, dateFlag], 24)}</span></div>
-    <div class="wototals">${addBtn('Part/Task', { anchor: true, js: 'js-add-part', h: 26, data: { rec: w.woId } })}<span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>
-    ${lines || '<div class="kv"><span class="muted" style="font-size:12px">No line items yet</span></div>'}
-    <div class="wofoot">
-      <span class="derived">Parts ${money(Math.max(0, billed - laborBilled))} + Hrs ${money(laborBilled)} = ${money(billed)}</span>
-      ${w.cancelled
+    : { text: woPhaseLabel(w, bottleIdx), tone: { red: 'bad', yellow: 'warn', green: 'ok' }[secColor] };
+  return `<div class="inv-open wo-open wo-${w.woId}" data-wo="${w.woId}">`
+    + `<div class="io-bar"><div class="io-bar-top">`
+    + `<span class="ir-id">WO</span>`
+    + `<span class="ir-mid"><span class="inline-edit ir-woreport" data-edit="field" data-card="workOrders" data-field="woReport" data-rec="${w.woId}" data-ph="Report">${esc(w.woReport)}</span><span class="ir-date">${esc(fmtShortDate(w.date))}</span></span>`
+    + `<span class="type-chip ${chip.tone}">${esc(chip.text)}</span>`
+    + `<button class="io-collapse js-wo-collapse" data-unit="${esc(w.unitId)}" data-tip="Collapse">${I.chev}</button>`
+    + `</div></div>`
+    + `<div class="wo-open-body">`
+    + `<div class="kv" style="justify-content:flex-end;gap:6px">${flagsStack([typeFlag, dateFlag], 22)}</div>`
+    + `<div class="wototals">${addBtn('Part/Task', { anchor: true, js: 'js-add-part', h: 26, data: { rec: w.woId } })}<span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>`
+    + `${lines || '<div class="kv"><span class="muted" style="font-size:12px">No line items yet</span></div>'}`
+    + `<div class="wofoot"><span class="derived">Parts ${money(Math.max(0, billed - laborBilled))} + Hrs ${money(laborBilled)} = ${money(billed)}</span>`
+    + (w.cancelled
         ? `<span class="pill c-gray" style="height:26px;font-size:11px" data-tip="This work order is cancelled">Cancelled</span>${actionPill('commit', 'Reopen WO', { js: 'js-wo-reopen', h: 26, data: { rec: w.woId } })}`
-        : `${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}<button class="pill ghost js-wo-cancel" data-r="R18" data-rec="${esc(w.woId)}" style="height:26px;font-size:11px">Cancel WO</button>${actionPill('commit', 'Complete WO', { js: `js-wo-complete ramp${bn.color === 'green' ? ' ready' : ''}`, h: 26, data: { rec: w.woId } })}`}
-    </div>`;
-  return collapseSection({ open, toggleCls: 'js-wo-sec-toggle', rec: w.woId, extraCls: `wo-${w.woId} sec-${secColor}`, lbl: 'WO', summary, chip, body, bg: woBg });
+        : `${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}<button class="pill ghost js-wo-cancel" data-r="R18" data-rec="${esc(w.woId)}" style="height:26px;font-size:11px">Cancel WO</button>${actionPill('commit', 'Complete WO', { js: `js-wo-complete ramp${bn.color === 'green' ? ' ready' : ''}`, h: 26, data: { rec: w.woId } })}`)
+    + `</div>`
+    + `</div>`
+    + `</div>`;
+}
+// Collapsed work-order ROW (mirrors an invoice row): urgency bar · WO · report/date ·
+// $parts + phase · chevron. Clicking opens it accordion-style (js-wo-row).
+function woRowHtml(w) {
+  const bn = woBottleneck(w);
+  const secColor = bn.color === 'red' ? 'red' : bn.color === 'green' ? 'green' : 'yellow';
+  const statCls = w.cancelled ? '' : { red: 'due', yellow: 'part', green: 'paid' }[secColor];
+  const _openL = (w.lineItems || []).map((l, i) => ({ i, ph: l.phase, eta: l.eta })).filter((l) => l.ph !== 'Complete');
+  _openL.sort((a, b) => ((WO_SEV[a.ph] ?? 9) - (WO_SEV[b.ph] ?? 9)) || String(a.eta || '~').localeCompare(String(b.eta || '~')));
+  const bottleIdx = _openL.length ? _openL[0].i : -1;
+  const parts = (w.lineItems || []).reduce((a, li) => a + (Number(li.cost) || 0), 0);
+  const report = (w.woReport || '').trim();
+  return `<div class="inv-row js-wo-row wo-${w.woId}" data-rec="${esc(w.woId)}" data-unit="${esc(w.unitId)}" data-wo="${esc(w.woId)}" data-tip="Open work order">`
+    + `<span class="ir-stat ${statCls}"></span>`
+    + `<span class="ir-id">WO</span>`
+    + `<span class="ir-mid"><span class="ir-desc">${report ? esc(report) : 'No report'}</span><span class="ir-date">${esc(fmtShortDate(w.date))}</span></span>`
+    + `<span class="ir-amt ${statCls}">${money(parts)}<small>${esc(woPhaseLabel(w, bottleIdx))}</small></span>`
+    + `<span class="ir-chev">${I.chev}</span>`
+    + `</div>`;
+}
+// The Work Orders SECTION — one .section holding the open WOs as accordion rows (like
+// the customer Invoices section), with the +Work Order add beneath. Replaces the old
+// one-floating-plate-per-WO layout (Jac: WOs should be rows WITHIN a section).
+function workOrdersSection(u) {
+  const wos = openWOsForUnit(u.unitId);
+  const openId = (state.woRowOpen && state.woRowOpen[u.unitId]) || null;
+  const rows = wos.length
+    ? wos.map((w) => (w.woId === openId ? woExpandedHtml(w) : woRowHtml(w))).join('')
+    : '<div class="inv-empty muted">No open work orders.</div>';
+  return `<div class="section wo-sec"><h4>Work Orders${wos.length ? ` <span class="hmuted">· ${wos.length}</span>` : ''}</h4>`
+    + `<div class="add-row wo-add">${addBtn('Work Order', { js: 'js-new-wo-unit', link: true, data: { rec: u.unitId } })}</div>`
+    + `<div class="inv-scroll wo-scroll">${rows}</div>`
+    + `</div>`;
 }
 /* Per-unit SERVICES section (Shop retirement, Jac 2026-07-07): the recurring
    countdown list — wash pinned to the top, then most-urgent first — with the
@@ -7788,7 +7832,7 @@ const DETAIL = {
       </div>
     </div>`;
     const svcSec = serviceTasksHtml(u);   // Shop retirement (Jac 2026-07-07): services live ON the unit
-    const woSecs = openWOsForUnit(u.unitId).map(woSectionHtml).join('');
+    const woSec = workOrdersSection(u);    // Work Orders as accordion rows within ONE section (like Invoices)
     const notes = notesSection('units', u, 'unitId');
     const hchips = [
       { kind: 'insp', label: `${DATA.inspections.filter((n) => n.unitId === u.unitId).length} Inspections`, cls: 'g', re: /inspect/i },
@@ -7802,8 +7846,7 @@ const DETAIL = {
       ${notes.top}
       ${inspSec}
       ${svcSec}
-      ${woSecs}
-      <div class="add-row">${addBtn('Work Order', { js: 'js-new-wo-unit', link: true, data: { rec: u.unitId } })}</div>
+      ${woSec}
       ${specs}
       ${gps}
       ${coverage}
@@ -9244,6 +9287,7 @@ const ROADMAP_AREAS = [
 ];
 function headerEl() {
   const h = el('div', 'header');
+  const isPhone = document.body.classList.contains('is-phone');   // §M6 — phone drops the global search + reshapes the tab rail / close-all
   const roleRing = (id, label, vals, color) => `<button class="kpi-ring js-ring" data-role="${id}">
       <span class="ring-wrap">${ring3SVG(vals, color, { size: 64 })}</span>
       <span class="ring-label">${esc(label)}</span>
@@ -9266,9 +9310,9 @@ function headerEl() {
     <div class="kpis">${rings}</div>
     ${topBar}
     <div class="header-right">
-      <div class="hr-top">
+      <div class="hr-top${state.tabs.length ? ' has-tabs' : ''}">
         <div class="header-tabs tabstrip">${tabStrip(state.tabs)}</div>
-        ${state.tabs.length ? `<span class="closeall-slot">${ghostPill('Close all', { js: 'js-closeall-menu', tip: 'Close all tabs' })}</span>` : ''}
+        ${state.tabs.length && !isPhone ? `<span class="closeall-slot">${ghostPill('Close all', { js: 'js-closeall-menu', tip: 'Close all tabs' })}</span>` : ''}${/* §M6 — no close-all on phones (Jac): each tab keeps its own ✕; the rail stays tabs-only */ ''}
         <span class="spacer"></span>
         ${currentUser ? `<span class="hello-name">${esc(currentUser)}</span>` : ''}
       </div>
@@ -15538,6 +15582,26 @@ function setFocusedCard(cardId) {
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
 const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list vs which record)
+// §M6 — phone chrome reflow (Jac 2026-07-11): the global "Search everything…" bar is dropped
+// (CSS-hidden); the phone reads top→bottom as HEADER (logo/rings · card toggles · per-card
+// search) then a bottom DOCK stacking the item-tab rail ABOVE the tool bar:
+//   • the card TOGGLES (.mdock-row) + the per-card SEARCH/SORT row (.mdock-searchslot) rise
+//     into the header, where the global search used to sit;
+//   • the item-tab rail (.hr-top) drops to the bottom dock, sitting just above…
+//   • the TOOL BAR (.top-toolbar), which drops in last (Jac: item-tab rail above the tools).
+// Node relocation only — every builder still emits its usual markup (desktop untouched); this
+// just re-homes four nodes. The card-toggle-bar swipe zone follows the toggles (see boot()).
+function reflowPhoneChrome(header, dock) {
+  const hr = header.querySelector('.header-right');
+  const hrTop = hr && hr.querySelector('.hr-top');    // the item-tab rail
+  const toggles = dock.querySelector('.mdock-row');
+  const searchslot = dock.querySelector('.mdock-searchslot');
+  const toolbar = header.querySelector('.top-toolbar');
+  if (hr && toggles) hr.appendChild(toggles);         // card toggles → header (replaces the dropped global search)
+  if (hr && searchslot) hr.appendChild(searchslot);   // per-card search/sort → right under the toggles
+  if (hrTop) dock.appendChild(hrTop);                 // item-tab rail → bottom dock, above the tool bar
+  if (toolbar) dock.appendChild(toolbar);             // tool bar → bottom dock, last (below the rail)
+}
 function render() {
   const t0 = performance.now();
   refreshToday();   // roll "today" over before painting — an all-day-open tab must never stamp/read yesterday
@@ -15562,19 +15626,19 @@ function render() {
   const grid = el('div', 'grid');
   const shown = phone ? [COLUMNS[Math.max(0, Math.min(2, state.mobileCol))]] : COLUMNS;
   for (const col of shown) grid.appendChild(columnEl(col, session));
-  // §M1 — desktop keeps the bottom toolbar; on phone the tools open up across the top header instead.
+  // §M1 — desktop keeps the bottom toolbar; on phone the tools open up across the bottom dock instead (§M6).
   if (phone) $('#app').replaceChildren(header, grid);
   else $('#app').replaceChildren(header, grid, bottomBarEl());
   if (phone) {
     const dock = mobileDockEl();
     $('#app').appendChild(dock);
-    // §M1 — move the active card's list search/sort row DOWN into the footer (it sits with
-    // the card switcher). Same node → its delegated handlers keep working. Record view has
-    // no listbar, so the slot stays empty (CSS hides it).
+    // §M1 — move the active card's list search/sort row into the dock's search slot. Same node
+    // → its delegated handlers keep working. Record view has no listbar, so the slot stays
+    // empty (CSS hides it). §M6 re-homes the slot (+ the toggles) up into the header afterward.
     const lb = grid.querySelector('.listbar');
     if (lb) dock.querySelector('.mdock-searchslot').appendChild(lb);
     else {   // §M — Standard (record) view has no listbar; keep the Back/Fwd jog in the SAME
-      // bottom-dock spot List view uses, instead of letting it sit up in the card header.
+      // slot List view uses, instead of letting it sit up in the card header.
       const cardNode = grid.querySelector('.card[data-card]');
       const dc = cardNode && cardNode.dataset.card, cs = dc && activeSession().cards[dc];
       if (cs && cs.mode === 'standard') {
@@ -15582,6 +15646,7 @@ function render() {
         if (jog) { const bar = el('div', 'listbar mdock-jogbar'); bar.innerHTML = jog; dock.querySelector('.mdock-searchslot').appendChild(bar); }
       }
     }
+    reflowPhoneChrome(header, dock);   // §M6 — toggles + search rise into the header; the tool bar drops into the dock
   }
   // restore scroll by VIEW: same view → keep your spot; back to a list → return to the
   // row you left; opened a record → top of Standard view (a targeted link scrolls itself after).
@@ -15637,6 +15702,10 @@ function render() {
    has-query highlight is toggled in place below so it stays honest mid-type. Anything a
    search can't change while you type (KPI header, docks, maps, comms) is left as-is. */
 function renderResults() {
+  // §M6 — the global search bar is dropped on phones, so this lean re-render (only ever
+  // triggered by typing in #globalsearch) can't fire there; if it somehow does, a full
+  // render() keeps the §M6 chrome reflow intact (this path doesn't rebuild the header/dock).
+  if (document.body.classList.contains('is-phone')) { render(); return; }
   const app = $('#app');
   const oldGrid = app && app.querySelector(':scope > .grid');
   if (!oldGrid) { render(); return; }                 // not on the grid surface → full render is correct
@@ -16137,7 +16206,7 @@ function dragSourceAt(target) {
   }
   const upill = target.closest('[data-pill-card="units"]');                  // a unit pill drags as that unit → link to a rental (Jac B4)
   if (upill && upill.dataset.pillRec) return { card: 'units', rec: upill.dataset.pillRec };
-  const woSect = target.closest('.section[data-wo]');
+  const woSect = target.closest('[data-wo]');
   if (woSect && woSect.dataset.wo) return { card: 'workOrders', rec: woSect.dataset.wo };
   const row = target.closest('.row');                                   // .rtl rentals rows still carry card/rec on the .row wrapper
   if (row && row.dataset.rec != null) {
@@ -16760,7 +16829,8 @@ function onClick(e) {
   // no-op stubs (real enrollment/charge is Phase 2; block-gate enforcement is Phase 3).
   if (closest('.js-acct-toggle')) { e.stopPropagation(); const rec = closest('.js-acct-toggle').dataset.rec; return guardAgLeave(rec, () => { state.custAcctOpen = state.custAcctOpen || {}; state.custAcctOpen[rec] = !state.custAcctOpen[rec]; render(); }); }
   if (closest('.js-svc-sec-toggle')) { e.stopPropagation(); const rec = closest('.js-svc-sec-toggle').dataset.rec; state.svcSecOpen = state.svcSecOpen || {}; state.svcSecOpen[rec] = !state.svcSecOpen[rec]; return render(); }   // Unit detail — collapse/expand the Services (service-order) section
-  if (closest('.js-wo-sec-toggle')) { e.stopPropagation(); const rec = closest('.js-wo-sec-toggle').dataset.rec; state.woSecOpen = state.woSecOpen || {}; state.woSecOpen[rec] = !state.woSecOpen[rec]; return render(); }   // Unit detail — collapse/expand one Work Order
+  if (closest('.js-wo-row')) { e.stopPropagation(); const b = closest('.js-wo-row'); const un = b.dataset.unit, rec = b.dataset.rec; state.woRowOpen = state.woRowOpen || {}; state.woRowOpen[un] = (state.woRowOpen[un] === rec) ? null : rec; return render(); }   // Unit detail — open/collapse one Work Order row (accordion, mirrors js-inv-row)
+  if (closest('.js-wo-collapse')) { e.stopPropagation(); const un = closest('.js-wo-collapse').dataset.unit; if (state.woRowOpen) state.woRowOpen[un] = null; return render(); }   // collapse the open Work Order row
   if (closest('.js-ag-row')) { e.stopPropagation(); const b = closest('.js-ag-row'); const rec = b.dataset.rec, card = b.dataset.card; return guardAgLeave(rec, () => { state.custAgOpen = state.custAgOpen || {}; state.custAgOpen[rec] = (state.custAgOpen[rec] === card) ? null : card; render(); }); }
   if (closest('.js-ag-collapse')) { e.stopPropagation(); const rec = closest('.js-ag-collapse').dataset.rec; return guardAgLeave(rec, () => { if (state.custAgOpen) state.custAgOpen[rec] = null; render(); }); }
   if (closest('.js-ag-add')) { e.stopPropagation(); const rec = closest('.js-ag-add').dataset.rec; state.custAgOpen = state.custAgOpen || {}; state.custAgOpen[rec] = '__new__'; return render(); }
@@ -20165,7 +20235,7 @@ function startNewWorkOrder(unitId) {
   logAction(draft, 'Work order created');
   // born on the Unit card (+Work Order above Specs/GPS) — the WO section appears in place
   render();
-  attnFlash(`.card[data-card="units"] .section.wo-${id}`);
+  attnFlash(`.card[data-card="units"] .wo-${id}`);
 }
 function startNewInvoice(customerId) {
   const cust = customerId ? IDX.customer.get(customerId) : null;
