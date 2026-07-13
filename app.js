@@ -2314,6 +2314,7 @@ const state = {
   previewsOn: (() => { try { return localStorage.getItem('jactec.previewsOff') !== '1'; } catch (e) { return true; } })(),   // hover previews (per device)
   overbookOn: (() => { try { return localStorage.getItem('jactec.overbook') === '1'; } catch (e) { return false; } })(),   // §10 allow-overbooking policy (per device, default OFF — drag build)
   hapticsOff: (() => { try { return localStorage.getItem('jactec.hapticsOff') === '1'; } catch (e) { return false; } })(),   // §M-touch Vibration-API feedback (per device, default ON; Android-only, no-op on iOS)
+  loginMuted: (() => { try { return localStorage.getItem('jactec.loginMuted') === '1'; } catch (e) { return false; } })(),   // login intro-video audio (per device, default ON = sound plays on sign-in; only a MUTE choice persists)
   commsRail: loadCommsRail(),   // D8 THE COMMS RAIL — { cat, sessions } per device; cat always null at boot (empty rail at login)
   wranglerRail: [],   // §18g the bottom-right rail of past Mr. Wrangler conversations (per device), each a snapshot { id, title, ts, card, recId, recType, reqNumber, reqTitle, reqUrl, messages }. Loaded async from IndexedDB (wranglerRailLoad) — IndexedDB replaced the localStorage rail that silently overflowed.
   settings: loadAdminSettings(),   // Settings Board admin customization (config.settings); mirrored to localStorage, applied at boot via applySettings()
@@ -2709,18 +2710,14 @@ function cardFwd(card) {
 // OR whenever it's showing a record (Standard view): a record can always step Back to its
 // List view even with no recorded history (Jac). Lives in the standard header and the
 // list-bar. Right-click on the card mirrors the Back arm (Task 2).
-function cardJog(card, cs, { always = false } = {}) {
+function cardJog(card, cs) {
   const inRecord = !!(cs && cs.mode === 'standard' && cs.recId != null);
-  // Normally the jog shows only when this card has its own history (or is showing a record).
-  // {always:true} keeps it mounted regardless — the phone FOOTER jog (Chrome-style: always
-  // present, each arm greys out when its stack is empty).
-  if (!always && (!cs || (!cs.backStack.length && !cs.fwdStack.length && !inRecord))) return '';
-  const back = cs ? cs.backStack.length : 0, fwd = cs ? cs.fwdStack.length : 0;
+  if (!cs || (!cs.backStack.length && !cs.fwdStack.length && !inRecord)) return '';
   const arm = (dir, on, ico, tip) =>
     `<button class="jog-btn js-card${dir}" data-card="${esc(card)}" ${on ? '' : 'disabled'} data-tip="${tip}" aria-label="${tip}">${ico}</button>`;
-  return `<div class="card-jog" role="group" aria-label="View history" data-r="R32">`
-    + arm('back', back || inRecord, I.chevL, 'Back')
-    + arm('fwd', fwd, I.chevR, 'Forward')
+  return `<div class="card-jog" role="group" aria-label="View history">`
+    + arm('back', cs.backStack.length || inRecord, I.chevL, 'Back')
+    + arm('fwd', cs.fwdStack.length, I.chevR, 'Forward')
     + `</div>`;
 }
 // Double-click-to-anchor discriminator (#10): a row's single-click OPEN is deferred a
@@ -5839,7 +5836,6 @@ const RULE_META = {
   R29: ['Invoice action menu', 'invoiceStatMenu', 'the expanded-invoice header control: a hazard-stripe status pill (green solid = paid · yellow-stripe = partial · red-stripe = due; goes SOLID while its menu is open) that DOUBLES as the Pay · Print · Send · Refund action menu. A pressable-status control like R1, but it opens actions rather than advancing a status. Pay/Refund reuse the canMoney()-gated payment window.'],
   R30: ['Paused banner', '.wr-paused (wranglerDockBodyHtml)', 'red hazard-stripe plate inside the Mr. Wrangler dock/rail window — raised when a Developer-tier operator takes the wheel (Wrangler Ops live jump-in, §18i); the composer goes read-only until released'],
   R31: ['Toggle chip', 'toggleChip', 'a single interactive on/off pill (PO required, Rental Protection) — off = quiet outline, on = the registry tone color fill. Distinct from R14: ONE control, not a joined group of options.'],
-  R32: ['Nav jog', 'cardJog / .card-jog · .mfoot-jog', 'the two-way Back/Forward view-history stepper. On desktop + in-card it is a neutral steel pill (chevron arms split by a saddle-stitch seam, orange only on hover/press) that shows only when the card has history. On phone it lives ALWAYS-ON pinned to the bottom-RIGHT of the footer tool bar — rendered as bare chevron glyphs (the steel pill camouflages on the same-tone bar), Chrome-style: each arm greys when its stack is empty — reflecting the snapped column’s card (repainted on swipe).'],
 };
 /* ════════════ APP-12 · DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
    The Rulebook grew from "stamped element rules" (R0–R24 above) into the WHOLE
@@ -5964,7 +5960,7 @@ const RB_TABS = [
   { id: 'fields', label: 'Fields & Adds', intro: 'Where you type, link, and add.',
     items: [{ r: 'R5' }, { r: 'R5b' }, { r: 'R5c' }, { r: 'R6' }, { r: 'R7' }, { r: 'R8' }, { r: 'R14' }, { r: 'R22' }, { r: 'R31' }] },
   { id: 'actions', label: 'Actions', intro: 'Buttons that DO something — colored by intent.',
-    items: [{ r: 'R17' }, { r: 'R18' }, { r: 'R24' }, { r: 'R26' }, { r: 'R28' }, { r: 'R29' }, { r: 'R32' }] },
+    items: [{ r: 'R17' }, { r: 'R18' }, { r: 'R24' }, { r: 'R26' }, { r: 'R28' }, { r: 'R29' }] },
   { id: 'upload', label: 'Upload & Capture', intro: 'Add-file zones and photo/site captures.',
     items: [{ r: 'R21' }, { f: 'upload-capture' }] },
   { id: 'data', label: 'Data & Behaviors', intro: 'Visualizations, plus the app’s behaviors — it flashes instead of erroring, right-clicks, tooltips, and self-lints.',
@@ -8710,8 +8706,6 @@ function columnEl(col, session) {
     const lb = card.querySelector('.card-body .listbar');
     if (lb) { const slot = el('div', 'mdock-searchslot'); slot.appendChild(lb); wrap.appendChild(slot); }
     wrap.appendChild(card);
-    // §M/R32 — the phone Back/Forward jog is NOT in the column; it lives always-on in the
-    // footer tool bar (mobileToolbarEl → .mfoot-jog), reflecting the snapped column's card.
     return wrap;
   }
   // Desktop: the sub-card tab strip + search/sort bar live INSIDE the card top (a full-width card
@@ -8865,7 +8859,7 @@ function cardEl(cardDef, session) {
       : '';
     const head = el('div', 'card-head');
     head.innerHTML = `
-      ${document.body.classList.contains('is-phone') ? '' : cardJog(card, cs)}${/* §M/R32 — on phones the jog lives always-on in the footer bar (mobileToolbarEl → .mfoot-jog), not the card header */ ''}
+      ${document.body.classList.contains('is-phone') ? '' : cardJog(card, cs)}${/* §M — on phones the jog rides the bottom dock (where List view keeps it), not the card header */ ''}
       <span class="c-titlecard"><span class="c-icon">${CARD_ICON[card] || ''}</span>${titleHtml}</span>
       ${commentMarkerHtml(card, stdRec)}
       ${headFlagsHtml(card, stdRec)}`;
@@ -8902,7 +8896,7 @@ function listView(cardDef, session) {
   const anchorName = cascaded ? (state.tabs.find((t) => t.session === session)?.label || 'anchor') : '';
   const cascChip = cascaded ? `<span class="casc-chip" data-tip="Cascaded from ${esc(anchorName)} — clear to browse all & add">🔗<span class="cc-name">${esc(anchorName)}</span>${closeX('js-uncascade', { data: { card } })}</span>` : '';
   bar.innerHTML = `
-    ${document.body.classList.contains('is-phone') ? '' /* §M/R32 — on phone the jog lives always-on in the footer bar (.mfoot-jog), not the list-bar */ : cardJog(card, cs)}
+    ${cardJog(card, cs)}
     <button class="bv-btn js-cardgraph${cs.graphView ? ' on' : ''}" data-card="${card}" data-tip="${cs.graphView ? 'Back to list' : 'Graph view'}">${I.graph}</button>
     <div class="mini-searchwrap${cterms.length || cascChip ? ' has-terms' : ''}${cs.search.trim() || cterms.length ? ' has-query' : ''}">
       ${cascChip}${cterms.map((ft, i) => filterTermPill(ft, i, card)).join('')}
@@ -9559,21 +9553,9 @@ function goToCard(member) {
 // navigation moved OFF the footer and up into each column's own toggle header (mobileNavHtml) —
 // so the footer is tools-only again. (This is the top-toolbar content, relocated to the bottom;
 // headerEl omits it from the top on phone.)
-// The phone footer's always-on Back/Forward jog (R32) — reflects the SNAPPED column's card
-// (repainted on column change by syncMobileColFromScroll). Chrome-style: always mounted, each
-// arm greys when its stack is empty.
-function footerJogInner() {
-  const s = activeSession();
-  const col = COLUMNS[Math.max(0, Math.min(COLUMNS.length - 1, state.mobileCol))];
-  const member = (s.cols && s.cols[col.id]) || col.default;
-  const cs = s.cards ? s.cards[member] : null;
-  return cardJog(member, cs, { always: true });
-}
 function mobileToolbarEl() {
   const d = el('div', 'mobile-toolbar');
-  // The jog is a SIBLING of the (horizontally-scrollable) tool row, pinned to the bottom-RIGHT
-  // so it can never scroll off-screen; the tools scroll in the space to its left.
-  d.innerHTML = `<div class="top-toolbar">${bottomBarInner()}${commsBellBtn()}</div><div class="mfoot-jog">${footerJogInner()}</div>`;
+  d.innerHTML = `<div class="top-toolbar">${bottomBarInner()}${commsBellBtn()}</div>`;
   return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
@@ -23049,11 +23031,27 @@ function renderLogin(msg) {
         <label class="login-lbl" for="login-pw">Team password</label>
         <input id="login-pw" type="password" class="login-input" placeholder="••••••••" autocomplete="current-password" />
       </div>
-      <button type="submit" class="login-btn" data-r="R17" id="login-go">Saddle Up?</button>
+      <div class="login-actions">
+        <button type="button" class="login-mute${state.loginMuted ? ' is-muted' : ''}" id="login-mute" aria-pressed="${state.loginMuted}" aria-label="Mute intro sound" data-tip="${state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute'}">${state.loginMuted ? I.volumeOff : I.volume}</button>
+        <button type="submit" class="login-btn" data-r="R17" id="login-go">Saddle Up?</button>
+      </div>
       <div class="login-err" id="login-err">${msg ? esc(msg) : ''}</div>
     </div>
   </form></div>`;
   document.getElementById('login-form').addEventListener('submit', (e) => { e.preventDefault(); attemptLogin(); });
+  // Mute toggle (left of Saddle Up) — remembers a MUTE choice on this device so the
+  // intro stays silent next sign-in; default (no pref) plays sound. Applies live if
+  // the intro is already rolling behind the box.
+  const muteBtn = document.getElementById('login-mute');
+  if (muteBtn) muteBtn.addEventListener('click', () => {
+    state.loginMuted = !state.loginMuted;
+    try { localStorage.setItem('jactec.loginMuted', state.loginMuted ? '1' : '0'); } catch (e) {}
+    muteBtn.classList.toggle('is-muted', state.loginMuted);
+    muteBtn.setAttribute('aria-pressed', String(state.loginMuted));
+    muteBtn.setAttribute('data-tip', state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute');
+    muteBtn.innerHTML = state.loginMuted ? I.volumeOff : I.volume;
+    const vid = document.getElementById('login-video'); if (vid) vid.muted = state.loginMuted;
+  });
   document.getElementById(currentUser ? 'login-pw' : 'login-name').focus();
 }
 function finishLoad() {
@@ -23143,7 +23141,8 @@ async function attemptLogin() {
   const screen = document.querySelector('.login-screen'); if (screen) screen.classList.add('signing-in');
   // The Saddle Up click is a genuine user gesture, so unmuting here lets the intro's
   // audio play under the browser's autoplay policy (a muted-only clip would stay silent).
-  const vid = document.getElementById('login-video'); if (vid) { try { vid.muted = false; const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
+  // Honor the per-device mute choice — a muted preference keeps the intro silent.
+  const vid = document.getElementById('login-video'); if (vid) { try { vid.muted = state.loginMuted; const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
   try {
     // 'auth' (role lookup) and 'load' (full dataset) each independently validate the
     // password server-side and neither's response feeds the other's request, so they
@@ -23237,10 +23236,8 @@ function boot() {
     const idx = Math.max(0, Math.min(COLUMNS.length - 1, Math.round(grid.scrollLeft / w)));
     if (idx === mcolLast) return;
     mcolLast = idx; state.mobileCol = idx;
-    // Each column's own toggle header highlights that column's card statically. The footer jog
-    // (R32), though, is a GLOBAL bar reflecting the ACTIVE card, so repaint it on column change.
-    const fj = document.querySelector('.mobile-toolbar .mfoot-jog');
-    if (fj) fj.innerHTML = footerJogInner();
+    // Each column's own toggle header highlights that column's card statically, so nothing to
+    // repaint on scroll — we just keep state.mobileCol in step (zip-zones, links, etc. read it).
   }
   document.addEventListener('scroll', (e) => {
     if (!(e.target && e.target.classList && e.target.classList.contains('grid'))) return;
