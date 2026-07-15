@@ -29,7 +29,7 @@ import {
   SHOP_TYPES, COLUMNS, COLUMN_OF,
   legacyTransportPrice, computeTransportPrice, isFueledType, legsForType, YARD_ORIGIN, GOOGLE_MAPS_KEY, GPS_BACKEND_URL,
   fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, refreshTodayISO, invoiceShort, TRANSPORT_MAP,
-  FLAG_META, FLAG_SEVERITY_RANK, INSURANCE_COVERAGE_TYPES, FEATURES, PHONE_IDENTITY,
+  FLAG_META, FLAG_SEVERITY_RANK, INSURANCE_COVERAGE_TYPES, FEATURES,
 } from './config.js';
 // Feature-flag reader (scaffold only, dev-workflow trunk-based redesign D5): a big
 // replacement's new code path checks flagOn('key') instead of running unconditionally,
@@ -4611,10 +4611,8 @@ function setDraftStatus(o, set, val, patch) {
 }
 function captureTeamEdits(o) {   // keep typed roster edits across re-renders + into Save
   const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
-  if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
-  const wt = root.querySelector('[data-emp-welcome]');   // the customizable crew-welcome SMS (may exist with an empty roster)
-  if (wt) o.draftSettings.phoneWelcome = wt.value;
   const inputs = root.querySelectorAll('.set-input[data-emp]'); if (!inputs.length) return;
+  if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
   const emps = o.draftSettings.employees || (o.draftSettings.employees = []);
   inputs.forEach((i) => { const idx = Number(i.dataset.i); if (emps[idx]) emps[idx][i.dataset.emp] = i.value; });
 }
@@ -4678,36 +4676,15 @@ function settingsFlagsPane(o) {
 function settingsTeamPane(o) {
   if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {}));
   const emps = o.draftSettings.employees || [];
-  // Per-person permissions ride the role's TIER (roleTier / backend roleTierRank_). The KPI-ring
-  // ROLES only span staff/money, so the picker MUST also offer the higher-tier logins —
-  // otherwise no per-person user could be a Manager/Admin/Developer (they'd top out at Office =
-  // money, silently losing admin/dev access). Both roleTier and the backend already resolve these.
-  const roleOpts = [...ROLES.map((r) => r.label || r.id), 'Manager', 'Admin', 'Developer'];
-  // Per-person auth controls surface only when phone-identity is ON and an admin is viewing —
-  // the roster IS the login list in that mode (spec Phase 3). Off = today's plain crew list.
-  const showAuth = flagOn('phoneIdentity') && adminUnlocked();
+  const roleOpts = ROLES.map((r) => r.label || r.id);
   const rows = emps.map((em, i) => `<div class="set-row" style="gap:7px">
     <input class="set-input" data-emp="name" data-i="${i}" placeholder="Name" value="${esc(em.name || '')}" style="flex:2;min-width:110px" />
     <select class="set-input" data-emp="role" data-i="${i}" style="flex:1;min-width:90px">${roleOpts.map((r) => `<option${(em.role || '') === r ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select>
     <input class="set-input" data-emp="phone" data-i="${i}" placeholder="Phone" value="${esc(em.phone || '')}" style="flex:1;min-width:90px" />
     <input class="set-input" data-emp="note" data-i="${i}" placeholder="Note" value="${esc(em.note || '')}" style="flex:2;min-width:110px" />
     ${toggleChip(((em.commsConsent && em.commsConsent.sms) === 'opted-out') ? 'Texts off' : 'Texts OK', (em.commsConsent && em.commsConsent.sms) !== 'opted-out', { js: 'js-emp-consent', data: { i }, tone: 'green' })}
-    ${closeX('js-emp-del', { data: { i } })}</div>${showAuth && em.id ? `<div class="set-row emp-auth" style="gap:7px;margin:-3px 0 8px;padding-left:2px">
-    <button type="button" class="emp-act js-emp-code" data-id="${esc(em.id)}" data-tip="Text this hand the app link + welcome">Text app invite</button>
-    <button type="button" class="emp-act js-emp-signout" data-id="${esc(em.id)}" data-tip="Sign them out on every device">Sign out everywhere</button></div>` : ''}`).join('');
-  const note = flagOn('phoneIdentity')
-    ? 'Per-person logins are ON — this roster is the login list. Each hand needs a name, phone, and role; they set their own PIN from a texted code. Removing someone cuts their access on the next save.'
-    : 'The crew — name, role, phone, note, and whether we can text them (a hand who opts out is skipped by every crew text). No credentials or compliance PII lives here (dropped from scope, Jac 2026-06-29).';
-  // Customizable crew-welcome SMS (phone-identity mode) — the text auto-sent on a new hire or
-  // a number change, and by the per-person / whole-crew invite buttons. Placeholder shows the
-  // shipped default so an admin sees what sends even before they edit it.
-  const welcomeDefault = (PHONE_IDENTITY && PHONE_IDENTITY.welcomeText) || '';
-  const welcomeVal = o.draftSettings.phoneWelcome || '';
-  const welcomeBlock = showAuth ? `<div class="emp-welcome">
-    <div class="emp-welcome-lbl">Crew welcome text</div>
-    <textarea class="emp-welcome-ta" data-emp-welcome rows="3" placeholder="${esc(welcomeDefault)}" data-tip="Sent to a hand when they're added or their number changes">${esc(welcomeVal)}</textarea>
-    <div class="emp-welcome-foot"><span class="emp-welcome-tok">Tokens <em>{name}</em> and <em>{link}</em> (the app link) fill in when it sends — no login code, they get that in the app.</span><button type="button" class="emp-act js-emp-welcome-reset" data-tip="Restore the default welcome wording">Reset to default</button></div></div>` : '';
-  return `<div class="set-pane"><div class="muted" style="font-size:11.5px;margin-bottom:9px">${esc(note)}</div>${rows || '<div class="muted" style="font-size:12px">No hands on the roster yet.</div>'}${welcomeBlock}<div class="kv pillrow" style="margin-top:9px">${addBtn('Employee', { link: true, js: 'js-emp-add' })}${showAuth ? `<button type="button" class="emp-act js-emp-blast" data-tip="Text the whole roster the app link + welcome">Round up the crew</button>` : ''}</div></div>`;
+    ${closeX('js-emp-del', { data: { i } })}</div>`).join('');
+  return `<div class="set-pane"><div class="muted" style="font-size:11.5px;margin-bottom:9px">The crew — name, role, phone, note, and whether we can text them (a hand who opts out is skipped by every crew text). No credentials or compliance PII lives here (dropped from scope, Jac 2026-06-29).</div>${rows || '<div class="muted" style="font-size:12px">No hands on the roster yet.</div>'}<div class="kv pillrow" style="margin-top:9px">${addBtn('Hand', { link: true, js: 'js-emp-add' })}</div></div>`;
 }
 /* ── Settings → Notifications (Phase A control center — design spec
    docs/superpowers/specs/2026-07-14-notifications-pane-design.md) ────────────────────
@@ -4739,6 +4716,12 @@ const NOTIF_DEFAULTS = {
     driverAssigned: { enabled: false },
     woAssigned:     { enabled: false },
     scheduleChange: { enabled: false },
+  },
+  // Return-rating follow-up message templates (Settings → Notifications → Rating Follow-ups).
+  // {name} is filled with the customer's name; the office can still tweak per-send in the popup.
+  ratingMsgs: {
+    thankYou: 'Thanks for renting with us, {name} — it was a pleasure! If we earned it, a quick review would mean a lot: [review link]',
+    apology: "Hi {name}, we're sorry your recent rental fell short. We want to make it right — please give our manager a call.",
   },
 };
 // Deep-fill a settings.notifications draft against NOTIF_DEFAULTS so an absent key (or
@@ -4773,7 +4756,9 @@ function ensureNotifDraft(o) {
 // roster row index.
 function captureNotificationEdits(o) {
   const root = document.querySelector('.settings-popup .popup-body'); if (!root) return;
-  const inputs = root.querySelectorAll('[data-notif]'); if (!inputs.length) return;
+  const inputs = root.querySelectorAll('[data-notif]');
+  const texts = root.querySelectorAll('[data-notif-text]');
+  if (!inputs.length && !texts.length) return;
   const n = ensureNotifDraft(o);
   inputs.forEach((el) => {
     const path = el.dataset.notif;
@@ -4781,6 +4766,7 @@ function captureNotificationEdits(o) {
     const raw = String(el.value).trim(), num = Number(raw);
     notifSet(n, path, (raw && isFinite(num)) ? num : Number(el.dataset.notifDefault || 0));
   });
+  texts.forEach((el) => { notifSet(n, el.dataset.notifText, el.value); });   // string templates (rating messages) — stored verbatim, not coerced to a number
 }
 // Kick the ONE admin-read-only provider check (v92 smsProviderStatus) the first time the
 // pane renders; caches on the overlay so a repaint never re-fires it. Demo/offline (no
@@ -4817,62 +4803,58 @@ const notifHourOpts = (val) => Array.from({ length: 24 }, (_, h) => `<option val
 const notifLeadCadence = (n) => (n <= 0 ? 'Reminds the same day' : n === 1 ? 'Reminds the day before' : `Reminds ${n} days before`) + ` — ${n}-day lead`;
 const notifAfterCadence = (n) => (n <= 0 ? "Reminds the day it's due" : n === 1 ? 'Reminds a day after the due date' : `Reminds ${n} days after the due date`) + ` — ${n}-day follow-up`;
 const notifReviewCadence = (n) => (n <= 0 ? 'Asks the day of return' : n === 1 ? 'Asks the day after return' : `Asks ${n} days after return`) + ` — ${n}-day delay`;
+// Collapsible notifications section — the stamped header IS the expand/collapse control
+// (view-local state.notifSecOpen; collapsed by default so this tall pane opens compact).
+// The hazard cap (Channels) stays as card chrome above the header.
+function notifCard(id, icon, title, body, { cap } = {}) {
+  const open = !!(state.notifSecOpen && state.notifSecOpen[id]);
+  return `<div class="notif-card${open ? ' is-open' : ''}">${cap ? '<div class="notif-cap"></div>' : ''}<button class="notif-card-head js-notif-sec" data-sec="${esc(id)}" aria-expanded="${open ? 'true' : 'false'}"><span class="nch-ic">${icon}</span><span class="nch-t">${esc(title)}</span><span class="nch-chev" aria-hidden="true">${I.chev}</span></button>${open ? `<div class="notif-card-body">${body}</div>` : ''}</div>`;
+}
 function settingsNotificationsPane(o) {
   const n = ensureNotifDraft(o);
   ensureProviderStatus(o);
   const div = '<div class="rm-stitch"></div>';
-  const tgl = (label, path, on, tone = 'green') => toggleChip(label, on, { js: 'js-notif-toggle', data: { path }, tone });
+  const tgl = (label, path, on, tone = 'green', tip) => toggleChip(label, on, { js: 'js-notif-toggle', data: tip ? { path, tip } : { path }, tone });
   const numFld = (cap, path, val, dflt, aria) => `<label class="kpi-fld kpi-fld-sm"><span class="kpi-cap">${esc(cap)}</span><input class="kpi-tgt" data-notif="${esc(path)}" data-notif-default="${dflt}" value="${esc(val)}" inputmode="numeric" autocomplete="off" aria-label="${esc(aria || cap)}"/></label>`;
   const remRow = (label, path, cadenceFn, cap, fieldPath, val, dflt) => `<div class="notif-row">${tgl(label, `${path}.enabled`, notifGet(n, `${path}.enabled`))}${numFld(cap, fieldPath, val, dflt, `${label} — ${cap}`)}</div><div class="notif-cadence">${esc(cadenceFn(val))}</div>`;
 
-  const cInternal = `<div class="notif-card"><div class="notif-card-body">
-    <div class="notif-card-head">${I.bell}Internal</div>
+  const cInternal = notifCard('internal', I.bell, 'Internal', `
     <div class="notif-row">${tgl('Team Chat', 'internal.teamChat', n.internal.teamChat)}${tgl('Bell Alerts', 'internal.bell', n.internal.bell)}</div>
-    <div class="notif-sub">The in-app team chat and the header bell — the shop's own signal, independent of SMS/email.</div>
-  </div></div>`;
+    <div class="notif-sub">The in-app team chat and the header bell — the shop's own signal, independent of SMS/email.</div>`);
 
-  const cReminders = `<div class="notif-card"><div class="notif-card-body">
-    <div class="notif-card-head">${I.messageSquare}Customer Reminders</div>
+  const cReminders = notifCard('reminders', I.messageSquare, 'Customer Reminders', `
     ${remRow('Rental Starts', 'customer.reminders.start', notifLeadCadence, 'LEAD (DAYS)', 'customer.reminders.start.leadDays', n.customer.reminders.start.leadDays, 1)}
     ${div}
     ${remRow('Rental Returns', 'customer.reminders.return', notifLeadCadence, 'LEAD (DAYS)', 'customer.reminders.return.leadDays', n.customer.reminders.return.leadDays, 1)}
     ${div}
     ${remRow('Balance Overdue', 'customer.reminders.balance', notifAfterCadence, 'AFTER (DAYS)', 'customer.reminders.balance.afterDueDays', n.customer.reminders.balance.afterDueDays, 3)}
-    <div class="notif-sub">Reminders lock in here now — the sweep that actually sends them (Phase B) isn't installed yet.</div>
-  </div></div>`;
+    <div class="notif-sub">Reminders lock in here now — the sweep that actually sends them (Phase B) isn't installed yet.</div>`);
 
-  const cCrew = `<div class="notif-card"><div class="notif-card-body">
-    <div class="notif-card-head">${I.users}Crew Alerts</div>
-    <div class="notif-row">${tgl('Driver Assigned', 'staff.driverAssigned.enabled', n.staff.driverAssigned.enabled)}</div>
+  const cCrew = notifCard('crew', I.users, 'Crew Alerts', `
+    <div class="notif-row">${tgl('Driver Assigned', 'staff.driverAssigned.enabled', n.staff.driverAssigned.enabled, 'green', 'Texts a driver the moment a delivery or pickup is assigned to them.')}</div>
     ${div}
-    <div class="notif-row">${tgl('Work Order Assigned', 'staff.woAssigned.enabled', n.staff.woAssigned.enabled)}</div>
+    <div class="notif-row">${tgl('Work Order Assigned', 'staff.woAssigned.enabled', n.staff.woAssigned.enabled, 'green', 'Texts a mechanic when a work order lands on their bench.')}</div>
     ${div}
-    <div class="notif-row">${tgl('Schedule Change', 'staff.scheduleChange.enabled', n.staff.scheduleChange.enabled)}</div>
+    <div class="notif-row">${tgl('Shift/Run Change', 'staff.scheduleChange.enabled', n.staff.scheduleChange.enabled, 'green', "Texts a hand when the time of a run or shift they're already assigned to gets moved.")}</div>
     ${div}
     <div class="notif-row">${(!currentRole || roleTier(currentRole) >= tierRank('manager'))
       ? `<button class="pill ignition js-crew-broadcast" data-r="R17">${I.users} Text The Crew</button>`
       : ghostPill('Text The Crew', { disabled: true, tip: 'Managers and up can text the crew' })}</div>
-    <div class="notif-sub">Text the crew now, straight from here. The three alerts above fire on their own once their triggers land — the toggles lock in intent.</div>
-  </div></div>`;
+    <div class="notif-sub">Each alert texts the crew member it names, the moment that thing happens (hover a toggle for exactly what fires it). The triggers land with Phase D — the toggles lock in intent now. Or text the crew yourself, right here.</div>`);
 
-  const cReview = `<div class="notif-card"><div class="notif-card-body">
-    <div class="notif-card-head">${STATUS_ICONS.star}Reviews</div>
-    <div class="notif-row">${tgl('Review Request', 'customer.review.enabled', n.customer.review.enabled)}${numFld('DELAY (DAYS)', 'customer.review.delayDays', n.customer.review.delayDays, 2, 'Review request — delay days')}</div>
-    <div class="notif-cadence">${esc(notifReviewCadence(n.customer.review.delayDays))}</div>
-    <div class="notif-sub">Asks after a completed rental — the send itself, and the Reputation KPI it feeds, are Phase D.</div>
-  </div></div>`;
+  const cReview = notifCard('review', STATUS_ICONS.star, 'Rating Follow-ups', `
+    <div class="notif-sub">The default texts the office sends after rating a return — they can still tweak each one before it goes out. <b>{name}</b> fills in the customer's name.</div>
+    <div class="notif-fld-lbl">Thank-you + review · 4–5★</div>
+    <textarea class="insp-desc notif-msg" data-notif-text="ratingMsgs.thankYou" rows="3" maxlength="400" aria-label="Thank-you message template">${esc(n.ratingMsgs.thankYou)}</textarea>
+    <div class="notif-fld-lbl">Apology · 1★</div>
+    <textarea class="insp-desc notif-msg" data-notif-text="ratingMsgs.apology" rows="3" maxlength="400" aria-label="Apology message template">${esc(n.ratingMsgs.apology)}</textarea>`);
 
-  const cDispatch = `<div class="notif-card"><div class="notif-card-body">
-    <div class="notif-card-head">${I.truck}Dispatch</div>
+  const cDispatch = notifCard('dispatch', I.truck, 'Dispatch', `
     <div class="notif-row">${tgl('On The Way Text', 'customer.dispatchEta', n.customer.dispatchEta)}</div>
-    <div class="notif-sub">Texts customers when their unit's on the way — the trigger lands in Phase D; this locks in the setting now.</div>
-  </div></div>`;
+    <div class="notif-sub">Texts customers when their unit's on the way — the trigger lands in Phase D; this locks in the setting now.</div>`);
 
   const w = n.channels.windows;
-  const cChannels = `<div class="notif-card">
-    <div class="notif-cap"></div>
-    <div class="notif-card-body">
-      <div class="notif-card-head">${STATUS_ICONS.zap}Channels</div>
+  const cChannels = notifCard('channels', STATUS_ICONS.zap, 'Channels', `
       <div class="notif-row">${notifSmsBadge(o._provStatus)}${notifEmailBadge()}</div>
       ${div}
       <div class="notif-row">${kv(notifPriorityLabel(n.channels.priority), { pfx: 'Send Priority', derived: true })}</div>
@@ -4887,11 +4869,9 @@ function settingsNotificationsPane(o) {
       </div>
       ${div}
       <div class="notif-row">${tgl('After-Hours Override', 'channels.adminOverride', n.channels.adminOverride, 'yellow')}${numFld('DAILY CAP', 'channels.dailyCap', n.channels.dailyCap, 50, 'Daily send cap')}</div>
-      <div class="notif-sub">Admins can send anyway after hours on a manual text; the daily cap applies across both audiences.</div>
-    </div>
-  </div>`;
+      <div class="notif-sub">Admins can send anyway after hours on a manual text; the daily cap applies across both audiences.</div>`, { cap: true });
 
-  return `<div class="set-pane-head"><h4>Notifications</h4><p>Round up who hears what, and when. Every toggle saves right away — the reminder sweep (Phase B) and the crew SMS channel (Phase C) read these settings once they ship.</p></div>
+  return `<div class="set-pane-head"><h4>Notifications</h4><p>Round up who hears what, and when — tap a section to open it. Every toggle saves right away; the reminder sweep (Phase B) and the crew SMS channel (Phase C) read these settings once they ship.</p></div>
     ${cInternal}${cReminders}${cCrew}${cReview}${cDispatch}${cChannels}`;
 }
 function settingsPaneFor(o) {
@@ -6571,7 +6551,7 @@ const ROWS = {
     }).filter(Boolean).join('<span class="rcc-usep">, </span>') || (units ? `<span class="rcc-uname">${esc(units)}</span>` : '');
     const headHtml = `<div class="rcc-head">
       <div class="rcc-h1">${unitNameHtml ? `<span class="rcc-units">${unitNameHtml}</span>` : ''}${stPill}</div>
-      <div class="rcc-h2"><span class="rcc-cust">${cust ? esc(cust.name) : ''}</span>${
+      <div class="rcc-h2"><span class="rcc-cust">${cust ? esc(cust.name) : ''}</span>${(r.rating && r.rating.stars) ? `<span class="rcc-rating" data-tip="Return rated ${r.rating.stars}★${r.rating.by ? ' by ' + esc(r.rating.by) : ''}">${STATUS_ICONS.star}${r.rating.stars}</span>` : ''}${
         bal ? `<span class="rcc-bal ${balCls}">${esc(bal)}</span>` : (!(s && e) ? '<span class="rcc-bal rcc-set">Set window</span>' : '')
       }</div>
     </div>`;
@@ -7265,18 +7245,28 @@ function rentalAmt(r) {
 /* spend bucketed by month for the last n months (ending this month) */
 function customerMonthly(c, n = 9) {
   const today = parseISO(TODAY_ISO), out = [];
-  for (let i = n - 1; i >= 0; i--) { const dt = new Date(today.getFullYear(), today.getMonth() - i, 1); out.push({ y: dt.getFullYear(), m: dt.getMonth(), label: ACT_MONTHS[dt.getMonth()], total: 0, days: 0 }); }
+  for (let i = n - 1; i >= 0; i--) { const dt = new Date(today.getFullYear(), today.getMonth() - i, 1); out.push({ y: dt.getFullYear(), m: dt.getMonth(), label: ACT_MONTHS[dt.getMonth()], total: 0, days: 0, ratings: [] }); }
   DATA.rentals.filter((r) => r.customerId === c.customerId && r.startDate).forEach((r) => {
     const s = parseISO(r.startDate); if (!s) return;
     const b = out.find((x) => x.y === s.getFullYear() && x.m === s.getMonth());
-    if (b) { b.total += rentalAmt(r) || 0; const e = parseISO(r.endDate); b.days += e ? Math.max(1, Math.round((e - s) / 86400000) + 1) : 1; }   // D2 — days the customer held equipment (a 7-day rental = 7)
+    if (b) { b.total += rentalAmt(r) || 0; const e = parseISO(r.endDate); b.days += e ? Math.max(1, Math.round((e - s) / 86400000) + 1) : 1; if (r.rating && r.rating.stars) b.ratings.push(r.rating.stars); }   // D2 — days held; + return-rating stars for the rating series
   });
   return out;
+}
+/* Overall customer experience — the average of every return the office has rated for this
+   customer (all-time, not just the chart window). Null when they've never been rated. Feeds the
+   profile summary + is NEVER wired into the Reputation KPI (an employee can't move their own number). */
+function customerRatingSummary(c) {
+  const rated = DATA.rentals.filter((r) => r.customerId === c.customerId && r.rating && r.rating.stars);
+  if (!rated.length) return null;
+  return { avg: +(rated.reduce((s, r) => s + r.rating.stars, 0) / rated.length).toFixed(1), n: rated.length };
 }
 /* the activity panel — spend-by-month area chart + the five-stage cadence track */
 function customerActivityChart(c) {
   const a = customerActivity(c);
   const months = customerMonthly(c, 9);
+  const exp = customerRatingSummary(c);
+  const expSpan = exp ? `<span class="ca-exp" data-tip="Average of ${exp.n} rated return${exp.n > 1 ? 's' : ''}">${STATUS_ICONS.star} <b>${exp.avg}★</b> · ${exp.n}</span>` : '';
   const max = Math.max(1, ...months.map((b) => b.total));
   const H = 150, padT = 30, baseY = 124;
   const today = parseISO(TODAY_ISO);
@@ -7296,7 +7286,25 @@ function customerActivityChart(c) {
   const ptsD = months.map((b, i) => ({ x: pts[i].x, y: baseY - (b.days / maxDays) * (baseY - padT) }));
   const lineD = sm(ptsD);
   const dotsD = ptsD.map((p) => `<span class="ca-dot d" style="left:${p.x.toFixed(1)}%;top:${p.y.toFixed(1)}px"></span>`).join('');
-  const caData = JSON.stringify(months.map((b, i) => ({ l: b.label, t: b.total, d: b.days, x: +pts[i].x.toFixed(1) })));
+  // Return-rating series — a third LINE like Spend/Days, but drawn as orange STARS instead of
+  // dashes (Jac). A star sits at each month from the first rated month to the last, interpolating
+  // the 1–5 value across gaps so the stars trace the rating trend; real rated months carry the
+  // tooltip, the in-between "dash" stars don't.
+  const py5 = (v) => baseY - (Math.max(1, Math.min(5, v)) / 5) * (baseY - padT);
+  const ratePts = months.map((b, i) => (b.ratings && b.ratings.length)
+    ? { mi: i, x: pts[i].x, v: b.ratings.reduce((s, x) => s + x, 0) / b.ratings.length, n: b.ratings.length } : null).filter(Boolean);
+  const rTip = (p) => `${p.v.toFixed(1)}★ · ${p.n} return${p.n > 1 ? 's' : ''}`;
+  const rateStar = (x, y, tip) => `<span class="ca-star${tip ? '' : ' dash'}" style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}px"${tip ? ` data-tip="${tip}"` : ''}>${STATUS_ICONS.star}</span>`;
+  let rateStars = '';
+  if (ratePts.length === 1) { const p = ratePts[0]; rateStars = rateStar(p.x, py5(p.v), rTip(p)); }
+  else if (ratePts.length > 1) {
+    for (let i = 0; i < ratePts.length - 1; i++) {
+      const a0 = ratePts[i], a1 = ratePts[i + 1];
+      for (let m = a0.mi; m < a1.mi; m++) { const t = (m - a0.mi) / (a1.mi - a0.mi); rateStars += rateStar(pts[m].x, py5(a0.v + (a1.v - a0.v) * t), m === a0.mi ? rTip(a0) : ''); }
+    }
+    const last = ratePts[ratePts.length - 1]; rateStars += rateStar(last.x, py5(last.v), rTip(last));
+  }
+  const caData = JSON.stringify(months.map((b, i) => ({ l: b.label, t: b.total, d: b.days, x: +pts[i].x.toFixed(1), r: (b.ratings && b.ratings.length) ? +(b.ratings.reduce((s, v) => s + v, 0) / b.ratings.length).toFixed(1) : null, rn: (b.ratings || []).length })));
   const peakI = months.reduce((bi, b, i, arr) => (b.total > arr[bi].total ? i : bi), 0);
   const peak = months[peakI];
   const dots = pts.map((p, i) => `<span class="ca-dot${i === peakI ? ' big' : ''}" style="left:${p.x.toFixed(1)}%;top:${p.y.toFixed(1)}px"></span>`).join('');
@@ -7314,16 +7322,16 @@ function customerActivityChart(c) {
       + `<span class="ca-vline ca-tdy" style="left:${tx.toFixed(1)}%;background:var(--${a.color});box-shadow:0 0 8px color-mix(in srgb, var(--${a.color}) 55%, transparent)"></span>`;
     const days = Math.abs(a.since - a.f);
     const rel = a.pastPct <= 0 ? `${days}d out` : `${days}d past`;
-    caption = `<div class="ca-cap"><span>Last <b>${lastD ? fmtShortDate(a.lastDate) : '—'}</b></span><span>Today <b style="color:var(--${a.color})">${fmtShortDate(TODAY_ISO)}</b></span><span>Next <b>${fmtShortDate(a.expDate)}</b> · <b style="color:var(--${a.color})">${rel}</b></span></div>`;
+    caption = `<div class="ca-cap"><span>Last <b>${lastD ? fmtShortDate(a.lastDate) : '—'}</b></span><span>Today <b style="color:var(--${a.color})">${fmtShortDate(TODAY_ISO)}</b></span><span>Next <b>${fmtShortDate(a.expDate)}</b> · <b style="color:var(--${a.color})">${rel}</b></span>${expSpan}</div>`;
   } else {
-    caption = `<div class="ca-cap"><span class="muted">No rental cadence yet — needs a few rentals to read the pattern.</span></div>`;
+    caption = `<div class="ca-cap"><span class="muted">No rental cadence yet — needs a few rentals to read the pattern.</span>${expSpan}</div>`;
   }
   return `<div class="ca-panel" data-tip="Customer activity — spend by month, with last rental, next expected, and where today sits in their cadence">
     <div class="ca-stage c-${a.color}${a.deep ? ' deep' : ''}">${esc(a.stage)}</div>
     <div class="ca-chart" data-ca='${caData}'>
       <svg class="ca-svg" viewBox="0 0 100 ${H}" preserveAspectRatio="none"><defs><linearGradient id="caFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".5"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".02"/></linearGradient></defs><path d="${area}" fill="url(#caFill)"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/><path d="${lineD}" fill="none" stroke="#c2925a" stroke-width="1.8" stroke-dasharray="4 3" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
-      <div class="ca-legend"><span><i style="background:var(--accent)"></i>Spend</span><span><i style="background:#c2925a"></i>Days rented</span></div>
-      ${markers}${dots}${dotsD}${peakCo}
+      <div class="ca-legend"><span><i style="background:var(--accent)"></i>Spend</span><span><i style="background:#c2925a"></i>Days rented</span><span class="ca-leg-r">${STATUS_ICONS.star}Rating</span></div>
+      ${markers}${dots}${dotsD}${rateStars}${peakCo}
       <span class="ca-scrub"></span><div class="ca-tip"></div>
       <div class="ca-lbls">${labels}</div>
     </div>
@@ -7343,7 +7351,7 @@ function caScrub(e) {
   let best = data[0], bd = Infinity; data.forEach((d) => { const dd = Math.abs(d.x - xpct); if (dd < bd) { bd = dd; best = d; } });
   const scrub = chart.querySelector('.ca-scrub'), tip = chart.querySelector('.ca-tip');
   if (scrub) { scrub.style.left = best.x + '%'; scrub.classList.add('on'); }
-  if (tip) { tip.innerHTML = `<b>${esc(best.l)}</b><span class="ca-tip-s">${best.t ? money(best.t) : '$0'}</span><span class="ca-tip-d">${best.d} day${best.d === 1 ? '' : 's'}</span>`; tip.style.left = Math.max(9, Math.min(91, best.x)) + '%'; tip.classList.add('on'); }
+  if (tip) { tip.innerHTML = `<b>${esc(best.l)}</b><span class="ca-tip-s">${best.t ? money(best.t) : '$0'}</span><span class="ca-tip-d">${best.d} day${best.d === 1 ? '' : 's'}</span>${best.r != null ? `<span class="ca-tip-r">${best.r}★ · ${best.rn} return${best.rn === 1 ? '' : 's'}</span>` : ''}`; tip.style.left = Math.max(9, Math.min(91, best.x)) + '%'; tip.classList.add('on'); }
 }
 
 /* ── COMMENTS (Jac, Phase 6) — a structured note with a color (red/yellow/green) that
@@ -12278,6 +12286,7 @@ let swipeFired = false;   // §M1/§M3 — a footer or grid section-switch swipe
 function anyDismissable() { return !!(state.overlay || state.datesearch || state.chat.open || state.wrangler.open); }
 function dismissTopSheet() {
   if (state.datesearch) { closeDateSearch(); return true; }
+  if (overlayLocked()) { attnFlash('.rr-stars'); toast('Rate the return first — it can’t be skipped.'); return true; }   // required modal: refuse Esc/back
   if (state.overlay) { closeOverlay(); return true; }
   if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; render(); return true; }   // mirror js-wr-close
   if (state.chat.open) { state.chat.open = false; render(); return true; }                                    // mirror js-chat-close
@@ -12301,7 +12310,7 @@ function renderOverlay() {
   const o = state.overlay;
   if (o.kind !== _popDragKind) { _popDragKind = o.kind; _popDrag = { x: 0, y: 0 }; }   // a new popup opens centered; re-renders of the same one keep the dragged spot
   const overlay = el('div', 'overlay');
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeOverlay(); });
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) { if (overlayLocked()) { attnFlash('.rr-stars'); return; } closeOverlay(); } });
   if (buildPopupEl(o, overlay) === false) { state.overlay = null; return; }
   root.appendChild(overlay);
   wirePopupDrag(overlay);
@@ -13324,6 +13333,10 @@ function buildPopupEl(o, overlay, opts = {}) {
     const pop = el('div', 'popup cb-popup'); pop.style.width = '480px';
     pop.innerHTML = crewBroadcastHtml(o);
     overlay.appendChild(pop);
+  } else if (o.kind === 'returnRating') {
+    const pop = el('div', 'popup rr-popup'); pop.style.width = '440px';
+    pop.innerHTML = returnRatingHtml(o);
+    overlay.appendChild(pop);
   } else if (o.kind === 'board') {
     const board = BACKOFFICE_BOARDS.find((b) => b.id === o.board);
     const pop = el('div', 'popup board-popup');
@@ -13883,6 +13896,7 @@ const WINDOW_CATALOG = [
   { kind: 'roadmap',       label: 'Coming in 2026',          tag: 'Roadmap · the docket',      sample: () => ({}) },
   { kind: 'feedback',      label: 'Report a bug or request', tag: 'Mr. Wrangler · report',     sample: () => ({}) },
   { kind: 'crewBroadcast', label: 'Text the crew',           tag: 'Crew · broadcast',          sample: () => ({ sel: [], text: '' }) },
+  { kind: 'returnRating',  label: 'Rate the return',         tag: 'Office · customer experience', sample: () => ({ stars: 5, reject: {} }) },
   { kind: 'board',         label: 'Back-office board',       tag: 'Back office · records',     sample: () => ({ board: (BACKOFFICE_BOARDS[0] || {}).id }) },
   { kind: 'roundup',       label: 'The Round-Up',            tag: 'Reports · board',           sample: () => ({}) },
   { kind: 'boardview',     label: 'Board View',              tag: 'Card · board view',         sample: () => ({ card: 'units', query: '', sort: {}, calc: {}, colOrder: null, extraRows: [], cellData: {}, seq: 0 }) },
@@ -13996,6 +14010,126 @@ function crewBroadcastEmps() {
     out.push({ rid, name, role: em.role || 'Crew', rc: (rmap[em.role] && rmap[em.role].color) || 'gray', blocked });
   });
   return out;
+}
+/* ── Return rating — the office rates a customer's experience when every unit is back ───
+   Opens as a REQUIRED modal off the return hook (setUnitStatus / setRentalStatus). The
+   rating is NOT skippable (no ✕, no backdrop/Esc dismiss — only Save closes it); the tiered
+   follow-up actions are armed by DEFAULT and the office can tap any to skip it. The rating
+   feeds the customer's own profile + the customer-detail graph — it deliberately does NOT
+   feed the Reputation KPI (an employee can't be allowed to move their own number). */
+const RR_STAR_TIP = { 1: 'Bad — apology + loop in the manager', 2: 'Below par — Sales follows up', 3: 'Okay — Sales follows up', 4: 'Good — thank-you + review ask', 5: 'Great — thank-you + review ask' };
+const rrBand = (stars) => (stars >= 4 ? 'good' : stars >= 2 ? 'mid' : 'low');
+const RR_BAND_LABEL = { good: 'Great visit — we’ll thank them and ask for a review.', mid: 'Room to improve — Sales will follow up.', low: 'Rough one — we’ll apologize and loop in the manager.' };
+// Default follow-up action(s) per band; `id` keys the reject map. Armed unless the office skips it.
+// The shop's editable default templates (Settings → Notifications → Rating Follow-ups),
+// falling back to the shipped NOTIF_DEFAULTS text. {name} → the customer's name at send.
+function notifRatingTemplate(key) {
+  const m = (state.settings && state.settings.notifications && state.settings.notifications.ratingMsgs) || {};
+  return (typeof m[key] === 'string' && m[key].trim()) ? m[key] : NOTIF_DEFAULTS.ratingMsgs[key];
+}
+const rrFillName = (tpl, nm) => String(tpl || '').replace(/\{name\}/g, nm);
+function rrActions(stars) {
+  const b = rrBand(stars);
+  if (b === 'good') return [{ id: 'thankYou', icon: STATUS_ICONS.star, desc: (nm) => `Text ${nm} a thank-you + a review link`,
+    field: { kind: 'message', ph: 'Message to the customer — edit before it sends', def: (nm) => rrFillName(notifRatingTemplate('thankYou'), nm) } }];
+  if (b === 'mid') return [{ id: 'salesFollow', icon: I.users, desc: () => 'Flag Sales to follow up',
+    field: { kind: 'note', ph: 'What should Sales do? (optional)', def: () => '' } }];
+  return [
+    { id: 'apology', icon: I.messageSquare, desc: (nm) => `Text ${nm} an apology + invite to call the manager`,
+      field: { kind: 'message', ph: 'Message to the customer — edit before it sends', def: (nm) => rrFillName(notifRatingTemplate('apology'), nm) } },
+    { id: 'managerNotify', icon: I.bell, desc: () => 'Notify the manager', always: true },   // 1★ always reaches a manager — never skippable
+  ];
+}
+// A required modal is open — used to refuse backdrop/Esc dismissal until it's resolved.
+function overlayLocked() { return !!(state.overlay && state.overlay.kind === 'returnRating' && !state.overlay.done); }
+// Prompt the office to rate the experience once every unit is back (returned), skipping a
+// fully-cancelled rental and never re-prompting a rental that's already rated.
+function maybePromptReturnRating(r) {
+  if (!r || r.rating || !r.customerId) return;
+  if (!allUnitsTerminal(r)) return;
+  if (!rentalUnits(r).some((eu) => unitStatus(r, eu) === 'Returned')) return;   // all cancelled/no-show → nothing to rate
+  openOverlay({ kind: 'returnRating', rentalId: r.rentalId, stars: 0, note: '', reject: {} });
+}
+function returnRatingHtml(o) {
+  const r = IDX.rental.get(o.rentalId);
+  const cust = r && r.customerId ? IDX.customer.get(r.customerId) : null;
+  const name = cust ? cust.name : 'this customer';
+  const stars = o.stars || 0, reject = o.reject || {};
+  const starRow = `<div class="rr-stars" role="radiogroup" aria-label="Experience rating, 1 to 5 stars">${[1, 2, 3, 4, 5].map((s) =>
+    `<button class="rr-star${s <= stars ? ' on' : ''} js-rr-star" data-s="${s}" role="radio" aria-checked="${s === stars ? 'true' : 'false'}" aria-label="${s} star${s > 1 ? 's' : ''} — ${esc(RR_STAR_TIP[s])}" data-tip="${esc(RR_STAR_TIP[s])}">${STATUS_ICONS.star}</button>`).join('')}</div>`;
+  const rrText = (a) => (o.text && o.text[a.id] != null) ? o.text[a.id] : a.field.def(name);
+  const actionsHtml = stars ? rrActions(stars).map((a) => {
+    const armed = a.always || !reject[a.id];
+    const ctrl = a.always
+      ? `<span data-tip="Always happens on a 1★ — can’t be skipped">${badge('Always', 'gray')}</span>`
+      : toggleChip(armed ? 'Will send' : 'Skipped', armed, { js: 'js-rr-reject', data: { act: a.id }, tone: armed ? 'green' : 'gray' });
+    const field = (a.field && armed) ? `<textarea class="insp-desc rr-note js-rr-fld" data-act="${esc(a.id)}" rows="2" maxlength="400" placeholder="${esc(a.field.ph)}" aria-label="${esc(a.field.ph)}">${esc(rrText(a))}</textarea>` : '';
+    return `<div class="rr-action${armed ? '' : ' is-skip'}"><span class="rr-action-ic">${a.icon}</span><span class="rr-action-desc">${esc(a.desc(name))}</span>${ctrl}</div>${field}`;
+  }).join('') : '';
+  const body = `
+    <div class="rr-intro">Every unit's back in the yard. How was <b>${esc(name)}</b>'s experience? Rate it straight — it steers how the crew responds, and it's never scored against you.</div>
+    ${starRow}
+    <div class="rr-band rr-band-${stars ? rrBand(stars) : 'none'}">${stars ? esc(RR_BAND_LABEL[rrBand(stars)]) : 'Tap a star to log this return.'}</div>
+    ${stars ? `<div class="rr-actions"><div class="rr-actions-cap">What happens next — tap any to skip it</div>${actionsHtml}</div>` : ''}
+    ${o.error ? `<div class="login-err" style="text-align:left;margin-top:8px">${esc(o.error)}</div>` : ''}`;
+  const canSave = !!stars && !o.busy;
+  const foot = `<span class="rr-req-note">${I.lock} Rating required</span><span class="spacer"></span><button class="pill ignition js-rr-save${canSave ? '' : ' is-disabled'}" data-r="R17"${canSave ? '' : ' disabled'}>${o.busy ? 'Saving…' : 'Save rating'}</button>`;
+  // Custom shell — NO ✕: the rating is required, so Save is the only way out.
+  return `<div class="pl-cap"></div><span class="pl-rivet tl"></span><span class="pl-rivet tr"></span><span class="pl-rivet bl"></span><span class="pl-rivet br"></span>
+    <div class="popup-head"><span class="pl-ic">${STATUS_ICONS.star}</span><div class="pl-title"><h3>Rate the Return</h3><span class="pl-tag">${esc(r ? rentalDisplayName(r) : 'Rental')} · customer experience</span></div></div>
+    <div class="popup-body rr-body">${body}</div>
+    <div class="popup-foot">${foot}</div>`;
+}
+// Snapshot every editable follow-up field (thank-you / apology message, sales note) into
+// o.text keyed by action id, so a re-render (star change, arm/skip) never loses a typed edit.
+function captureRrFields(o) {
+  if (!o) return; o.text = o.text || {};
+  document.querySelectorAll('.overlay .js-rr-fld').forEach((el) => { o.text[el.dataset.act] = el.value; });
+}
+function saveReturnRating() {
+  const o = state.overlay; if (!o || o.kind !== 'returnRating') return;
+  if (!o.stars) { o.error = 'Pick a rating first.'; attnFlash('.rr-stars'); return renderOverlay(); }
+  const r = IDX.rental.get(o.rentalId); if (!r) { o.done = true; closeOverlay(); return; }
+  captureRrFields(o);
+  const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
+  const name = cust ? cust.name : 'this customer';
+  const armedA = rrActions(o.stars).filter((a) => a.always || !(o.reject || {})[a.id]);
+  const armed = armedA.map((a) => a.id);
+  const messages = {};   // each armed action's FINAL text — the office's edit, else the default template
+  armedA.forEach((a) => { if (a.field) messages[a.id] = ((o.text && o.text[a.id] != null) ? o.text[a.id] : a.field.def(name)).trim(); });
+  r.rating = { stars: o.stars, band: rrBand(o.stars), when: TODAY_ISO, by: currentRole || 'office', actions: armed, messages };
+  reindex('rentals', r);
+  logAction(r, `Return rated ${o.stars}★ by ${currentRole || 'office'}${armed.length ? ` — ${armed.join(', ')}` : ' — no follow-up'}`);
+  fireRatingActions(r, o.stars, armed, messages);
+  o.done = true; closeOverlay(); toast(`Return rated ${o.stars}★.`); render();
+}
+// Fire the armed follow-ups. Sales flag → a customer activityLog entry; manager alert → a red
+// comment marker on the customer (surfaces in-app for the manager); customer sends (thank-you /
+// apology, the office's edited text) → the live sendCustomerMessage freeform SMS path, which
+// gates consent/window/cap server-side. Sends are best-effort + demo/offline = no-op.
+function fireRatingActions(r, stars, armed, messages) {
+  const cust = r.customerId ? IDX.customer.get(r.customerId) : null; if (!cust) return;
+  if (armed.includes('salesFollow')) {
+    const note = (messages && messages.salesFollow) || '';
+    cust.activityLog = cust.activityLog || [];
+    cust.activityLog.push({ when: TODAY_ISO, text: `Sales follow-up — ${stars}★ return${note ? `: ${note}` : ''}` });
+    reindex('customers', cust);
+  }
+  if (armed.includes('managerNotify')) addRecComment(cust, `${stars}★ return on ${rentalDisplayName(r)} — manager review requested.`, 'red');   // manager-visible flag on the customer
+  ['thankYou', 'apology'].forEach((id) => {   // one customer-facing send per rating (good → thankYou, low → apology)
+    if (!armed.includes(id)) return;
+    const text = ((messages && messages[id]) || '').trim(); if (text) ratingSend(cust.customerId, text);
+  });
+}
+// Send a rating-triggered text via the live customer-message pipeline (consent/window/cap all
+// enforced server-side). No backend (demo/offline) → silently does nothing.
+async function ratingSend(customerId, text) {
+  if (!commsOnline()) return;
+  let r; try { r = await backendCall('sendCustomerMessage', { channel: 'sms', entity: 'customer', recId: customerId, customerId, template: 'freeform', text, from: '' }); }
+  catch (e) { toast('Couldn’t reach the database to send the text.'); return; }
+  if (r && r.ok) toast('Text sent.');
+  else if (r && r.reason === 'opted-out') toast('Customer has opted out — no text sent.');
+  else toast('Couldn’t send the text.');
 }
 function crewBroadcastHtml(o) {
   const list = crewBroadcastEmps();
@@ -17419,14 +17553,6 @@ function onClick(e) {
   if (closest('.js-flag-sev')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; const b = closest('.js-flag-sev'); captureTeamEdits(o); if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {})); const ov = o.draftSettings.flagOverrides || (o.draftSettings.flagOverrides = {}); const m = ov[b.dataset.ent] || (ov[b.dataset.ent] = {}); const cur = m[b.dataset.id] || {}; const def = (FLAG_META[b.dataset.ent] || []).find((f) => f.id === b.dataset.id); if (def && def.severity === b.dataset.sev) delete cur.severity; else cur.severity = b.dataset.sev; delete cur.off; if (Object.keys(cur).length) m[b.dataset.id] = cur; else delete m[b.dataset.id]; reSettings(); return; }
   if (closest('.js-emp-add')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; captureTeamEdits(o); if (!o.draftSettings) o.draftSettings = JSON.parse(JSON.stringify((o.config && o.config.settings) || state.settings || {})); (o.draftSettings.employees || (o.draftSettings.employees = [])).push({ id: 'EMP' + Math.random().toString(36).slice(2, 8).toUpperCase(), name: '', role: (ROLES[0] && (ROLES[0].label || ROLES[0].id)) || '', phone: '', note: '' }); reSettings(); return; }
   if (closest('.js-emp-del')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; const i = Number(closest('.js-emp-del').dataset.i); captureTeamEdits(o); (o.draftSettings.employees || []).splice(i, 1); reSettings(); return; }
-  // Phase-3 per-person auth actions (phone-identity mode) — act immediately against the SAVED
-  // roster; the backend admin-gates them (docs/handoffs/phone-identity-backend.gs). A just-added
-  // unsaved row has no server enrollment yet → authStart returns sent:false, so we say "save first".
-  if (closest('.js-emp-code')) { e.stopPropagation(); const id = closest('.js-emp-code').dataset.id; toast('Texting the app invite…'); backendCall('authEnrollBlast', { personId: id }).then((r) => toast(r && r.ok && r.sent ? 'App invite texted.' : 'Could not text the invite — save the roster first, and check their phone number.')).catch(() => toast('Could not reach the backend.')); return; }
-  if (closest('.js-emp-welcome-reset')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; captureTeamEdits(o); o.draftSettings.phoneWelcome = (PHONE_IDENTITY && PHONE_IDENTITY.welcomeText) || ''; reSettings(); return; }
-  if (closest('.js-emp-signout')) { e.stopPropagation(); const id = closest('.js-emp-signout').dataset.id; backendCall('authRevoke', { personId: id }).then((r) => toast(r && r.ok ? 'Signed out on all their devices.' : 'Could not sign them out (admin only).')).catch(() => toast('Could not reach the backend.')); return; }
-  // Round up the crew: text every rostered hand the app link + welcome at once (authEnrollBlast, admin-gated backend).
-  if (closest('.js-emp-blast')) { e.stopPropagation(); toast('Rounding up the crew…'); backendCall('authEnrollBlast', {}).then((r) => toast(r && r.ok ? `App link sent to ${r.sent} hand${r.sent === 1 ? '' : 's'}${r.skipped ? ` (${r.skipped} skipped — no phone on file)` : ''}.` : 'Could not send the invite (admin only).')).catch(() => toast('Could not reach the backend.')); return; }
   // Crew SMS consent: capture typed roster edits first (mirror js-emp-del), then flip this hand's commsConsent.sms between opted-out and opted-in (unknown/absent counts as textable). Read server-side by sendStaffMessage_.
   if (closest('.js-emp-consent')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; const i = Number(closest('.js-emp-consent').dataset.i); captureTeamEdits(o); const emps = o.draftSettings.employees || []; if (emps[i]) { const cur = (emps[i].commsConsent && emps[i].commsConsent.sms) || 'unknown'; emps[i].commsConsent = Object.assign({}, emps[i].commsConsent, { sms: cur === 'opted-out' ? 'opted-in' : 'opted-out' }); } reSettings(); return; }
   // Settings → Notifications: single on/off toggles (R31) write straight into the draft
@@ -17434,6 +17560,10 @@ function onClick(e) {
   // numeric edit sitting in the live DOM isn't lost when reSettings() repaints the
   // pane's HTML from draft (same reason js-flag-ov/js-emp-add capture before mutating).
   if (closest('.js-notif-toggle')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; captureNotificationEdits(o); const n = ensureNotifDraft(o); const path = closest('.js-notif-toggle').dataset.path; notifSet(n, path, !notifGet(n, path)); reSettings(); return; }
+  if (closest('.js-notif-sec')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; captureNotificationEdits(o); const id = closest('.js-notif-sec').dataset.sec; state.notifSecOpen = state.notifSecOpen || {}; state.notifSecOpen[id] = !state.notifSecOpen[id]; reSettings(); return; }   // collapse/expand a notifications section (capture typed fields first so a collapse never loses them)
+  if (closest('.js-rr-star')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'returnRating') return; captureRrFields(o); o.stars = Number(closest('.js-rr-star').dataset.s) || 0; o.error = ''; renderOverlay(); return; }   // pick a 1–5★ return rating (reveals the reaction)
+  if (closest('.js-rr-reject')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'returnRating') return; captureRrFields(o); const act = closest('.js-rr-reject').dataset.act; o.reject = o.reject || {}; o.reject[act] = !o.reject[act]; renderOverlay(); return; }   // arm/skip a default follow-up action
+  if (closest('.js-rr-save')) { e.stopPropagation(); return saveReturnRating(); }
   // "Text The Crew" launcher — stash the settings overlay (with any unsaved notif draft captured) as returnTo so the composer's Close lands back in the pane, edits intact.
   if (closest('.js-crew-broadcast')) { e.stopPropagation(); const o = state.overlay; if (!o || o.kind !== 'settings') return; if (currentRole && roleTier(currentRole) < tierRank('manager')) { toast('Managers and up can text the crew.'); return; } captureNotificationEdits(o); openOverlay({ kind: 'crewBroadcast', sel: [], text: '', returnTo: o }); return; }
   if (closest('.js-sales-schedule')) { e.stopPropagation(); return openOverlay({ kind: 'schedule', customerId: closest('.js-sales-schedule').dataset.rec }); }
@@ -18637,6 +18767,7 @@ function setRentalStatus(rentalId, val, opts = {}) {
   }
   toast(warn || `Status → ${getStatus('rentalStatus', val).label}`);
   render();
+  if (val === 'Returned') maybePromptReturnRating(r);   // master gate closed the whole rental to Returned → rate it
 }
 /* §20 set ONE unit's status (the per-unit gate). Diverging from its siblings locks
    the master gate to the mix label; re-converging frees it. Same §9 gates per unit. */
@@ -18666,6 +18797,7 @@ function setUnitStatus(rentalId, unitId, val, opts = {}) {
   reindex('rentals', r);
   logAction(r, `${IDX.unit.get(unitId)?.name || unitId} → ${getStatus('rentalStatus', val).label}`);
   render();
+  if (val === 'Returned') maybePromptReturnRating(r);   // all units back → rate the customer's experience
 }
 /* §20 is any of this unit's invoice lines paid? (blocks No-Show/Cancel — refund first) */
 function unitLinePaid(r, unitId) {
@@ -21692,7 +21824,6 @@ function driveViewUrl(res) {
 async function backendCall(action, extra) {
   // text/plain avoids a CORS preflight that GAS web apps can't answer
   const payload = Object.assign({ action, password: backendPassword }, extra || {});
-  if (flagOn('phoneIdentity') && backendPassword) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF
   const res = await fetch(BACKEND_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
   // A backend error page (GAS 500/quota/auth HTML) is NOT JSON — res.json() throws, callers
   // catch it, and a real card/charge failure gets masked as a generic "Network error". Parse
@@ -23498,7 +23629,6 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault(); e.returnValue = '';
 });
 function renderLogin(msg) {
-  if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
   if (state.commsRail) { state.commsRail.cat = null; state.commsRail.sessions && Object.values(state.commsRail.sessions).forEach((s) => { s.menuOpen = false; }); }   // D8 — clock-in = an EMPTY rail (sessions persist per device, nothing summons itself)
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
@@ -23554,7 +23684,6 @@ function renderLogin(msg) {
 function finishLoad() {
   snapshotSaved();                                              // baseline = what the backend currently holds
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
-  if (flagOn('phoneIdentity')) { try { const emp = ((state.settings || {}).employees) || []; localStorage.setItem('jactec.pidRoster', JSON.stringify(emp.map((e) => ({ id: e.id, name: e.name })))); } catch (e) {} }   // cache non-secret roster names for the shared-device name-pick
   // (views no longer pull from the backend — personal per-device "my views", spec search-views D2)
   loadGroupOrderFromBackend();                                  // pull THIS role's saved card-group order
   loadTripsFromBackend();                                       // §2.3 Phase 4 — pull the trips store (getTrips), server wins at boot
@@ -23670,146 +23799,6 @@ async function attemptLogin() {
     backendPassword = ''; sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
     renderLogin(/unauthorized/i.test(String(e && e.message)) ? 'That password wasn’t recognized.' : "Couldn't reach the database. Check your connection and try again.");
   }
-}
-
-/* ══════════════ PHONE-VERIFIED DEVICE IDENTITY — login flow (Phase 2) ══════════════
-   flagOn('phoneIdentity'): identify by phone → one-time SMS code → "shared device?" →
-   PERSONAL (trusted 30 days, login = open the app) or SHARED (a PIN each session). No
-   passwords. EVERY entry point is flag-gated, so the shared-password screen above is
-   byte-for-byte untouched while the flag is OFF. Backend contract:
-   docs/handoffs/phone-identity-backend.gs. NOTE: unverified until the backend deploys —
-   the /jactec-ui screenshot self-critique + the end-to-end drive run on staging after
-   Jac's editor go-live. ══════════════════════════════════════════════════════════════ */
-const pidUI = { step: 'identify', personId: '', name: '', masked: '', kind: '', err: '', _phone: '', _tok: '', _role: '' };
-function pidTokenGet() { try { return localStorage.getItem('jactec.pidToken') || sessionStorage.getItem('jactec.pidToken') || ''; } catch (e) { return ''; } }
-function pidTokenSet(tok, personal) { try { if (personal) { localStorage.setItem('jactec.pidToken', tok); sessionStorage.removeItem('jactec.pidToken'); } else { sessionStorage.setItem('jactec.pidToken', tok); localStorage.removeItem('jactec.pidToken'); } } catch (e) {} }
-function pidTokenClear() { try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} }
-function pidRosterCache() { try { return JSON.parse(localStorage.getItem('jactec.pidRoster') || '[]'); } catch (e) { return []; } }
-// The verified token becomes the per-call credential: a truthy backendPassword keeps every
-// existing online-guard working, and backendCall sends it as sessionToken (backend prefers it).
-function pidAdopt(r, tok, personal) {
-  backendPassword = tok; currentRole = (r && r.role) || pidUI._role || ''; currentUser = (r && r.name) || pidUI.name || '';
-  pidTokenSet(tok, personal);
-  try { sessionStorage.setItem('jactec.role', currentRole); localStorage.setItem('jactec.user', currentUser); } catch (e) {}
-}
-function pidLoadFail() { pidTokenClear(); backendPassword = ''; pidUI.step = 'identify'; renderPhoneLogin("Couldn't reach the database. Try again."); }
-function pidEnter() { const s = document.querySelector('.login-screen'); if (s) s.classList.add('signing-in'); loadFromBackend().then(finishLoad).then(applyRoleLanding).catch(pidLoadFail); }
-// Boot (flag on): resume a trusted device, else show the phone login.
-function phoneBoot() {
-  const tok = pidTokenGet();
-  if (!tok) { warmBackend(); return renderPhoneLogin(); }
-  backendCall('authResume', { token: tok }).then((r) => {
-    if (r && r.ok) { pidAdopt(r, tok, !!(function () { try { return localStorage.getItem('jactec.pidToken'); } catch (e) { return null; } })()); pidEnter(); }
-    else { pidTokenClear(); backendPassword = ''; warmBackend(); renderPhoneLogin(); }
-  }).catch(() => { warmBackend(); renderPhoneLogin(); });
-}
-function pidErr(msg) { pidUI.err = msg || ''; const e = document.getElementById('pid-err'); if (e) e.textContent = pidUI.err; return null; }
-async function pidCall(btnId, fn) {
-  const btn = document.getElementById(btnId), prev = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
-  try { const r = await fn(); if (btn) { btn.disabled = false; btn.textContent = prev; } return r; }
-  catch (e) { if (btn) { btn.disabled = false; btn.textContent = prev; } pidErr("Couldn't reach the database. Try again."); return null; }
-}
-function renderPhoneLogin(msg) {
-  if (msg != null) pidUI.err = msg;
-  const P = PHONE_IDENTITY, step = pidUI.step, roster = pidRosterCache();
-  let inner = '';
-  if (step === 'identify') {
-    inner = `<div class="login-field"><label class="login-lbl" for="pid-phone">Mobile number</label>
-        <input id="pid-phone" class="login-input" type="tel" inputmode="tel" autocomplete="tel" placeholder="(337) 555-0100" value="${esc(pidUI._phone)}" /></div>
-      <button type="submit" class="login-btn" data-r="R17" id="pid-send">Text my code</button>
-      ${roster.length ? `<button type="button" class="login-ghost" id="pid-topin">Sign in with a PIN</button>` : ''}`;
-  } else if (step === 'device') {
-    inner = `<div class="login-hint">Code sent to ${esc(pidUI.name || 'you')} · ${esc(pidUI.masked)}</div>
-      <div class="login-ask">Is this a shared device?</div>
-      <div class="login-choice">
-        <button type="button" class="login-choice-btn" data-kind="personal"><span class="lc-t">My phone</span><span class="lc-s">Stays signed in ${P.trustDays} days</span></button>
-        <button type="button" class="login-choice-btn" data-kind="shared"><span class="lc-t">Shared computer</span><span class="lc-s">A PIN each time</span></button>
-      </div>`;
-  } else if (step === 'code') {
-    inner = `<div class="login-hint">Enter the ${P.codeLen}-digit code sent to ${esc(pidUI.masked)}</div>
-      <div class="login-field"><input id="pid-code" class="login-input login-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="${P.codeLen}" placeholder="000000" /></div>
-      <button type="submit" class="login-btn" data-r="R17" id="pid-verify">Verify</button>
-      <button type="button" class="login-ghost" id="pid-resend">Resend code</button>`;
-  } else if (step === 'setpin') {
-    inner = `<div class="login-hint">Set a PIN for this shared computer, ${esc(pidUI.name || 'partner')}</div>
-      <div class="login-field"><input id="pid-pin" class="login-input login-otp" inputmode="numeric" autocomplete="new-password" maxlength="${P.pinMaxLen}" placeholder="New PIN" /></div>
-      <div class="login-field"><input id="pid-pin2" class="login-input login-otp" inputmode="numeric" autocomplete="new-password" maxlength="${P.pinMaxLen}" placeholder="Confirm PIN" /></div>
-      <button type="submit" class="login-btn" data-r="R17" id="pid-savepin">Set PIN &amp; sign in</button>`;
-  } else if (step === 'pinpick') {
-    inner = `<div class="login-ask">Who's signing in?</div>
-      <div class="login-pick">${roster.map((p) => `<button type="button" class="login-pick-btn" data-id="${esc(p.id)}">${esc(p.name || '—')}</button>`).join('') || '<div class="login-hint">No one saved on this device yet — use your phone.</div>'}</div>
-      <button type="button" class="login-ghost" id="pid-tophone">Use my phone instead</button>`;
-  } else if (step === 'pin') {
-    inner = `<div class="login-hint">PIN for ${esc(pidUI.name || 'you')}</div>
-      <div class="login-field"><input id="pid-loginpin" class="login-input login-otp" inputmode="numeric" autocomplete="off" maxlength="${P.pinMaxLen}" placeholder="PIN" /></div>
-      <button type="submit" class="login-btn" data-r="R17" id="pid-signin">Saddle Up?</button>
-      <button type="button" class="login-ghost" id="pid-needcode">Forgot PIN — text me a code</button>`;
-  }
-  $('#app').innerHTML = `<div class="login-screen"><form class="login-box" id="pid-form" autocomplete="off">
-    <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
-    <div class="login-plate">
-      <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
-      <div class="login-title">Rental Wrangler</div>
-      <div class="login-sub">JacRentals · Sulphur, LA</div>
-      ${inner}
-      <div class="login-err" id="pid-err">${pidUI.err ? esc(pidUI.err) : ''}</div>
-    </div></form></div>`;
-  pidWire();
-}
-function pidWire() {
-  const step = pidUI.step, form = document.getElementById('pid-form');
-  if (form) form.addEventListener('submit', (e) => { e.preventDefault();
-    if (step === 'identify') pidDoStart(false);
-    else if (step === 'code') pidDoVerify();
-    else if (step === 'setpin') pidDoSetPin();
-    else if (step === 'pin') pidDoLoginPin(); });
-  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
-  on('pid-topin', () => { pidUI.step = 'pinpick'; renderPhoneLogin(''); });
-  on('pid-tophone', () => { pidUI.step = 'identify'; renderPhoneLogin(''); });
-  on('pid-resend', () => pidDoStart(true));
-  on('pid-needcode', () => { pidUI.step = 'identify'; pidUI._phone = ''; renderPhoneLogin(''); });
-  document.querySelectorAll('.login-choice-btn').forEach((b) => b.addEventListener('click', () => { pidUI.kind = b.getAttribute('data-kind'); pidUI.step = 'code'; renderPhoneLogin(''); }));
-  document.querySelectorAll('.login-pick-btn').forEach((b) => b.addEventListener('click', () => { pidUI.personId = b.getAttribute('data-id'); const r = pidRosterCache().find((x) => String(x.id) === String(pidUI.personId)); pidUI.name = r ? r.name : ''; pidUI.step = 'pin'; renderPhoneLogin(''); }));
-  const focusId = { identify: 'pid-phone', code: 'pid-code', setpin: 'pid-pin', pin: 'pid-loginpin' }[step];
-  if (focusId) { const el = document.getElementById(focusId); if (el) el.focus(); }
-}
-async function pidDoStart(resend) {
-  const phone = resend ? pidUI._phone : (document.getElementById('pid-phone')?.value || '').trim();
-  if (!phone) return pidErr('Enter your mobile number.');
-  pidUI._phone = phone;
-  const r = await pidCall(resend ? 'pid-resend' : 'pid-send', () => backendCall('authStart', { phone, purpose: 'login' }));
-  if (!r) return;
-  if (r.ok && r.sent) { pidUI.personId = r.personId; pidUI.name = r.name || ''; pidUI.masked = r.masked || ''; pidUI.err = ''; if (!resend) pidUI.step = 'device'; renderPhoneLogin(''); }
-  else pidErr("If that number's on the roster, a code is on its way — check your phone.");
-}
-async function pidDoVerify() {
-  const code = (document.getElementById('pid-code')?.value || '').replace(/\D/g, '');
-  if (code.length !== PHONE_IDENTITY.codeLen) return pidErr(`Enter the ${PHONE_IDENTITY.codeLen}-digit code.`);
-  const r = await pidCall('pid-verify', () => backendCall('authVerify', { personId: pidUI.personId, code, deviceKind: pidUI.kind }));
-  if (!r) return;
-  if (!r.ok) return pidErr(r.error === 'bad-code' ? `That code didn't match${r.left != null ? ` — ${r.left} left` : ''}.` : r.error === 'expired' ? 'That code expired — resend a fresh one.' : r.error === 'too-many' ? 'Too many tries — resend a fresh code.' : 'Could not verify — resend a code.');
-  pidUI._role = r.role || ''; pidUI._tok = r.token || '';
-  const personal = pidUI.kind === 'personal';
-  if (!personal && !r.pinSet) { pidUI.step = 'setpin'; return renderPhoneLogin(''); }
-  pidAdopt(r, r.token, personal); pidEnter();
-}
-async function pidDoSetPin() {
-  const pin = (document.getElementById('pid-pin')?.value || '').replace(/\D/g, ''), pin2 = (document.getElementById('pid-pin2')?.value || '').replace(/\D/g, '');
-  if (pin.length < PHONE_IDENTITY.pinMinLen) return pidErr(`PIN must be at least ${PHONE_IDENTITY.pinMinLen} digits.`);
-  if (pin !== pin2) return pidErr("PINs don't match.");
-  const r = await pidCall('pid-savepin', () => backendCall('authSetPin', { personId: pidUI.personId, pin, token: pidUI._tok }));
-  if (!r) return;
-  if (!r.ok) return pidErr('Could not save the PIN — try again.');
-  pidAdopt({ role: pidUI._role, name: pidUI.name }, pidUI._tok, false); pidEnter();
-}
-async function pidDoLoginPin() {
-  const pin = (document.getElementById('pid-loginpin')?.value || '').replace(/\D/g, '');
-  if (!pin) return pidErr('Enter your PIN.');
-  const r = await pidCall('pid-signin', () => backendCall('authLoginPin', { personId: pidUI.personId, pin }));
-  if (!r) return;
-  if (!r.ok) return pidErr(r.error === 'locked' ? 'Locked for a bit — text yourself a code instead.' : r.error === 'no-pin' ? 'No PIN yet — text yourself a code to set one.' : r.error === 'bad-pin' ? `Wrong PIN${r.left != null ? ` — ${r.left} left` : ''}.` : 'Could not sign in.');
-  pidAdopt(r, r.token, false); pidEnter();
 }
 
 // §M0 — reflect the viewport width onto <body> so CSS + the gesture layer can key off
@@ -24223,9 +24212,6 @@ function boot() {
   if (hash.includes('local')) { return offlineBoot(); }     // #local — render from data.js, no backend
   if (hash.includes('reseed')) { return reseedFromFile(); }  // #reseed — REPLACE live data with the file
 
-  // Per-person login (flagOn('phoneIdentity')): resume a trusted device or show the phone
-  // login. Strictly gated — the shared-password gate below is the flag-OFF path, untouched.
-  if (flagOn('phoneIdentity')) { return phoneBoot(); }
   // §16 — gate on the shared password: load from the backend if we already have it
   // this session, otherwise show the login screen. The app only renders once data is in.
   if (backendPassword) {
