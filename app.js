@@ -10915,7 +10915,10 @@ function adoptScanCaptures() {
     if (e.slot === 'start') { if (['Returned', 'Cancelled', 'No Show'].includes(storedSt)) continue; }   // terminal → don't un-terminal
     else { if (!OUT_RENTAL_STATUSES.has(storedSt) && storedSt !== 'Returned') continue; }             // recovery with no delivery on file → skip
     let clock = '', date = TODAY_ISO;
-    try { const d = new Date(e.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = d.toISOString().slice(0, 10); } } catch (err) {}
+    // Derive date + clock in LOCAL time (isoOf, like the manual capture path's TODAY_ISO) — NOT
+    // toISOString(), whose UTC day would stamp tomorrow's date on an evening scan in a negative-
+    // offset yard (America/Chicago), diverging from the local `clock` on the same stamp. §bug-4
+    try { const d = new Date(e.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = isoOf(d); } } catch (err) {}
     const drvId = eu ? (e.slot === 'end' ? (eu.recoveryDriverId || eu.deliveryDriverId) : eu.deliveryDriverId) : null;
     setUnitCapture(r, eu, key, { date, clock, video: e.video, driver: drvId ? driverName(drvId) : '', scan: true });
     if (e.slot === 'start' && !OUT_RENTAL_STATUSES.has(storedSt)) {   // pre-delivery → this scan delivered it
