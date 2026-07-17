@@ -41,5 +41,13 @@
       }
     }
   ],
-  "queue": []
+  "queue": [
+    {
+      "session": "9ca71225-e4af-5667-afb1-cea5948d9cc1",
+      "branch": "claude/customer-list-card-button-ghxyb0",
+      "feature": "customer-list-card-button-ghxyb0",
+      "since": 1784302416243,
+      "expiresAt": 1784302506243
+    }
+  ]
 }
