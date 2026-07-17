@@ -7259,18 +7259,6 @@ function newInspectionForUnit(u) {
   DATA.inspections.push(n); IDX.insp.set(id, n); reindex('inspections', n);
   return n;
 }
-/* A QR-decal scan files its video straight to the backend (SCAN_CAPS, loaded at boot by
-   loadScanCapturesFromBackend) — it never lands on r.units[]/r.startCapture like a manual
-   yard-tool capture does. scanCapFor() looks one up for a given unit+rental+slot and hands
-   back a synthetic capture object in the SAME shape a manual one carries ({ clock, video }),
-   plus a `scan: true` marker so the render layer can tell the two apart. */
-function scanCapFor(unitId, rentalId, cap) {
-  const e = SCAN_CAPS[unitId + '|' + rentalId + '|' + cap];
-  if (!e || !e.video) return null;
-  let clock = '';
-  try { clock = new Date(e.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); } catch (err) {}
-  return { video: e.video, clock, scan: true };
-}
 /* YARD JOURNEY — boxless tool at the top of the Units card; the unit's QR code
    lands mechanics here. Node 0 = the reservation; +Start/+End relabel to
    +Log Delivery/+Log Recovery on transport rentals; FC = red optional. */
@@ -7282,11 +7270,10 @@ function yardToolHtml(u) {
   const C = euT || r;   // §20 this unit's OWN captures (mirrors r.* for the primary)
   const st = getStatus('rentalStatus', euT ? unitStatus(r, euT) : rentalDisplayStatus(r));
   const isDel = !!(euT && euT.transportType && euT.transportType !== 'Self');   // §20 per-unit (was rental-level — diverged on multi-unit)
-  // Join in a scanned QR-decal video ONLY when this unit's own capture is missing or has no
-  // video yet — a manual capture always wins, and the join goes invisible the moment a real
-  // one lands (never overwrites C.*/r.* — display-only, same as every other derived field).
-  const startCap = (C.startCapture && C.startCapture.video) ? C.startCapture : (scanCapFor(u.unitId, r.rentalId, 'start') || C.startCapture);
-  const endCap = (C.endCapture && C.endCapture.video) ? C.endCapture : (scanCapFor(u.unitId, r.rentalId, 'end') || C.endCapture);
+  // A QR-decal scan is ADOPTED into the record as a first-class capture (adoptScanCaptures,
+  // marked scan:true), so the journey reads it straight off C.* like any manual capture — the
+  // `• Filed by QR scan` marker below just keys off that flag. No display-time join needed.
+  const startCap = C.startCapture, endCap = C.endCapture;
   const startLbl = startCap ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
   const endLbl = endCap ? 'Returned' : isDel ? '+Log Recovery' : '+End';
   const kindLbl = isDel ? getStatus('transportType', euT.transportType).label : '';
@@ -10871,10 +10858,11 @@ async function loadTripsFromBackend() {
   } catch (e) { /* offline → keep local cache */ }
 }
 /* Scan-sourced capture videos (QR-decal scans, SCAN-TO-LOG above) are filed server-side via
-   captureByScan — NOT onto the rental record — so the yard journey can't read them off r.units[]
-   like a manual capture. SCAN_CAPS is the boot-pulled feed (getScanCaptures), keyed
-   "<unitId>|<rentalId>|<cap>" → { video, ts }; scanCapFor() below joins it in at render time.
-   Mirrors loadTripsFromBackend exactly: same offline/local guard, server wins. */
+   captureByScan into an append-only ScanLog (NOT onto the rental record, so a client sync can't
+   clobber the server write). SCAN_CAPS is the boot-pulled feed (getScanCaptures), keyed
+   "<unitId>|<rentalId>|<cap>" → { video, ts }. adoptScanCaptures() then folds each one INTO the
+   rental it belongs to — client-side, synced via the normal diff-sync — so downstream everything
+   reads it as an ordinary capture. Mirrors loadTripsFromBackend: same offline/local guard. */
 let SCAN_CAPS = {};
 async function loadScanCapturesFromBackend() {
   if (typeof backendPassword === 'undefined' || !backendPassword) return;
@@ -10882,9 +10870,50 @@ async function loadScanCapturesFromBackend() {
     const r = await backendCall('getScanCaptures');
     if (r && r.ok && r.captures && typeof r.captures === 'object') {
       SCAN_CAPS = r.captures || {};
-      if (!booting) render();
+      const changed = adoptScanCaptures();     // fold new scan videos into their rentals (stamp capture + advance status)
+      if (!booting && changed) render();
     }
   } catch (e) { /* offline → keep whatever SCAN_CAPS already holds (possibly empty) */ }
+}
+/* Fold each scan-filed video into its rental as a FIRST-CLASS capture: stamp the unit's
+   start/end capture (marked scan:true) and advance that unit's status the way a manual Log
+   Delivery/Recovery would — so the journey, the status pill, availability, billing and every
+   status-driven surface agree, with ZERO display/gate special-casing (they read cur.* like any
+   manual capture). Client-side + persisted through the normal diff-sync (reindex → saveSoon),
+   so it never clobbers a server write. Status is set DIRECTLY, bypassing the §9 booking gates —
+   the unit physically moved, so a scan records that fact; a missing invoice is FLAGGED in the
+   activity log, not blocked (Jac: don't stop a truck that already left). Idempotent: a slot that
+   already carries a video (a manual capture, or an earlier adoption) is left untouched, so this
+   re-runs harmlessly on every load and never fights a manual edit. §scan-reconcile. */
+function adoptScanCaptures() {
+  let changed = false;
+  for (const k in SCAN_CAPS) {
+    const cap = SCAN_CAPS[k]; if (!cap || !cap.video) continue;
+    const b1 = k.indexOf('|'); if (b1 < 0) continue;
+    const b2 = k.indexOf('|', b1 + 1); if (b2 < 0) continue;
+    const unitId = k.slice(0, b1), rentalId = k.slice(b1 + 1, b2), slot = k.slice(b2 + 1);
+    if (slot !== 'start' && slot !== 'end') continue;
+    const r = IDX.rental.get(rentalId); if (!r) continue;
+    const eu = unitEntry(r, unitId);
+    if (Array.isArray(r.units) ? !eu : String(r.unitId) !== String(unitId)) continue;   // must match the scanned unit
+    const tgt = eu || r, key = slot === 'start' ? 'startCapture' : 'endCapture';
+    if (tgt[key] && tgt[key].video) continue;   // already logged (a manual capture wins, or already adopted) → leave it
+    let clock = '', date = TODAY_ISO;
+    try { const d = new Date(cap.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = d.toISOString().slice(0, 10); } } catch (e) {}
+    const drvId = eu ? (slot === 'end' ? (eu.recoveryDriverId || eu.deliveryDriverId) : eu.deliveryDriverId) : null;
+    setUnitCapture(r, eu, key, { date, clock, video: cap.video, driver: drvId ? driverName(drvId) : '', scan: true });
+    const st = unitStatus(r, eu);
+    if (slot === 'start' && !OUT_RENTAL_STATUSES.has(st) && !['Returned', 'Cancelled', 'No Show'].includes(st)) {
+      if (eu) { eu.status = 'On Rent'; syncRentalPrimary(r); } else { r.status = 'On Rent'; }
+      if (!r.invoiceId) logAction(r, '⚠ Delivered by QR scan — no invoice linked yet');
+    } else if (slot === 'end' && OUT_RENTAL_STATUSES.has(st)) {
+      if (eu) { eu.status = 'Returned'; syncRentalPrimary(r); } else { r.status = 'Returned'; }
+    }
+    logAction(r, `${IDX.unit.get(unitId)?.name || unitId} — ${slot === 'start' ? 'Delivery' : 'Recovery'} video filed by QR scan`);
+    reindex('rentals', r);   // → saveSoon() diff-syncs this client-side write (no clobber)
+    changed = true;
+  }
+  return changed;
 }
 /* §2.3 Phase 4 — the Trips card footer's live sync state (replaces the Phase 1 static
    placeholder). 'Synced · rev N' (N = the highest rev among TODAY's materialized trips) only
@@ -19294,16 +19323,12 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
   const r = IDX.rental.get(rentalId); if (!r) return;
   const cur = captureUnit(r, unitId) || r;
   const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
-  // A QR-decal scan files its video to SCAN_CAPS (never onto cur.*), so a scanned delivery
-  // leaves cur.startCapture empty even though the journey shows it done. Treat a scan-filed
-  // video as satisfying the SAME gate checks a manual capture does, so the ✓ and these
-  // handlers agree — otherwise a manual recovery trips "Log the Start first." on a unit that
-  // was delivered by scan. §scan-reconcile (mirrors the render-layer join in yardToolHtml).
-  const scanFiled = (c) => (c === 'start' || c === 'end') && !!scanCapFor(unitId || r.unitId, r.rentalId, c);
   // A video already on file → this tap RE-RECORDS it (Jac: "delete that video in trade
   // for a new one by doing the same process again"). A re-record only swaps the video —
   // it must NOT move status again, re-run the §9 delivery gates, or re-raise a field call.
-  const replace = !!cur[key] || scanFiled(cap) || (cap === 'fc' && !!r.fieldCall);
+  // (A scanned delivery/recovery is ADOPTED onto cur.* by adoptScanCaptures, so cur[key] is
+  // already set here — no scan-specific gate branch needed; it reads as a normal capture.)
+  const replace = !!cur[key] || (cap === 'fc' && !!r.fieldCall);
   // §14 a first Start/Delivery moves the unit On Rent — run the §9 gates UP FRONT so a
   // blocked delivery never opens the camera (mirrors setRentalStatus/setUnitStatus so the
   // driver is never made to record a video that would only then be rejected).
@@ -19321,7 +19346,7 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
     }
   }
   // A first End/Recovery needs its Start/Delivery logged first (a re-record already has it).
-  if (cap === 'end' && !replace && !cur.startCapture && !scanFiled('start')) return flashOr('.js-yard[data-cap="start"]', 'Log the Start/Delivery first.');
+  if (cap === 'end' && !replace && !cur.startCapture) return flashOr('.js-yard[data-cap="start"]', 'Log the Start/Delivery first.');
   // No popup — fire the camera straight from the tap; ending the video saves it. opts
   // carries a manager's granted account-block override through to the commit's status move.
   openYardCamera(rentalId, cap, unitId || null, opts);
@@ -19348,12 +19373,9 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
   const tgt = eu || r;
   const uname = IDX.unit.get(unitId)?.name || '';
   const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
-  // A scan-filed video counts as already-logged here too (mirrors yardCapture) — so committing
-  // a manual recovery after a scanned delivery doesn't re-run the §9 status move, and tapping a
-  // scan-filed node re-records rather than duplicating. §scan-reconcile.
-  const scanFiled = (c) => (c === 'start' || c === 'end') && !!scanCapFor(unitId || r.unitId, r.rentalId, c);
   // Re-record → swap the video only; keep the status where it is and don't re-raise the FC.
-  const replace = !!tgt[key] || scanFiled(cap) || (cap === 'fc' && !!r.fieldCall);
+  // (A scanned capture is already adopted onto tgt.* by adoptScanCaptures — a normal capture here.)
+  const replace = !!tgt[key] || (cap === 'fc' && !!r.fieldCall);
   // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the stamp
   // persists immediately; the video uploads to Drive and only its URL lands on the
   // stamp afterwards (uploadCapture backend action).
@@ -25353,6 +25375,7 @@ function exposeTestApi() {
       tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend
+      adoptScanCaptures, setScanCaps: (m) => { SCAN_CAPS = m || {}; },   // §scan-reconcile — test seam: seed SCAN_CAPS then run adoption (logic-test)
       autoRunRepair, autoRunAnchorsFor, secToClock, AUTORUN_DAY_START_SEC, AUTORUN_EOD_DEADLINE_SEC, AUTORUN_LOAD_BUFFER_SEC, dispatchPinOf,
       openCustomerForm, renderOverlay, render, printInvoice, invoiceDocHtml, renderInvoicePng, invoicePrintGroups, invoiceAmendments, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature,
       wranglerSend, wranglerNewChat, openWranglerDock, wranglerDockPollTick, devUnlocked, openWranglerOps, wrOpsAgo, __state: state };   // UI drivers for headless screenshot/e2e tests
