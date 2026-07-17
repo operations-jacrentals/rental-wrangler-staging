@@ -19294,10 +19294,16 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
   const r = IDX.rental.get(rentalId); if (!r) return;
   const cur = captureUnit(r, unitId) || r;
   const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
+  // A QR-decal scan files its video to SCAN_CAPS (never onto cur.*), so a scanned delivery
+  // leaves cur.startCapture empty even though the journey shows it done. Treat a scan-filed
+  // video as satisfying the SAME gate checks a manual capture does, so the ✓ and these
+  // handlers agree — otherwise a manual recovery trips "Log the Start first." on a unit that
+  // was delivered by scan. §scan-reconcile (mirrors the render-layer join in yardToolHtml).
+  const scanFiled = (c) => (c === 'start' || c === 'end') && !!scanCapFor(unitId || r.unitId, r.rentalId, c);
   // A video already on file → this tap RE-RECORDS it (Jac: "delete that video in trade
   // for a new one by doing the same process again"). A re-record only swaps the video —
   // it must NOT move status again, re-run the §9 delivery gates, or re-raise a field call.
-  const replace = !!cur[key] || (cap === 'fc' && !!r.fieldCall);
+  const replace = !!cur[key] || scanFiled(cap) || (cap === 'fc' && !!r.fieldCall);
   // §14 a first Start/Delivery moves the unit On Rent — run the §9 gates UP FRONT so a
   // blocked delivery never opens the camera (mirrors setRentalStatus/setUnitStatus so the
   // driver is never made to record a video that would only then be rejected).
@@ -19315,7 +19321,7 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
     }
   }
   // A first End/Recovery needs its Start/Delivery logged first (a re-record already has it).
-  if (cap === 'end' && !replace && !cur.startCapture) return flashOr('.js-yard[data-cap="start"]', 'Log the Start/Delivery first.');
+  if (cap === 'end' && !replace && !cur.startCapture && !scanFiled('start')) return flashOr('.js-yard[data-cap="start"]', 'Log the Start/Delivery first.');
   // No popup — fire the camera straight from the tap; ending the video saves it. opts
   // carries a manager's granted account-block override through to the commit's status move.
   openYardCamera(rentalId, cap, unitId || null, opts);
@@ -19342,8 +19348,12 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
   const tgt = eu || r;
   const uname = IDX.unit.get(unitId)?.name || '';
   const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
+  // A scan-filed video counts as already-logged here too (mirrors yardCapture) — so committing
+  // a manual recovery after a scanned delivery doesn't re-run the §9 status move, and tapping a
+  // scan-filed node re-records rather than duplicating. §scan-reconcile.
+  const scanFiled = (c) => (c === 'start' || c === 'end') && !!scanCapFor(unitId || r.unitId, r.rentalId, c);
   // Re-record → swap the video only; keep the status where it is and don't re-raise the FC.
-  const replace = !!tgt[key] || (cap === 'fc' && !!r.fieldCall);
+  const replace = !!tgt[key] || scanFiled(cap) || (cap === 'fc' && !!r.fieldCall);
   // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the stamp
   // persists immediately; the video uploads to Drive and only its URL lands on the
   // stamp afterwards (uploadCapture backend action).
