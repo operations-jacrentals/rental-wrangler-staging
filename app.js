@@ -20,7 +20,6 @@ import * as CFG from './config.js';
 // import failure would kill the whole boot, so these ship in-repo like the Lucide icons).
 import * as Plot from './vendor/plot.min.js';                                  // Observable Plot 0.6.17 (ISC)
 import { pie as d3pie, arc as d3arc } from './vendor/d3-shape.min.js';         // d3-shape 3.2.0 (ISC) — donut geometry, Phase D
-import qrcode from './vendor/qrcode.min.js';   // qrcode-generator (MIT) — offline QR for the Fleet QR Codes export
 import { AGREEMENTS, AGREEMENT_VERSIONS, AGREEMENT_CURRENT } from './agreements.js';
 import { ico, I, CARD_ICON, RING_ICON, CATEGORY_ICON } from './icons.js';
 import { CATEGORY_ANIM } from './icons-anim.js';
@@ -1759,21 +1758,7 @@ const invoiceCollectionsActive = (inv) => !!(inv && inv.collections && inv.colle
 /** Does ANOTHER invoice for this invoice's customer still sit in active Collections? Gates the
  *  recall-lifts-blacklist decision so one recall can't un-blacklist while a 2nd is live (#552-r3). */
 function collectionsHasOtherActive(inv) { return !!inv && (DATA.invoices || []).some((i2) => i2 !== inv && i2.customerId === inv.customerId && invoiceCollectionsActive(i2)); }
-// Render-scoped memo — reset at the top of render() and cleared to null at its end, so a call
-// OUTSIDE a render always recomputes fresh (zero staleness risk). These pure per-record derivations
-// (invoiceTotals · activeRentalForUnit · unitRepairCost · unitTotalRevenue) get called many times in
-// ONE render — group-bucketing over the full set, then the windowed row build, then flag/color — so
-// caching for the life of a single render kills the redundant recompute. The cache is thrown away and
-// rebuilt every render, so it can never serve stale data. (Jac 2026-07-17 snappiness)
-let RENDER_MEMO = null;
-function rmemo(bucket, key, compute) {
-  if (!RENDER_MEMO) return compute();
-  let m = RENDER_MEMO[bucket]; if (!m) m = RENDER_MEMO[bucket] = new Map();
-  if (m.has(key)) return m.get(key);
-  const v = compute(); m.set(key, v); return v;
-}
 function invoiceTotals(inv) {
-  return rmemo('invTotals', inv, () => {
   const subtotal = (inv.lineItems || []).reduce((a, li) => a + (Number(li.amount) || 0), 0);
   const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
   const exempt = !!(inv.taxExempt || cust?.salesTaxExempt);
@@ -1805,7 +1790,6 @@ function invoiceTotals(inv) {
     }
   }
   return { subtotal, tax, total, exempt, paid, balance, status };
-  });
 }
 
 /** The active rental driving a unit's mirrored Rental Status (excludes
@@ -1833,11 +1817,11 @@ function rentalRevStatus(r) {
 function activeRentalForUnit(unitId) {
   // §20 judge by the UNIT's OWN status, not the rental roll-up — a No-Show /
   // Returned unit on an otherwise-active rental is NOT actively renting.
-  return rmemo('activeRental', unitId, () => DATA.rentals.filter((r) => {
+  return DATA.rentals.filter((r) => {
     if (!rentalHasUnit(r, unitId) || r.status === 'Quote') return false;
     const eu = unitEntry(r, unitId);
     return ACTIVE_RENTAL.has(eu ? unitStatus(r, eu) : r.status);
-  }).sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null);
+  }).sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null;
 }
 
 /* ── §10 Availability Tool (derived, never stored) ──────────────────────────
@@ -2051,8 +2035,8 @@ function topServiceForUnit(unit) {
 }
 /** Total repair cost for a unit = Σ its WO line-item costs (SPEC §12.4). */
 function unitRepairCost(unitId) {
-  return rmemo('unitRepair', unitId, () => DATA.workOrders.filter((w) => w.unitId === unitId)
-    .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0));
+  return DATA.workOrders.filter((w) => w.unitId === unitId)
+    .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0);
 }
 /** §7.6 WO "Price if billed": tiered parts markup (by each part's cost) + $150/hr labor.
  *  Tiers (Jac 2026-06-07): ≤$50 ×2.0 · ≤$200 ×1.5 · ≤$1000 ×1.3 · >$1000 ×1.2. */
@@ -2066,8 +2050,8 @@ function woBillable(w) {
 }
 /** Total revenue a unit has earned = Σ its rentals' derived prices (SPEC §12.4). */
 function unitTotalRevenue(unitId) {
-  return rmemo('unitRev', unitId, () => DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
-    .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0));   // §20 this unit's own line
+  return DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
+    .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0);   // §20 this unit's own line
 }
 
 /** Inspection result (handles the pending state: no checklist yet = Not Ready). */
@@ -2263,24 +2247,6 @@ function loadCommsRail() {
   return rail;
 }
 function saveCommsRail() { try { localStorage.setItem(COMMS_LS_KEY, JSON.stringify({ sessions: state.commsRail.sessions })); } catch (e) {} }
-/* Clock-in = an EMPTY comms rail. Resets every in-memory flag that decides whether a chat
-   window or tab strip is summoned on screen — cat, each session's menuOpen + lastOpen, the
-   Mr. Wrangler dock (open/min) and the Team dock (open) — then persists the emptied rail so a
-   dismissed conversation can't resurrect from localStorage either. MUST run on EVERY path back
-   to login: the old one-liner lived BELOW renderLogin()'s `phoneIdentity` early-return, so under
-   the live phoneIdentity:true default it was dead code (never ran), and even on the flag-OFF path
-   it only cleared cat/menuOpen — never the dock or lastOpen flags that ride an in-memory Switch
-   User straight into the next operator's session. Exactly the "wired to the old login only" shape
-   as the GPS-token bug (MEMORY 2026-07-17). Called from both login screens + finishLoad. (Jac 2026-07-17) */
-function resetCommsRailForLogin() {
-  if (state.commsRail) {
-    state.commsRail.cat = null;
-    Object.values(state.commsRail.sessions || {}).forEach((s) => { s.menuOpen = false; s.lastOpen = null; });
-    saveCommsRail();
-  }
-  if (state.wrangler) { state.wrangler.open = false; state.wrangler.min = false; }
-  if (state.chat) state.chat.open = false;
-}
 /* 'Ended' conversations (spec D8: End ≠ delete — the full history persists forever;
    the conversation just leaves the All list + rail). A CLIENT-side per-device map of
    `id|channel` → ended-at epoch (D9: the timestamp lets Team/Wrangler chats RESURRECT
@@ -2333,9 +2299,7 @@ const state = {
   custAcctOpen: {},           // Phase 1 (2026-07-10 account/agreements redesign, D19) — is the top-of-card Account section expanded? { [customerId]: true }; collapsed by default, view-local
   custAgOpen: {},             // Phase 1 — which Agreements row is expanded inside the Account section — { [customerId]: cardId | '__new__' | null } (one open at a time, mirrors custInvOpen); '__new__' = the +Agreement/Card creation panel
   custAgDraft: {},            // Phase 2b — the in-progress NEW-agreement draft — { [customerId]: {accountType, startDate, selfie, signature} }; view-local, cleared on sign/cancel
-  custQuickAdd: { open: false, first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list "+ New Customer" inline quick-add row (leads the list, mirrors +New Rental's .newrow) — collapsed/open + the single in-progress draft; view-local, reset on cancel/create
   svcSecOpen: {},             // Unit detail — is the Services (service-order) section expanded? { [unitId]: true }; collapsed by default (mirrors custAcctOpen), view-local, reset on a fresh unit open
-  unitSecOpen: {},            // Unit detail — which generic collapsible sections are expanded per unit: { [unitId]: { workorders|specs|gps|investment: true } }; all collapsed by default, view-local, reset on a fresh unit open (mirrors svcSecOpen). Coverage is folded into Investment (Jac 2026-07-16) — no separate 'coverage' key.
   woRowOpen: {},              // Unit detail — which Work Order row is expanded (accordion, one per unit, mirrors custInvOpen) — { [unitId]: woId | null }; collapsed by default, view-local, reset on a fresh unit open
   calSearch: '',               // Trips card mini-search (calendar is card-stateless — no session.cards.calendar — so this rides on state directly)
   calOpenTrip: null,           // §2.2b cab sheet — the ONE trip row expanded to its unit-facts sheet (row-body tap toggles; second tap collapses)
@@ -2556,7 +2520,6 @@ function sweepEmptyDrafts(keepId) {
   }
 }
 function openStandard(card, recId, recType) {
-  resetCustQuickAdd();   // clicking any record = navigate away from the customers list → discard the +New Customer draft (Jac 2026-07-17)
   const cs = activeSession().cards[card];
   if (cs && cs.mode === 'standard' && cs.recId != null) {
     if (String(cs.recId) === String(recId)) { render(); return; }            // already showing it — no-op
@@ -2572,7 +2535,7 @@ function openStandard(card, recId, recType) {
   if (card === 'customers' && state.funnelTab) delete state.funnelTab[recId];   // §3.5 — a fresh customer open resets the funnel toggle to Rental
   if (card === 'customers') { if (state.custInvOpen) delete state.custInvOpen[recId]; if (state.custInvMenu) delete state.custInvMenu[recId]; }   // §3.3 — collapse the embedded Invoices accordion on a fresh open (openInvoice re-sets it after)
   if (card === 'customers') { if (state.custAcctOpen) delete state.custAcctOpen[recId]; if (state.custAgOpen) delete state.custAgOpen[recId]; if (state.custAgDraft) delete state.custAgDraft[recId]; }   // Phase 1/2b — collapse the Account section + its Agreements accordion + any in-progress draft on a fresh open
-  if (card === 'units') { if (state.svcSecOpen) delete state.svcSecOpen[recId]; if (state.unitSecOpen) delete state.unitSecOpen[recId]; if (state.woRowOpen) delete state.woRowOpen[recId]; }   // collapse the Services + Work Orders / Specs / GPS / Investment sections + any open Work Order row on a fresh open (mirrors the Account/Invoices collapse above)
+  if (card === 'units') { if (state.svcSecOpen) delete state.svcSecOpen[recId]; if (state.woRowOpen) delete state.woRowOpen[recId]; }   // collapse the Services section + any open Work Order row on a fresh open (mirrors the Account/Invoices collapse above)
   ackComments(recOf(entityCardOf(card, recType), recId));   // viewing = acknowledged (Phase 6)
   // §10 + #54 — opening a Category while the rental-window picker is live (a window's
   // picked, so availWin is set) pivots the left column to Units, pre-filled with the
@@ -2712,21 +2675,6 @@ function applySnap(cs, snap) {
   if ('search' in snap) { cs.search = snap.search; cs.listLimit = snap.listLimit; }   // viewSnap → restore the narrowed list too
   restoreLayout(snap);                                                                // viewSnap → un-swap the column (bring the category cards back)
 }
-// Chrome-style Back "escape" (Jac 2026-07-17): the PHONE footer jog reflects the snapped
-// column's card, but drilling in via a fleet filter (js-fleet-filter) or an anchor both WIPE
-// that card's backStack — so Back had nothing to reverse and sat there dead (the reported bug).
-// When there's no view-history AND no record to drop, a Back instead clears whatever is
-// NARROWING the list (per-card fleet/search filter → session anchor/cascade → global search),
-// so Back always gets you back out. Phone-only — desktop keeps its search-bar ✕ and its
-// unchanged right-click-Back (this returns null off-phone, so both cardBack + cardJog no-op there).
-function jogBackEscape(cs, card) {
-  if (!cs || cs.backStack.length || (cs.mode === 'standard' && cs.recId != null)) return null;   // real history / record-drop wins
-  if (!document.body.classList.contains('is-phone')) return null;
-  if ((cs.filterTerms && cs.filterTerms.length) || (cs.search && cs.search.trim())) return 'filter';
-  if (activeSession().anchor) return 'anchor';
-  if (state.searchMode && (state.query.trim() || (state.filterTerms || []).length)) return 'search';
-  return null;
-}
 // Step this one card back / forward through its own history (other cards untouched).
 function cardBack(card) {
   const cs = activeSession().cards[card]; if (!cs) return;
@@ -2739,13 +2687,7 @@ function cardBack(card) {
       cs.mode = 'list'; cs.recId = null; cs.recType = null; cs.graphView = false;
       sweepEmptyDrafts();   // #8 — stepping back off a record sweeps any abandoned empty draft
       render();
-      return;
     }
-    // no history, no record to drop → step "back" OUT of whatever narrows this list (phone only)
-    const esc = jogBackEscape(cs, card);
-    if (esc === 'filter') { cs.filterTerms = []; cs.search = ''; afterFilterChange(card); }
-    else if (esc === 'anchor') clearAnchor();
-    else if (esc === 'search') clearSearch();
     return;
   }
   const prev = cs.backStack.pop();
@@ -2779,7 +2721,7 @@ function cardJog(card, cs, { always = false } = {}) {
   const arm = (dir, on, ico, tip) =>
     `<button class="jog-btn js-card${dir}" data-card="${esc(card)}" ${on ? '' : 'disabled'} data-tip="${tip}" aria-label="${tip}">${ico}</button>`;
   return `<div class="card-jog" role="group" aria-label="View history" data-r="R32">`
-    + arm('back', back || inRecord || jogBackEscape(cs, card), I.chevL, 'Back')
+    + arm('back', back || inRecord, I.chevL, 'Back')
     + arm('fwd', fwd, I.chevR, 'Forward')
     + `</div>`;
 }
@@ -4035,7 +3977,7 @@ function funnelSectionHtml(c) {
 }
 /* ── Phase 1 (2026-07-10 Account/Agreements + Membership redesign, spec §3/§7b
    D19-D27, plan T1.1-T1.4) — the new top-of-card ACCOUNT section. UI SHELL:
-   render + expand/collapse state + a Manager-password prompt SHELL only. The
+   render + expand/collapse state + a Manager-approval prompt SHELL only. The
    per-agreement ACCOUNT TYPE dropdown, the Start-Date sign-gate, and the
    atomic sign=enroll charge are Phase 2 (spec §4); the block-gate ENFORCEMENT
    (this section only renders the block picker, it doesn't gate anything yet)
@@ -4079,7 +4021,7 @@ const acctProtectionCopy = (c) => {
 const NET_TERMS_OPTS = ['None', '7d', '15d', '30d', '60d', '90d'];
 // D22/D23 — NET TERMS · PO · PROTECTION share one line. NET TERMS is a segCtl (R14 — a
 // joined group of mutually-exclusive options): picking one does NOT write netDays
-// directly — ANY change is Manager-password gated (D22), so it opens the managerPw shell
+// directly — ANY change is Manager-approval gated (D22), so it opens the tierAuth shell
 // with the pending value; PO/Protection are single toggleChips (R31) — plain operational
 // booleans, not money/gate fields, so they write straight through.
 function acctTermsLine(c) {
@@ -4091,7 +4033,7 @@ function acctTermsLine(c) {
   const prot = toggleChip('Protection', !!c.rentalProtection, { js: 'js-acct-prot', data: { rec: c.customerId }, tone: 'green' });
   return `<div class="acct-termsline">`
     + `<span class="acct-cap">Net Terms</span>${netSeg}`
-    + `<span class="acct-lock" data-tip="Any change needs a Manager password">${AG_LOCK}</span>`
+    + `<span class="acct-lock" data-tip="Any change needs Manager approval">${AG_LOCK}</span>`
     + `<span class="acct-sep"></span>${po}${prot}`
     + `</div>`
     + (c.rentalProtection ? `<p class="acct-prot-note">${acctProtectionCopy(c)}</p>` : '');
@@ -4377,6 +4319,7 @@ function customerAccountSection(c) {
     : '<i>No contact info yet</i>';
   return `<div class="acct${open ? ' open' : ''}">`
     + `<div class="acct-bar js-acct-toggle" data-rec="${esc(c.customerId)}">`
+    + `<span class="acct-lbl">Account</span>`
     + `<span class="acct-sum">${summary}</span>`
     + `<span class="type-chip ${chip.tone}">${esc(chip.text)}</span>`
     + `<span class="acct-chev">${I.chev}</span>`
@@ -5670,16 +5613,6 @@ function funnelPill(custId, which, stage) {
   const st = getStatus('funnelStage', stage);
   return `<span class="pill gate c-${st.color} js-funnel" data-r="R1" data-rec="${esc(custId)}" data-which="${which}">${I.chev}${esc(st.label)}</span>`;
 }
-/** R1: the SAME gate-pill shape as funnelPill, but for the Customers-list quick-add
- *  DRAFT (no customerId exists yet) — opens openCustQuickAddFunnelDropdown, which
- *  writes straight to state.custQuickAdd.funnel instead of a real record. */
-function custQuickAddFunnelPill(stage) {
-  const set = !!(stage && stage !== 'N/A');
-  const st = getStatus('funnelStage', stage || 'N/A');
-  // Unset reads as a short placeholder ("Lead?", gray) — its own inline label now that the
-  // stamped caps are gone; a real pick shows the stage in its registry color. (Jac 2026-07-17)
-  return `<span class="pill gate c-${set ? st.color : 'gray'} js-custqa-funnel" data-r="R1">${I.chev}${esc(set ? st.label : 'Lead?')}</span>`;
-}
 /** R4: a DERIVED pill — rides another pill in the same section; no bg/border,
  *  destination icon + ink color only; sits directly RIGHT of its parent. */
 function dPill(label, color, { card, recId, icon, title, alert } = {}) {
@@ -5987,12 +5920,7 @@ function openCtxMenuAt(target, x, y) {
   }
   // While the rental-window picker is open, keep right-click → BACK working; just suppress
   // the element context menu (it gets in the way of picking). (Jac B5, 2026-06-15)
-  // The Back/Forward jog is navigation CHROME, not a data leaf — its arms are <button>s,
-  // so a bare `button` in the leaf list below scooped them up and opened the element menu
-  // instead of going Back ("opens the menu even though I'm not clicking an element", Jac
-  // 2026-07-17). Treat the jog like card dead-space: fall through to the card-Back path.
-  const onJog = !!target.closest('.card-jog');
-  const leaf = (onJog || (state.winEdit && state.winEdit.anchor)) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
+  const leaf = (state.winEdit && state.winEdit.anchor) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
   const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
   if (hit) return openCtxMenu({ clientX: x, clientY: y }, hit);
   if (!card) return;
@@ -6127,7 +6055,7 @@ function popupShell({ icon, title, tag, danger, headRight = '', headRail = '', b
    visual Rulebook overlay. One row per rule: [name, builder, one-liner]. ── */
 const RULE_META = {
   R0:  ['Flash-lint', 'body.rw-lint (CSS)', 'un-stamped UI pulses red — it bypassed the builders'],
-  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill / custQuickAddFunnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
+  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
   R2:  ['Linked pill', 'refPill / unitPill', 'orange outline + DESTINATION-card icon — opens a record; optional ✕'],
   R3:  ['Status badge', 'statusPill', 'informational STATUS: registry color, parent-card icon, hover underline — never an action'],
   R3b: ['Data chip', 'badge', 'a plain FACT (480 HRS, No GPS): gray, no icon, no hover — independent of R3'],
@@ -6818,11 +6746,11 @@ const ROWS = {
       const dlabel = (nd && daysAhead >= 0 && daysAhead <= 7) ? DOW3[nd.getDay()] : fmtShortDate(next.iso).replace(' 0', ' ');
       const when = `${dlabel}${next.min != null ? ` ${compactClock(next.min)}` : ''}`;
       const nu = IDX.unit.get(next.unitId);
-      lead = `<button class="catr-slot js-cat-next" data-unit="${esc(next.unitId)}" data-tip="Next free: ${esc(nu ? nu.name : 'unit')} on ${esc(when)} (4-hr turnaround) — tap to open it">${badge(`Next ${when}`, 'red')}</button>`;
+      lead = `<button class="catr-slot js-cat-next" data-unit="${esc(next.unitId)}" data-tip="Next free: ${esc(nu ? nu.name : 'unit')} on ${esc(when)} (4-hr turnaround) — tap to open it">${badge(`Next ${when}`, 'red')}</button>${lostDemandBtn(c)}`;
     } else {
       // 0 free and no return date to show → tell the salesperson WHY in one word (Jac).
       const why = categoryUnavailReason(c.categoryId);
-      lead = `<div class="catr-slot catr-slot-none" data-tip="None available — ${esc(why.toLowerCase())}">${badge(`None · ${why}`, 'red')}</div>`;
+      lead = `<div class="catr-slot catr-slot-none" data-tip="None available — ${esc(why.toLowerCase())}">${badge(`None · ${why}`, 'red')}</div>${lostDemandBtn(c)}`;
     }
     // The three status pills (Passed · Not Ready · Failed inspection) filter Units to that
     // status in this category via the established js-fleet-filter path (like the detail mixbar).
@@ -6934,7 +6862,7 @@ const ROWS = {
     // §2.2b call the customer — a REAL tel: anchor (R7), no detour through Customers.
     const callHtml = (cu && cu.phone && telHref(cu.phone)) ? linkName(cu.phone, { href: telHref(cu.phone), icon: I.phone, js: 'trip-tap' }) : '';
     // §2.2b log completion from the row — the journey's js-yard flow verbatim (yardCapture
-    // → the camera → commitYardCapture → D7 driver stamp). Done → the stamp clock.
+    // → the capture overlay → saveYardCapture → D7 driver stamp). Done → the stamp clock.
     // Scoped to the PRIMARY stop only — the rest of a merged trip's stops log from the
     // cab sheet (one level down), so the row stays lean regardless of stop count.
     const capKey = t.task === 'Deliver' ? 'startCapture' : 'endCapture';
@@ -7534,10 +7462,10 @@ function woStaleEmpty(w) {
    on a fresh record open. Reuses the .acct* classes for pixel parity with Account.
    `summary` is raw HTML (caller escapes its pieces); `chip` = {text, tone} or null;
    `bg` = an optional faded photo-backdrop URL (the .has-photo scrim, same as .section). */
-function collapseSection({ open, toggleCls, rec, sec, extraCls = '', lbl, summary, chip, body, bg }) {
-  return `<div class="acct usec${open ? ' open' : ''}${extraCls ? ' ' + extraCls : ''}${bg ? ' has-photo' : ''}">`
+function collapseSection({ open, toggleCls, rec, extraCls = '', lbl, summary, chip, body, bg }) {
+  return `<div class="acct${open ? ' open' : ''}${extraCls ? ' ' + extraCls : ''}${bg ? ' has-photo' : ''}">`
     + (bg ? `<div class="sec-photo" style="--photo:url('${esc(bg)}')"></div>` : '')
-    + `<div class="acct-bar ${toggleCls}" data-rec="${esc(rec)}"${sec ? ` data-sec="${esc(sec)}"` : ''} aria-expanded="${open}">`
+    + `<div class="acct-bar ${toggleCls}" data-rec="${esc(rec)}" aria-expanded="${open}">`
     + `<span class="acct-lbl">${esc(lbl)}</span>`
     + `<span class="acct-sum">${summary}</span>`
     + (chip ? `<span class="type-chip ${chip.tone}">${esc(chip.text)}</span>` : '')
@@ -7546,10 +7474,6 @@ function collapseSection({ open, toggleCls, rec, sec, extraCls = '', lbl, summar
     + (open ? `<div class="acct-body">${body}</div>` : '')
     + `</div>`;
 }
-// Is one of the Unit-detail generic collapsible sections (Work Orders / Specs / GPS /
-// Coverage / Investment) expanded? All collapsed by default; state is view-local and
-// reset on a fresh unit open (mirrors svcSecOpen for the Services section).
-function unitSecOpen(u, id) { return !!(state.unitSecOpen && state.unitSecOpen[u.unitId] && state.unitSecOpen[u.unitId][id]); }
 // The bottleneck phase word shown on a WO row/chip: the worst open line's phase,
 // else 'Ready' when every line is done, else the WO-level phase for an empty WO.
 function woPhaseLabel(w, bottleIdx) {
@@ -7644,18 +7568,10 @@ function workOrdersSection(u) {
   const rows = wos.length
     ? wos.map((w) => (w.woId === openId ? woExpandedHtml(w) : woRowHtml(w))).join('')
     : '<div class="inv-empty muted">No open work orders.</div>';
-  // Section RYG (R11 on the collapse plate) = the worst OPEN work order's bottleneck;
-  // no open WOs reads green "Clear". Chip + border color follow it on the bar AND when open.
-  const worst = wos.reduce((c, w) => { const k = woBottleneck(w).color; const rank = { red: 3, yellow: 2, green: 1 }[k] || 0; return rank > c.rank ? { rank, color: k } : c; }, { rank: 0, color: null });
-  const secColor = wos.length ? (worst.color === 'red' ? 'red' : worst.color === 'green' ? 'green' : 'yellow') : 'green';
-  const chip = wos.length
-    ? { text: { red: 'Needs parts', yellow: 'In progress', green: 'Ready' }[secColor], tone: { red: 'bad', yellow: 'warn', green: 'ok' }[secColor] }
-    : { text: 'Clear', tone: 'ok' };
-  // +Work Order rides ABOVE the rows as a FULL-WIDTH add-row (Jac — like the +Rental / +Invoice
-  // add), not a centered pill; the rows live below it inside the section body.
-  const body = `<div class="wo-add-pill">${addBtn('Work Order', { js: 'js-new-wo-unit', link: true, data: { rec: u.unitId } })}</div>`
-    + `<div class="inv-scroll wo-scroll${openId ? ' expanded' : ''}">${rows}</div>`;
-  return collapseSection({ open: unitSecOpen(u, 'workorders'), toggleCls: 'js-unit-sec', sec: 'workorders', rec: u.unitId, lbl: 'Work Orders', summary: `<b>${wos.length} open</b>`, chip, body, extraCls: 'sec-' + secColor });
+  return `<div class="section wo-sec"><h4>Work Orders${wos.length ? ` <span class="hmuted">· ${wos.length}</span>` : ''}</h4>`
+    + `<div class="add-row wo-add">${addBtn('Work Order', { js: 'js-new-wo-unit', link: true, data: { rec: u.unitId } })}</div>`
+    + `<div class="inv-scroll wo-scroll${openId ? ' expanded' : ''}">${rows}</div>`
+    + `</div>`;
 }
 /* Per-unit SERVICES section (Shop retirement, Jac 2026-07-07): the recurring
    countdown list — wash pinned to the top, then most-urgent first — with the
@@ -7698,13 +7614,12 @@ function serviceTasksHtml(u, { title = 'Services' } = {}) {
   // COLLAPSED-BY-DEFAULT (mirrors the customer Account section): a one-line bar whose
   // status chip = the worst task's live service status; the task list rides behind the chevron.
   const open = !!(state.svcSecOpen && state.svcSecOpen[u.unitId]);
-  const secColor = worst && ['red', 'yellow', 'green'].includes(worst.color) ? worst.color : 'green';
   const chip = worst && ['red', 'yellow', 'green'].includes(worst.color)
     ? { text: getStatus('serviceStatus', worst.status).label, tone: { red: 'bad', yellow: 'warn', green: 'ok' }[worst.color] }
     : { text: 'Up to date', tone: 'ok' };
   const summary = `<b>${rows.length} task${rows.length === 1 ? '' : 's'}</b>${worst ? `<span class="acct-dot">·</span>${esc(worst.name)}` : ''}`;
   const body = `<div class="hlog">${list}</div>${more}`;
-  return collapseSection({ open, toggleCls: 'js-svc-sec-toggle', rec: u.unitId, lbl: title, summary, chip, body, extraCls: 'sec-' + secColor });
+  return collapseSection({ open, toggleCls: 'js-svc-sec-toggle', rec: u.unitId, lbl: title, summary, chip, body });
 }
 /* ITEM BALANCE — every invoice line item carries its own balance. A partial
    payment is assigned per line item through the payment popup; allocations are
@@ -8086,7 +8001,7 @@ const DETAIL = {
     const yr = (iso) => `${fmtShortDate(iso)}, ${parseISO(iso).getFullYear()}`;
     const makeModel = [u.year, u.make, u.model].filter(Boolean).join(' ');
 
-    const specsBody = `<div class="fieldstack">
+    const specs = `<div class="section"><h4>Specs</h4><div class="fieldstack">
       ${efld('units', u, 'unitId', 'categoryId', 'Category', { editKind: 'unitCategory', admin: true, link: true, fmt: (id) => IDX.category.get(id)?.name || 'Unknown category' })}
       ${efld('units', u, 'unitId', 'serial', 'Add serial', { pfx: 'S/N' })}
       ${efld('units', u, 'unitId', 'year', 'Year', { type: 'number' })}
@@ -8094,9 +8009,7 @@ const DETAIL = {
       ${efld('units', u, 'unitId', 'modelId', 'Model', { editKind: 'unitModel', admin: true, link: true, fmt: (id) => IDX.model.get(id)?.name || 'Unknown model' })}
       ${efld('units', u, 'unitId', 'weight', 'Weight')}
       <div class="kv"><span class="v inline-edit" data-edit="unitHours" data-rec="${u.unitId}">${num(u.currentHours)} HRS</span></div>
-    </div>`;
-    // Specs is a plain-fact section — no health status, so it reads a neutral green "OK".
-    const specs = collapseSection({ open: unitSecOpen(u, 'specs'), toggleCls: 'js-unit-sec', sec: 'specs', rec: u.unitId, lbl: 'Specs', summary: `<b>${esc(cat?.name || makeModel || 'Unit')}</b><span class="acct-dot">·</span>${num(u.currentHours)} HRS`, chip: { text: 'OK', tone: 'ok' }, body: specsBody, extraCls: 'sec-green' });
+    </div></div>`;
     // GPS connect wizard (spec §5a) — mapping now happens through a guided popup
     // (provider → identify → confirmed live signal) instead of hand-typing gpsProvider/
     // gpsDeviceId; the "No GPS" badge grows a +Connect add, an already-mapped unit gets
@@ -8109,7 +8022,7 @@ const DETAIL = {
     const gpsM = (gsUnit && gsUnit.live) ? gsUnit.machine : null;
     const gpsMapHref = (gpsM && gpsM.lat != null && gpsM.lng != null) ? `https://www.google.com/maps?q=${gpsM.lat},${gpsM.lng}` : '';
     const gpsSeen = gpsM ? gpsRelTime(gpsM.lastSeen) : '';
-    const gpsBody = `<div class="fieldstack">
+    const gps = `<div class="section"><h4>GPS</h4><div class="fieldstack">
       ${kvPills((gsUnit ? statusPill('gpsStatus', gsUnit.status, { focal: true }) : badge('No GPS')) + (gpsMapped ? '' : addBtn('Connect GPS', { link: true, js: 'js-gps-connect', data: { rec: u.unitId } })))}
       ${gpsStale ? `<div class="kv" style="justify-content:center"><span class="muted" style="font-size:11px">Last known — live link down</span></div>` : ''}
       ${gpsM ? `<div class="kv" style="justify-content:center;gap:8px;flex-wrap:wrap">
@@ -8122,16 +8035,7 @@ const DETAIL = {
       ${efld('units', u, 'unitId', 'gpsPlacement', 'Placement')}
       ${gpsShutdownControl(u, gpsM)}
       ${gpsMapped ? gpsFeedHtml(u) : ''}
-    </div>`;
-    // GPS RYG follows the gpsStatus registry (Reporting=green · Verify=yellow · Not
-    // Reporting=red). A stale but otherwise-green link (showing last-known while the live
-    // feed is down) drops to yellow; an untracked unit reads red — no visibility is the
-    // worst tracking state, same rank as Not Reporting.
-    const gpsReg = gsUnit ? getStatus('gpsStatus', gsUnit.status) : null;
-    let gpsSecColor = gpsReg && ['green', 'yellow', 'red'].includes(gpsReg.color) ? gpsReg.color : 'red';
-    if (gpsStale && gpsSecColor === 'green') gpsSecColor = 'yellow';
-    const gpsChip = { text: gsUnit ? (gpsStale ? 'Last known' : gpsReg.label) : 'No GPS', tone: { green: 'ok', yellow: 'warn', red: 'bad' }[gpsSecColor] };
-    const gps = collapseSection({ open: unitSecOpen(u, 'gps'), toggleCls: 'js-unit-sec', sec: 'gps', rec: u.unitId, lbl: 'GPS', summary: `<b>${gpsMapped ? esc(u.gpsProvider) : 'Not connected'}</b>${gpsSeen ? `<span class="acct-dot">·</span>${esc(gpsSeen)}` : ''}`, chip: gpsChip, body: gpsBody, extraCls: 'sec-' + gpsSecColor });
+    </div></div>`;
     /* COVERAGE — the yard's own equipment insurance on this unit (spec equipment-insurance
        Phase 1, Jac 2026-06-29). STATUS + riders are open to every role (a driver must know a
        machine is uninsured before it leaves the yard); insurer/policy/dates render at ≥money;
@@ -8150,10 +8054,7 @@ const DETAIL = {
     const riderCtl = (covEditable && cov.covered)
       ? segCtl(covTypes.map((t) => ({ label: t.label, js: 'js-cov-type', data: { rec: u.unitId, id: t.id }, on: (ins.types || []).includes(t.id) ? 'green' : null })))
       : (cov.covered ? kvPills(riderBadges) : '');
-    // Coverage folded into Investment (Jac 2026-07-16) — the toggle (+ riders/policy when insured)
-    // rides plainly at the TOP of the Investment body; no separate titled Coverage section.
-    const coverageBody = `<div class="fieldstack centered" style="margin-bottom:12px">
-
+    const coverage = `<div class="section"><h4>Coverage</h4><div class="fieldstack centered">
       <div class="kv" style="justify-content:center">${covToggle}</div>
       ${riderCtl ? `<div class="kv" style="justify-content:center">${riderCtl}</div>` : ''}
       ${cov.covered && canMoney() ? `
@@ -8163,7 +8064,7 @@ const DETAIL = {
       ${cov.covered && adminUnlocked() ? `
         ${efld('units', u, 'unitId', 'insurance.insuredValue', 'Insured value', { type: 'number', admin: true, fmt: money, sfx: 'insured value' })}
         ${efld('units', u, 'unitId', 'insurance.premium', 'Premium', { type: 'number', admin: true, fmt: money, sfx: `premium / ${ins.premiumCadence === 'Annual' ? 'yr' : 'mo'}` })}` : ''}
-    </div>`;
+    </div></div>`;
     /* INVESTMENT — left = entry · right = derived, ordered per Jac:
        Total Revenue → Monthly → Work Orders → Profit · (ROI%) */
     const invested = Number(u.trueCost) || Number(u.purchasePrice) || 0;
@@ -8179,8 +8080,8 @@ const DETAIL = {
     const soldInfo = (u.fleetStatus === 'Sold' && canMoney() && (u.salePrice != null || u.saleDate))
       ? `${u.salePrice != null ? kv(money(u.salePrice), { pfx: 'Sale price', derived: true }) : ''}${u.saleDate ? kv(yr(u.saleDate), { pfx: 'Sale date', derived: true }) : ''}`
       : '';
-    const investmentBody = `<div class="split">
-
+    const investment = `<div class="section"><h4>Investment</h4>
+      <div class="split">
         <div class="side">
           ${efld('units', u, 'unitId', 'purchasePrice', 'Purchase price', { type: 'number', sfx: 'paid', fmt: money, money: true })}
           ${efld('units', u, 'unitId', 'purchaseDate', 'Purchase date', { type: 'date', sfx: 'purchased', fmt: yr })}
@@ -8195,13 +8096,7 @@ const DETAIL = {
           ${kv(`${money(profit)}${roi != null && canMoney() ? ` · (${roi}%)` : ''}`, { pfx: 'Profit', derived: true })}
         </div>
       </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">${sellAction}${gatePill('unitFleetStatus', u.fleetStatus, 'js-fleetstatus', { rec: u.unitId })}</div>`;
-    // Investment now HOLDS Coverage (Jac 2026-07-16): the coverage toggle + riders/policy ride at
-    // the top of the body; coverage STATUS is the section's chip + RYG color (green insured / yellow
-    // uninsured) so a driver still sees Insured/Uninsured at a glance without expanding — the
-    // uninsured-active card flag is untouched. Summary shows ownership duration only, never a
-    // dollar/margin figure (that stays behind the money gate inside the body).
-    const investment = collapseSection({ open: unitSecOpen(u, 'investment'), toggleCls: 'js-unit-sec', sec: 'investment', rec: u.unitId, lbl: 'Investment', summary: `<b>${u.purchaseDate ? `Owned ${monthsOwned} mo` : 'No purchase data'}</b>`, chip: cov.covered ? { text: 'Insured', tone: 'ok' } : { text: 'Uninsured', tone: 'warn' }, body: coverageBody + investmentBody, extraCls: cov.covered ? 'sec-green' : 'sec-yellow' });
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">${sellAction}${gatePill('unitFleetStatus', u.fleetStatus, 'js-fleetstatus', { rec: u.unitId })}</div></div>`;
     /* INSPECTION — live condition + wash toggles, timestamp in the header */
     const li2 = latestInspForUnit(u.unitId);
     const stampDate = u.condAt || li2?.date || '';
@@ -8212,13 +8107,13 @@ const DETAIL = {
       <h4>Inspection <span class="hmuted">· ${esc(stamp)}</span></h4>
       <div class="fieldstack">
         <div class="kv" style="justify-content:center">
-          ${segCtl([
+          ${checklistRequired(u)
+    ? `<button class="pill ignition js-open-checklist" data-rec="${u.unitId}" data-r="R17">${CARD_ICON.inspections} ${pendingInspForUnit(u.unitId) ? 'Resume inspection' : '+ Inspection'}</button>`
+    : segCtl([
             { label: '✓ Pass', js: 'js-cond', data: { rec: u.unitId, val: 'Pass' }, on: cond === 'Ready' ? 'green' : null },
             { label: 'Not Ready', js: 'js-cond', data: { rec: u.unitId, val: 'Not Ready' }, on: cond === 'Not Ready' ? 'yellow' : null },
             { label: '✕ Fail', js: 'js-cond', data: { rec: u.unitId, val: 'Fail' }, on: cond === 'Failed' ? 'red' : null },
           ])}
-        </div>
-        <div class="kv" style="justify-content:center">
           ${segCtl([
             { label: `${I.droplet} Wash`, js: 'js-washseg', data: { rec: u.unitId, val: 'Wash' }, on: u.washChoice === 'Wash' || u.washRequested ? 'yellow' : null },
             { label: "Don't Wash", js: 'js-washseg', data: { rec: u.unitId, val: 'DontWash' }, on: u.washChoice === 'DontWash' && !u.washRequested && !washedToday ? 'blue' : null },
@@ -8246,6 +8141,7 @@ const DETAIL = {
       ${woSec}
       ${specs}
       ${gps}
+      ${coverage}
       ${investment}
       ${notes.bottom}
       ${historySection('units', u, cs, hchips)}
@@ -8451,7 +8347,6 @@ const DETAIL = {
       ${st.forSale ? kvPills(badge(st.forSale + ' For Sale', 'purple')) : ''}
       ${kv(`${num(st.avgHours)} HRS`, { sfx: 'avg hours', derived: true })}
       ${(c.lostDemand || []).length ? kv(`${(c.lostDemand || []).length}`, { sfx: 'lost-demand asks', derived: true }) : ''}
-      ${kvPills(lostDemandBtn(c))}
       ${c.description ? kv(c.description, { wrap: true }) : ''}
     </div></div>`;
     // MODELS (Jac 2026-07-07): the category derives which models a unit can pick —
@@ -9334,32 +9229,6 @@ function listView(cardDef, session) {
   wrap.appendChild(cardListEl(cardDef, session));
   return wrap;
 }
-/* ADDITIVE inline single-line quick-add (Jac, 2026-07-17) — leads the Customers list,
-   mirroring the Rentals list's +New Rental .newrow/.bigbtn trigger; the EXISTING
-   search-bar quick-add (quickAddCustomerFromSearch) and the fruitless-search
-   js-new-cust-search prompt both stay untouched. Collapsed = the plain unstamped
-   .bigbtn (same as +New Rental — R5b language, not a lint-family element). Open =
-   ONE inline flex row: First · Last · Phone · the R1 funnel picker (draft-scoped,
-   defaults N/A) · a quiet Cancel (R18 ghostPill) · the "Wrangle" R17 ignition create
-   button, enabled only once First/Last/Phone are all filled and the phone looks real
-   (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
-function custQuickAddRowHtml() {
-  const d = state.custQuickAdd;
-  if (!d.open) return `<button class="bigbtn js-custqa-open">${I.plus} New Customer</button>`;
-  // No Cancel/Wrangle buttons, no stamped field captions (Jac 2026-07-17): the placeholders
-  // label the text fields and the funnel pill labels itself. First + Last + a ≥7-digit Phone,
-  // then a funnel PICK (any value incl N/A — the pick IS the 4th selection) auto-creates the
-  // customer and opens its detail view. A created customer — or navigating away — resets to the
-  // collapsed +New Customer button.
-  return `<div class="qa-cust">`
-    + `<div class="qa-cust-row">`
-    + `<div class="qa-field qa-first"><input type="text" class="qa-in js-custqa-first" placeholder="First name" value="${esc(d.first)}"></div>`
-    + `<div class="qa-field qa-last"><input type="text" class="qa-in js-custqa-last" placeholder="Last name" value="${esc(d.last)}"></div>`
-    + `<div class="qa-field qa-phone"><input type="tel" class="qa-in js-custqa-phone" placeholder="Phone" value="${esc(d.phone)}"></div>`
-    + `<div class="qa-field qa-funnel">${custQuickAddFunnelPill(d.funnel)}</div>`
-    + `</div>`
-    + `</div>`;
-}
 /* The rows-only `.list` element of a card's list view — factored out of listView so a
    mini-search keystroke can rebuild ONLY the rows (renderCardList) without touching the
    .listbar / its focused input. Owns the filter → visibility → sort → window/group pipeline
@@ -9401,14 +9270,6 @@ function cardListEl(cardDef, session) {
   if (card === 'rentals') {
     const nr = el('div', 'newrow');
     nr.innerHTML = `<button class="bigbtn js-newitem" data-new="rental">${I.plus} New Rental</button>`;
-    list.appendChild(nr);
-  }
-  // ADDITIVE inline quick-add (Jac 2026-07-17) — Customers always leads with its own
-  // +New Customer row, mirroring the Rentals block above; the search-bar quick-add and
-  // the fruitless-search prompt below are untouched, separate affordances.
-  if (card === 'customers') {
-    const nr = el('div', 'newrow');
-    nr.innerHTML = custQuickAddRowHtml();
     list.appendChild(nr);
   }
   if (!rows.length) {
@@ -9823,15 +9684,11 @@ function headerEl() {
  *  Receipt (the most-used action) stays a bare icon. Requests/Transport
  *  alerts/Notifications moved off this bar entirely, onto the Comms bell (they
  *  don't need an {opts} passthrough here — the bell reads its own {noInbox}). */
-function bottomBarInner(opts = {}) {
+function bottomBarInner() {
   // rules 5/6: LEFT = labeled actions (icon LEADS label, no "+"), Wash joins them;
   // RIGHT (after divider) = icon-only utilities. The +New collapse button is dropped (Jac).
-  // chips:false — the desktop footer now clusters ALL comms on the RIGHT (Jac 2026-07-17), so it
-  // omits the comms chips here and re-adds them in the right cluster (bottomBarEl). The phone
-  // top-toolbar + the tools-tray keep the chips inline (default true).
-  const chips = opts.chips !== false;
   return `
-    ${chips ? commsChipsHtml() : ''}
+    ${commsChipsHtml()}
     <button class="iconbtn js-newitem" data-new="receipt">${CARD_ICON.expenses}Receipt</button>
     <span class="bb-sep"></span>
     ${toolsBtn()}`;
@@ -9841,10 +9698,7 @@ function bottomBarInner(opts = {}) {
  *  (photo sweep) tools. One trigger instead of a flat run of icon-only buttons. */
 function toolsMenuRows() {
   const item = (js, icon, label, on) => `<button class="dd-item ${js}${on ? ' on' : ''}"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${icon}</span>${esc(label)}</button>`;
-  // Manual Update — force the newest build past a stale mobile cache (Jac 2026-07-16).
-  let html = `<button class="dd-item js-app-update"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${STATUS_ICONS.refresh}</span>Check for updates<span style="margin-left:auto;color:var(--txt-3);font-size:11px;letter-spacing:.3px">v${esc(appVersion())}</span></button>`
-    + `<div class="menu-sep"></div>`;
-  html += item('js-qr', I.qr, 'Share session (QR)')
+  let html = item('js-qr', I.qr, 'Share session (QR)')
     + item('js-previews', state.previewsOn ? I.eye : I.eyeOff, state.previewsOn ? 'Hover previews: on' : 'Hover previews: off', state.previewsOn)
     + item('js-hotkeys', I.mouse, 'Mouse & keyboard shortcuts');
   html += `<div class="dd-sec-lbl">GPS / Fleet</div>`
@@ -9896,11 +9750,8 @@ function commsBellBtn(opts = {}) {
 // far right (Jac 2026-07-10).
 function bottomBarEl() {
   const bar = el('div', 'bottombar');
-  // ALL comms live on the RIGHT now (Jac 2026-07-17): tools stay left, the conversation rail
-  // right-aligns its tabs (see .comms-rail justify-content), then the comms chips, then the bell.
-  bar.innerHTML = `<div class="bb-tools">${bottomBarInner({ chips: false })}</div>`
+  bar.innerHTML = `<div class="bb-tools">${bottomBarInner()}</div>`
     + `<div class="comms-rail" role="tablist" aria-label="Conversations">${commsRailEl()}</div>`
-    + `<div class="bb-comms">${commsChipsHtml()}</div>`
     + `<div class="bb-utils">${commsUtilsEl()}</div>`;
   return bar;
 }
@@ -9980,7 +9831,6 @@ function mainCardOfMember(m) {
 // §M1 — jump straight to a card (flattens the 3-column model on phones): set the column +
 // member, flip the visible column, and show that card's LIST.
 function goToCard(member) {
-  resetCustQuickAdd();   // switching cards = navigate away from the customers list → discard the +New Customer draft (Jac 2026-07-17)
   const s = activeSession(); const col = COLUMN_OF[member];
   if (s.cols && col) s.cols[col] = member;
   const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx;
@@ -13307,6 +13157,23 @@ function buildPopupEl(o, overlay, opts = {}) {
         <input class="lf-in js-rf-part" placeholder="Part Name" value="" style="width:100%;margin-bottom:4px">
         <p class="muted" style="font-size:11px;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is read for the vendor, amount, date and category.</p>` });
     overlay.appendChild(pop);
+  } else if (o.kind === 'capture') {
+    // v2 yard journey: every log opens this popup; with transport, the address
+    // + map pin ride the top so the driver sees the destination while logging.
+    const r = IDX.rental.get(o.rentalId);
+    const isDel = r && r.transportType && r.transportType !== 'Self';
+    const title = o.cap === 'fc' ? 'Log Field Call' : o.cap === 'start' ? (isDel ? 'Log Delivery' : 'Log Start') : (isDel ? 'Log Recovery' : 'Log End');
+    const pop = el('div', 'popup'); pop.style.width = '380px';
+    pop.innerHTML = popupShell({ icon: I.video, title, tag: o.cap === 'fc' ? 'Field call · log' : 'Yard journey · log',
+      foot: `${ghostPill('Cancel', { js: 'js-close' })}<button class="pill ignition js-cap-save" data-r="R17">${o.cap === 'fc' ? 'Log Field Call' : 'Log it'}</button>`,
+      body: `
+        ${r && r.deliveryAddress && o.cap !== 'fc' ? `
+        <div style="border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:10px">
+          <div style="padding:8px 11px;font-size:12.5px;display:flex;align-items:center;gap:7px"><span>📍</span><b>${esc(r.deliveryAddress)}</b></div>
+          <div class="site-map" style="height:96px">${r.sitePin && r.sitePin.lat != null ? '<span class="site-pin" style="left:50%;top:50%">📍</span>' : ''}<span class="map-tag">driver destination${r.sitePin && r.sitePin.lat != null ? ' — exact pin set' : ''}</span></div>
+        </div>` : ''}
+        <label class="cap-drop">${I.video} <span>${state.capFile ? '✓ video attached' : 'Tap to capture / attach the video'}</span><input type="file" accept="video/*,image/*" capture="environment" class="js-cap-file" style="display:none"></label>` });
+    overlay.appendChild(pop);
   } else if (o.kind === 'wodone') {
     // v2: Complete WO with open line items → warn, don't hard-block
     const w = IDX.wo.get(o.woId);
@@ -13515,7 +13382,7 @@ function buildPopupEl(o, overlay, opts = {}) {
       <div class="popup-body"><div class="board-detail">${DETAIL[o.board](vrec, { historySearch: o.historySearch || '', histKind: o.histKind || null, partForm: o.partForm || false, backStack: [], mode: 'standard' })}</div></div>`;
     } else {
     pop.innerHTML = `
-      <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span>${board.id === 'files' ? addBtn('File', { link: true, js: 'js-file-add' }) : ''}${board.id === 'files' && scanEnabled() ? ghostPill('Fleet QR Codes', { js: 'js-fleet-qr', tip: 'Print-ready QR decal sheet for every active fleet unit' }) : ''}${board.id === 'files' ? `<div class="bv-searchwrap"><span class="s-icon">${I.search}</span><input class="bv-query js-files-query" placeholder="Search files…" value="${esc(o.fileSearch || '')}" /></div>` : ''}<span class="spacer"></span><button class="x js-close">${I.x}</button></div>
+      <div class="popup-head">${CARD_ICON[board.id] ? `<span class="c-icon" style="color:var(--accent);display:inline-flex">${CARD_ICON[board.id] || ''}</span>` : ''}<h3>${esc(board.title)}</h3><span class="c-count">${boardRows(board.id).length}</span>${board.id === 'files' ? addBtn('File', { link: true, js: 'js-file-add' }) : ''}${board.id === 'files' ? `<div class="bv-searchwrap"><span class="s-icon">${I.search}</span><input class="bv-query js-files-query" placeholder="Search files…" value="${esc(o.fileSearch || '')}" /></div>` : ''}<span class="spacer"></span><button class="x js-close">${I.x}</button></div>
       <div class="popup-body board-body">${o.pickTarget && board.id === 'parts' ? `<div class="muted board-pickhint">Tap <b>Attach</b> to add a catalog part to this service.</div>` : ''}${board.id === 'files' && o.fileForm ? `<div class="kv pillrow" style="gap:7px;margin:0 0 10px"><input class="lf-in js-ff-name" placeholder="File name" style="flex:2;min-width:140px"><input class="lf-in js-ff-link" placeholder="Link (URL)" style="flex:2;min-width:140px">${fileDrop(o.fileUpload ? '✓ ' + esc(o.fileUpload.name) : 'Upload photo / document', { js: 'js-ff-file', accept: 'image/*,application/pdf,.doc,.docx,.xls,.xlsx,.csv,.txt', done: !!o.fileUpload, icon: I.camera })}${ghostPill('Cancel', { js: 'js-ff-cancel' })}${actionPill('commit', 'Add file', { js: 'js-ff-save' })}</div>` : ''}${boardTable(board.id, o.fileSearch, o.pickTarget)}</div>`;
     }
     overlay.appendChild(pop);
@@ -13683,25 +13550,47 @@ function buildPopupEl(o, overlay, opts = {}) {
         ${c.signature ? `<div class="nc-ag-sigline"><span class="nc-cap-lbl">Signature</span><img class="nc-thumb sig" src="${esc(c.signature)}" alt="signature" /></div>` : ''}
         ${lifecycle ? `<div class="ag-lifecycle-wrap"><span class="nc-cap-lbl">Membership</span>${lifecycle}</div>` : ''}` });
     overlay.appendChild(pop);
-  } else if (o.kind === 'managerPw') {
-    // Phase 3 (T3.1/T3.3, spec D14/D22) — the Manager-TIER authorization shell, reused for two
-    // non-persistent single-action gates: a Net Terms change (pwAction:'netTerms') and the
-    // per-action rental-gate override (pwAction:'rentalOverride' — every attempt re-prompts, D14).
-    // Passes immediately if the current user is already Manager-tier+; otherwise verifies the SAME
-    // backend password requireAdmin uses (no separate Manager password exists — Jac's call,
-    // 2026-07-10). See js-mgrpw-confirm for the verify + apply.
-    const cust = IDX.customer.get(o.custId);
-    const actionLabel = o.pwAction === 'netTerms' ? `Setting Net Terms to ${o.pwVal || 'None'}`
-      : o.pwAction === 'rentalOverride' ? (o.pwReason || 'Booking past an account block')
-        : 'This action';
+  } else if (o.kind === 'tierAuth') {
+    // The TIER-AUTHORIZATION shell (2026-07-15 — supersedes the Manager-password prompt; the
+    // shared password is retired with per-person phone logins). One popup, four states:
+    //  · flag-OFF (phoneIdentity) → the legacy password input, byte-compatible backout path
+    //  · at/above o.minTier, or demo/offline → a plain confirm (the popup IS the deliberate step)
+    //  · below tier, step 'pick' → choose the approving Manager/Admin off the Team Roster;
+    //    tapping texts a one-time code to THEIR phone (authzStart — the destination is resolved
+    //    server-side from the roster, never client-supplied)
+    //  · step 'code' → enter the 6-digit approval code (authzVerify — burned single-use,
+    //    tier-checked at mint AND verify, never mints a session; approves THIS action only)
+    // Gates riding it: Net Terms (azAction 'netTerms', D22), the rental-gate override (D14,
+    // azAction 'rentalOverride'), and every requireAdmin callback (azAction 'custom' + onOk).
+    const cust = o.custId ? IDX.customer.get(o.custId) : null;
+    const tierLbl = tierRank(o.minTier || 'manager') >= tierRank('admin') ? 'Admin' : 'Manager';
+    const lead = `<p class="muted" style="margin:0 0 12px">${cust ? esc(fullName(cust)) + ' — ' : ''}${esc(tierAuthLabel(o))} needs ${tierLbl} approval.</p>`;
+    let body, foot;
+    if (!flagOn('phoneIdentity')) {
+      body = lead + `<input type="password" class="nc-in js-mgrpw-input" placeholder="${tierLbl} password" autocomplete="off" style="width:100%">`;
+      foot = `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', o.busy ? 'Checking…' : 'Authorize', { js: o.busy ? '' : 'js-mgrpw-confirm' })}`;
+    } else if (tierAuthSelfOk(o.minTier || 'manager')) {
+      body = lead + `<p class="muted" style="margin:0">Your call to make — confirm to proceed.</p>`;
+      foot = `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', 'Approve', { js: 'js-taz-approve' })}`;
+    } else if (o.step === 'code') {
+      body = lead
+        + `<div class="login-hint">Approval code texted to ${esc(o.approverName || 'the approver')}${o.masked ? ` · ${esc(o.masked)}` : ''}</div>`
+        + `<input class="nc-in login-otp js-taz-code" inputmode="numeric" autocomplete="one-time-code" maxlength="${PHONE_IDENTITY.codeLen}" placeholder="000000">`
+        + `<div style="margin-top:10px;text-align:center">${ghostPill('Text a fresh code', { js: o.busy ? '' : 'js-taz-resend' })}</div>`;
+      foot = `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', o.busy ? 'Checking…' : 'Approve', { js: o.busy ? '' : 'js-taz-approve' })}`;
+    } else {
+      const hands = tierAuthApprovers(o.minTier || 'manager');
+      body = lead + (hands.length
+        ? `<div class="login-hint" style="text-align:left;margin:0 0 8px">Who's approving? A one-time code texts to their own phone.</div>`
+          + `<div class="login-pick">${hands.map((h) => `<button type="button" class="login-pick-btn js-taz-pick" data-r="R17" data-id="${esc(h.id)}">${esc(h.name)}<span class="taz-role"> · ${esc(h.role || '')}</span></button>`).join('')}</div>`
+        : `<p class="muted" style="margin:0">No ${tierLbl}-tier hands on the roster — add one in Settings → Team Roster.</p>`);
+      foot = ghostPill('Cancel', { js: 'js-close' });
+    }
     const pop = el('div', 'popup'); pop.style.width = '360px';
     pop.innerHTML = popupShell({
-      icon: AG_LOCK, title: 'Manager Password', tag: 'Account · authorize',
-      body: `
-        <p class="muted" style="margin:0 0 12px">${cust ? esc(fullName(cust)) + ' — ' : ''}${esc(actionLabel)} requires Manager authorization.</p>
-        <input type="password" class="nc-in js-mgrpw-input" placeholder="Manager password" autocomplete="off" style="width:100%">
-        ${o.error ? `<div class="login-err" style="margin-top:10px">${esc(o.error)}</div>` : ''}`,
-      foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', o.busy ? 'Checking…' : 'Authorize', { js: o.busy ? '' : 'js-mgrpw-confirm' })}`,
+      icon: AG_LOCK, title: `${tierLbl} Approval`, tag: 'Account · approval',
+      body: `${body}${o.error ? `<div class="login-err" style="margin-top:10px">${esc(o.error)}</div>` : ''}`,
+      foot,
     });
     overlay.appendChild(pop);
   } else if (o.kind === 'blockPicker') {
@@ -13810,31 +13699,27 @@ function buildPopupEl(o, overlay, opts = {}) {
       <div class="popup-foot"><button class="pill ghost js-ck-pending" data-r="R18">Keep as pending</button><button class="pill ignition js-ck-complete${allDone ? '' : ' is-disabled'}" data-r="R17">Complete inspection</button></div>`;
     overlay.appendChild(pop);
   } else if (o.kind === 'inspection') {
-    // §12.8 Inspection record. On a FAIL this is the failure report — photo/video + a description
-    // for the auto-created WO, plus the bill-customer gate. On a PASS (re-opened via
-    // openInspectionRecord — "click Pass again to view the done inspection") it drops the failure
-    // framing and the bill gate (nothing to charge) and reads as a clean inspection view.
+    // §12.8 Failure report — triggered when an inspection is marked Failed: capture a
+    // photo/video + a description for the auto-created work order.
     const n = IDX.insp.get(o.recId);
     if (!n) { return false; }
     const unit = IDX.unit.get(n.unitId);
     const ir = inspResult(n);
-    const passed = n.checklist === 'Pass';
     const isVideo = (n.photo || '').startsWith('data:video');
     const media = n.photo
-      ? `<div class="insp-photo">${isVideo ? `<video src="${esc(n.photo)}" controls></video>` : `<img src="${esc(n.photo)}" alt="inspection photo">`}<label class="insp-rephoto">Replace<input type="file" accept="image/*,video/*" class="js-insp-photo" data-rec="${n.inspectionId}" hidden></label></div>`
+      ? `<div class="insp-photo">${isVideo ? `<video src="${esc(n.photo)}" controls></video>` : `<img src="${esc(n.photo)}" alt="failure photo">`}<label class="insp-rephoto">Replace<input type="file" accept="image/*,video/*" class="js-insp-photo" data-rec="${n.inspectionId}" hidden></label></div>`
       : `<label class="insp-photo empty"><span>${I.video} Add photo / video</span><input type="file" accept="image/*,video/*" class="js-insp-photo" data-rec="${n.inspectionId}" hidden></label>`;
-    const descPh = passed ? 'Notes — condition, observations…' : 'Describe the failure (what’s wrong, parts needed)…';
     const pop = el('div', 'popup insp-popup');
-    pop.innerHTML = popupShell({ icon: CARD_ICON.inspections, title: `${passed ? 'Inspection' : 'Failure report'} — ${unit?.name || '—'}`, tag: `Inspection · ${passed ? 'passed' : 'failure'}`, danger: !passed,
+    pop.innerHTML = popupShell({ icon: CARD_ICON.inspections, title: `Failure report — ${unit?.name || '—'}`, tag: 'Inspection · failure', danger: true,
       foot: `<button class="pill ignition js-close" data-r="R17">Done</button>`,
       body: `
         <div class="pillrow" style="margin-bottom:12px">${unit ? unitPill(unit.unitId) : ''}<span class="pill c-${ir.color}">${esc(ir.label)}</span>${n.woId ? refPill('workOrders', n.woId, 'Work Order') : ''}<span class="muted" style="font-size:12px;margin-left:auto">${esc(fmtShortDate(n.date))}</span></div>
         ${media}
-        <textarea class="insp-desc js-insp-desc" data-rec="${n.inspectionId}" placeholder="${esc(descPh)}">${esc(n.description || '')}</textarea>
-        ${passed ? '' : `<div class="insp-gate" style="margin-top:12px"><span class="insp-gate-lbl">Charge the customer?</span>${segCtl([
+        <textarea class="insp-desc js-insp-desc" data-rec="${n.inspectionId}" placeholder="Describe the failure (what's wrong, parts needed)…">${esc(n.description || '')}</textarea>
+        <div class="insp-gate" style="margin-top:12px"><span class="insp-gate-lbl">Charge the customer?</span>${segCtl([
           { label: 'Bill', js: 'js-insp-bill', data: { rec: n.inspectionId, val: 'Yes' }, on: n.billCustomer === 'Yes' ? 'green' : null },
           { label: 'Don’t bill', js: 'js-insp-bill', data: { rec: n.inspectionId, val: 'No' }, on: n.billCustomer === 'No' ? 'gray' : null },
-        ], 'seg-bill')}</div>`}` });
+        ], 'seg-bill')}</div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'service') {
     // §7.7/§12.7 service completion — Hours at Completion · Date · Photo · Notes
@@ -14048,6 +13933,7 @@ const WINDOW_CATALOG = [
   { kind: 'modelSchedule', label: 'Model maintenance schedule', tag: 'Category · model',       sample: () => ({ modelId: ((DATA.models || [])[0] || {}).modelId }) },
   { kind: 'svctaskform',   label: 'Add / Edit schedule task', tag: 'Model · schedule',          sample: () => ({ modelId: ((DATA.models || [])[0] || {}).modelId, idx: null }) },
   { kind: 'receiptform',   label: 'New / Edit Receipt',      tag: 'Expense · receipt',         sample: () => ({}) },
+  { kind: 'capture',       label: 'Log yard journey',        tag: 'Yard journey · log',        sample: () => ({ rentalId: ((DATA.rentals || [])[0] || {}).rentalId, cap: 'start' }) },
   { kind: 'wodone',        label: 'Complete Work Order?',    tag: 'Work order · confirm',      sample: () => ({ woId: ((DATA.workOrders || [])[0] || {}).woId }) },
   { kind: 'role',          label: 'Role KPIs',               tag: 'Role · scorecard',          sample: () => ({ role: (ROLES[0] || {}).id }) },
   { kind: 'requests',      label: 'Requests inbox',          tag: 'Mr. Wrangler · approvals',  sample: () => ({}) },
@@ -14077,7 +13963,7 @@ const WINDOW_CATALOG = [
   { kind: 'addAch',        label: 'Add bank account',        tag: 'Customer · ACH bank',       sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
   { kind: 'verifyAch',     label: 'Verify ACH',              tag: 'Customer · verify ACH',     sample: () => { const c = (DATA.customers || []).find((x) => (x.achAccounts || []).length); return c ? { customerId: c.customerId, bankId: c.achAccounts[0].id } : {}; } },
   { kind: 'payment',       label: 'Take Payment',            tag: 'Invoice · payment',         sample: () => ({ invoiceId: ((DATA.invoices || [])[0] || {}).invoiceId }) },
-  { kind: 'managerPw',    label: 'Manager password (account gate)', tag: 'Account · manager override', sample: () => ({ custId: ((DATA.customers || [])[0] || {}).customerId, pwAction: 'netTerms', pwVal: 'None', busy: false, error: '' }) },
+  { kind: 'tierAuth',     label: 'Tier approval (manager/admin gate)', tag: 'Account · approval', sample: () => ({ custId: ((DATA.customers || [])[0] || {}).customerId, minTier: 'manager', azAction: 'netTerms', pwVal: 'None', step: 'pick', busy: false, error: '' }) },
   { kind: 'blockPicker',   label: 'Block Account (Blacklist / invoice-hold)', tag: 'Account · block', sample: () => ({ custId: ((DATA.customers || [])[0] || {}).customerId, mode: 'pick', selIds: [], error: '' }) },
   { kind: 'wranglerOps',   label: 'Wrangler Ops',            tag: 'Developer · live chats',    sample: () => ({ loading: false, err: '', chats: [], openId: null, msgs: [], driver: 'ai', draft: '', busy: false }) },
 ];
@@ -15227,7 +15113,6 @@ const WR_OPERATIONS = {
       const pick = this._pick(p);
       if (pick.issue) return { issue: pick.issue };
       const inv = pick.inv;
-      if (invoicePoBlocked(inv)) return { issue: `invoice ${inv.invoiceId} is for a PO-required customer — add the PO # to the invoice first` };   // PO gate — Block ALL (mirrors the UI commit gate)
       const method = String((p && p.method) || '').toLowerCase();
       if (method !== 'cash' && method !== 'check') return { issue: `payment method must be cash or check — I can't charge a card or run an ACH` };
       if (method === 'check' && !String((p && p.checkNum) || '').trim()) return { issue: `a check payment needs the check number` };
@@ -16211,17 +16096,6 @@ function setFunnelStage(custId, which, val) {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render();
 }
-/* The Customers-list quick-add funnel picker — SAME gate-timeline body as
- * openFunnelDropdown's membership branch (locks 'Signed', F3 — never a manual pick,
- * new customer or not), but the pick writes to the in-progress state.custQuickAdd
- * draft instead of a real customer record (openFunnelDropdown/setFunnelStage require
- * one to already exist). */
-function openCustQuickAddFunnelDropdown(anchorEl) {
-  const cur = state.custQuickAdd.funnel || 'N/A';
-  const mk = (v, inner, sc) => `<button class="gt-row ${sc} js-custqa-funnel-pick" data-val="${esc(v)}">${inner}</button>`;
-  const html = gateTimeline('funnelStage', cur, 'Rental funnel', mk, { order: MEMBERSHIP_FUNNEL_ORDER, lock: new Set(['Signed']) });
-  openDropdown(anchorEl, html, { cls: 'gt' });
-}
 /* §12.1 interested categories — pick mode died (Wave 2): a plain dropdown now
    attaches a category to the customer (same pattern as the funnel dropdown). */
 function openIntCatDropdown(custId, anchorEl) {
@@ -16356,8 +16230,6 @@ const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list
 // Node relocation only — every builder still emits its usual markup (desktop untouched); this
 // just re-homes four nodes. The card-toggle-bar swipe zone follows the toggles (see boot()).
 function render() {
-  if (scanActive) return;   // the scan-to-log capture screen owns #app in its own tab — never let a background loader / 18s poll render clobber it mid-flow
-  RENDER_MEMO = {};   // open the render-scoped derivation cache (rmemo) — lives for exactly this render (Jac 2026-07-17). After the early-return so a bailed render never opens a cache it won't close.
   const t0 = performance.now();
   refreshToday();   // roll "today" over before painting — an all-day-open tab must never stamp/read yesterday
   hideTip(); hideHoverPreview();
@@ -16433,7 +16305,6 @@ function render() {
   renderCount++;
   perfRecordRender(dt);   // histogram (P0) — arithmetic only, no DOM work
   if (dt > CFG.PERF_BUDGET_MS) console.warn(`[perf] render ${renderCount} took ${dt.toFixed(1)}ms (budget ${CFG.PERF_BUDGET_MS}ms)`);
-  RENDER_MEMO = null;   // close the cache — any derivation called OUTSIDE a render must always recompute fresh
 }
 /* Lean re-render used ONLY while typing in the GLOBAL search bar. Rebuilds just the
    results grid (+ the phone dock's listbar / desktop footer counts) and deliberately
@@ -16625,44 +16496,6 @@ function swInit() {
       reg.addEventListener('updatefound', () => { const nw = reg.installing; if (nw) nw.addEventListener('statechange', () => { if (nw.state === 'installed' && navigator.serviceWorker.controller) offer(reg.waiting || nw); }); });
     }).catch(() => {});
   } catch (e) {}
-}
-
-/* ── Manual "Update" (tools menu, Jac 2026-07-16) ─────────────────────────────────
-   Pages serves index.html with max-age=600 and no per-file hashing, and mobile Safari
-   pins it hard — so there was NO user-facing way to force the newest build (a shipped
-   fix could sit invisible on a cached device for a long while). This checks the live
-   build token, and if it's newer, clears the SW + caches and hard-reloads PAST the HTTP
-   cache (a throwaway ?_u= on the navigation busts Safari's cached index.html — the thing
-   that pins everyone to the old build). Same-version = a friendly "you're current". */
-function appVersion() { return (document.querySelector('script[src*="app.js?v="]')?.src.match(/v=([\w-]+)/) || [])[1] || 'dev'; }
-async function clearAppCaches() {
-  try {
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      for (const r of regs) { try { if (r.waiting) r.waiting.postMessage('skipWaiting'); await r.update(); } catch (e) {} }
-    }
-    if (self.caches && caches.keys) { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); }
-  } catch (e) {}
-}
-async function checkForUpdate() {
-  const cur = appVersion();
-  toast('Checking for a newer build…');
-  // CRITICAL: on production the SW (sw.js) serves the CACHED index.html for a plain fetch — it
-  // matches with ignoreSearch, so a ?_= cache-buster is ignored and a naive token check reads
-  // STALE bytes (→ a false "you're up to date" that never updates). Clear the SW + HTTP caches
-  // FIRST so the check below genuinely hits the network. (Staging/localhost have no SW, so this
-  // is a harmless no-op there; the one-time cache re-fill on an "already current" tap is fine.)
-  await clearAppCaches();
-  let latest = null;
-  try {
-    const res = await fetch('index.html?_=' + Date.now(), { cache: 'no-store' });
-    latest = ((await res.text()).match(/app\.js\?v=([\w-]+)/) || [])[1] || null;
-  } catch (e) { /* offline / unreachable */ }
-  if (!latest) { toast('Couldn’t reach the server — check your connection and try again.'); return; }
-  if (latest === cur) { toast(`You’re already on the latest build (${cur}). ✓`); return; }
-  toast(`New build ${latest} — updating…`);
-  const u = new URL(location.href); u.searchParams.set('_u', Date.now().toString(36));   // bust the cached index.html on reload
-  location.replace(u.toString());
 }
 
 const PERF = { lcp: null, inp: null, cls: 0, renders: [], over: 0, flushed: false };
@@ -17650,7 +17483,6 @@ function onClick(e) {
   // no-op stubs (real enrollment/charge is Phase 2; block-gate enforcement is Phase 3).
   if (closest('.js-acct-toggle')) { e.stopPropagation(); const rec = closest('.js-acct-toggle').dataset.rec; return guardAgLeave(rec, () => { state.custAcctOpen = state.custAcctOpen || {}; state.custAcctOpen[rec] = !state.custAcctOpen[rec]; render(); }); }
   if (closest('.js-svc-sec-toggle')) { e.stopPropagation(); const rec = closest('.js-svc-sec-toggle').dataset.rec; state.svcSecOpen = state.svcSecOpen || {}; state.svcSecOpen[rec] = !state.svcSecOpen[rec]; return render(); }   // Unit detail — collapse/expand the Services (service-order) section
-  if (closest('.js-unit-sec')) { e.stopPropagation(); const b = closest('.js-unit-sec'); const rec = b.dataset.rec, sec = b.dataset.sec; state.unitSecOpen = state.unitSecOpen || {}; state.unitSecOpen[rec] = state.unitSecOpen[rec] || {}; state.unitSecOpen[rec][sec] = !state.unitSecOpen[rec][sec]; return render(); }   // Unit detail — collapse/expand a generic detail section (Work Orders / Specs / GPS / Investment[+Coverage])
   if (closest('.js-wo-row')) { e.stopPropagation(); const b = closest('.js-wo-row'); const un = b.dataset.unit, rec = b.dataset.rec; state.woRowOpen = state.woRowOpen || {}; state.woRowOpen[un] = (state.woRowOpen[un] === rec) ? null : rec; return render(); }   // Unit detail — open/collapse one Work Order row (accordion, mirrors js-inv-row)
   if (closest('.js-wo-collapse')) { e.stopPropagation(); const un = closest('.js-wo-collapse').dataset.unit; if (state.woRowOpen) state.woRowOpen[un] = null; return render(); }   // collapse the open Work Order row
   if (closest('.js-ag-row')) { e.stopPropagation(); const b = closest('.js-ag-row'); const rec = b.dataset.rec, card = b.dataset.card; return guardAgLeave(rec, () => { state.custAgOpen = state.custAgOpen || {}; state.custAgOpen[rec] = (state.custAgOpen[rec] === card) ? null : card; render(); }); }
@@ -17666,29 +17498,56 @@ function onClick(e) {
   if (closest('.js-ag-actype-opt')) { e.stopPropagation(); const b = closest('.js-ag-actype-opt'); const c = IDX.customer.get(b.dataset.rec); if (!c) return; agDraft(c).accountType = b.dataset.val; agDraft(c).actypeOpen = false; return render(); }
   if (closest('.js-ag-actype')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-ag-actype').dataset.rec); if (!c) return; const d = agDraft(c); d.actypeOpen = !d.actypeOpen; return render(); }
   if (closest('.js-ag-selfie-pick')) { return; }   // native <input type=file> — handled by its own 'change' event (onChange), not a click delegate
-  if (closest('.js-acct-po')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-acct-po').dataset.rec); if (c) { c.requiresPO = !c.requiresPO; reindex('customers', c); logAction(c, `PO required → ${c.requiresPO ? 'On' : 'Off'}`); } return render(); }   // logAction persists (saveSoon) + audits — inline toggle must save like the popup does
-  if (closest('.js-acct-prot')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-acct-prot').dataset.rec); if (c) { c.rentalProtection = !c.rentalProtection; reindex('customers', c); logAction(c, `Rental Protection → ${c.rentalProtection ? 'On' : 'Off'}`); } return render(); }   // sibling of the PO toggle — same persist fix (saveSoon via logAction)
-  if (closest('.js-acct-netdays')) { e.stopPropagation(); const b = closest('.js-acct-netdays'); return openOverlay({ kind: 'managerPw', custId: b.dataset.rec, pwAction: 'netTerms', pwVal: b.dataset.val, busy: false, error: '' }); }   // D22 — ANY Net Terms change is Manager-password gated
+  if (closest('.js-acct-po')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-acct-po').dataset.rec); if (c) { c.requiresPO = !c.requiresPO; reindex('customers', c); } return render(); }
+  if (closest('.js-acct-prot')) { e.stopPropagation(); const c = IDX.customer.get(closest('.js-acct-prot').dataset.rec); if (c) { c.rentalProtection = !c.rentalProtection; reindex('customers', c); } return render(); }
+  if (closest('.js-acct-netdays')) { e.stopPropagation(); const b = closest('.js-acct-netdays'); return openOverlay({ kind: 'tierAuth', minTier: 'manager', custId: b.dataset.rec, azAction: 'netTerms', pwVal: b.dataset.val, step: 'pick', busy: false, error: '' }); }   // D22 — ANY Net Terms change is Manager-approval gated
   if (closest('.js-block-account')) { e.stopPropagation(); const rec = closest('.js-block-account').dataset.rec; return openOverlay({ kind: 'blockPicker', custId: rec, mode: 'pick', selIds: [], error: '' }); }   // D12/D13 — Block Account entry
-  if (closest('.js-mgrpw-confirm')) {
+  if (closest('.js-mgrpw-confirm')) {   // tierAuth, flag-OFF backout path only — the legacy password input
     e.stopPropagation();
-    const o = state.overlay; if (!o || o.kind !== 'managerPw' || o.busy) return;
+    const o = state.overlay; if (!o || o.kind !== 'tierAuth' || o.busy) return;
     const pw = (document.querySelector('.overlay .js-mgrpw-input') || {}).value || '';
     o.busy = true; o.error = ''; renderOverlay();
     (async () => {
-      const ok = await verifyTierOrPassword('manager', pw);
+      const ok = await verifyTierOrPassword(o.minTier || 'manager', pw);
       if (state.overlay !== o) return;
-      if (!ok) { o.busy = false; o.error = 'Not a valid Manager override.'; renderOverlay(); return; }
-      const c = IDX.customer.get(o.custId);
-      if (c && o.pwAction === 'netTerms') {
-        const days = o.pwVal === 'None' ? 0 : (parseInt(o.pwVal, 10) || 0);
-        const old = c.netDays; c.netDays = days; reindex('customers', c);
-        logAction(c, `Net Terms: ${old == null || old === '' ? 'None' : old + 'd'} → ${o.pwVal} (Manager override)`);
-        closeOverlay(); render(); toast(`Net Terms set to ${o.pwVal}.`); return;
-      }
-      const onOk = o.onOk;   // rentalOverride path — the caller supplies what "authorized" means (T3.3)
-      closeOverlay();
-      if (typeof onOk === 'function') onOk();
+      if (!ok) { o.busy = false; o.error = 'Not a valid override.'; renderOverlay(); return; }
+      tierAuthApply(o, '');
+    })();
+    return;
+  }
+  if (closest('.js-taz-pick')) {   // tierAuth — pick the approver; texts a one-time code to THEIR phone
+    e.stopPropagation();
+    const o = state.overlay; if (!o || o.kind !== 'tierAuth' || o.busy) return;
+    const id = closest('.js-taz-pick').dataset.id;
+    const hand = (((state.settings || {}).employees) || []).find((x) => x && String(x.id) === String(id));
+    o.approverId = id; o.approverName = hand ? hand.name : '';
+    tierAuthSendCode(o);
+    return;
+  }
+  if (closest('.js-taz-resend')) {
+    e.stopPropagation();
+    const o = state.overlay; if (!o || o.kind !== 'tierAuth' || o.busy || !o.approverId) return;
+    tierAuthSendCode(o);
+    return;
+  }
+  if (closest('.js-taz-approve')) {   // tierAuth — self-tier confirm, or verify the texted approval code
+    e.stopPropagation();
+    const o = state.overlay; if (!o || o.kind !== 'tierAuth' || o.busy) return;
+    if (tierAuthSelfOk(o.minTier || 'manager')) { tierAuthApply(o, ''); return; }
+    const code = ((document.querySelector('.overlay .js-taz-code') || {}).value || '').replace(/\D/g, '');
+    if (code.length !== PHONE_IDENTITY.codeLen) { o.error = `Enter the ${PHONE_IDENTITY.codeLen}-digit code.`; renderOverlay(); return; }
+    o.busy = true; o.error = ''; renderOverlay();
+    (async () => {
+      let r = null;
+      try { r = await backendCall('authzVerify', { approverId: o.approverId, code, minTier: o.minTier || 'manager' }); } catch (err) {}
+      if (state.overlay !== o) return;
+      if (r && r.ok) { tierAuthApply(o, r.approver || o.approverName || ''); return; }
+      o.busy = false;
+      o.error = r && r.error === 'bad-code' ? `That code didn't match${r.left != null ? ` — ${r.left} left` : ''}.`
+        : r && r.error === 'expired' ? 'That code expired — text a fresh one.'
+        : r && r.error === 'too-many' ? 'Too many tries — text a fresh code.'
+        : "Couldn't verify the code — try again.";
+      renderOverlay();
     })();
     return;
   }
@@ -17709,10 +17568,10 @@ function onClick(e) {
     e.stopPropagation();
     const o = state.overlay; if (!o || o.kind !== 'blockPicker') return;
     const custId = o.custId;
-    requireAdmin('Blacklisting this account is permanent — only an Admin/Owner password lifts it.', () => {
+    requireAdmin('Blacklisting this account is permanent — Admin approval sets it, and only Admin approval lifts it.', (approver) => {
       const c = IDX.customer.get(custId); if (!c) return;
       c.block = { type: 'blacklist', setBy: currentRole || 'admin', setAt: TODAY_ISO };
-      reindex('customers', c); logAction(c, 'Account BLACKLISTED (Admin/Owner authorization)');
+      reindex('customers', c); logAction(c, `Account BLACKLISTED (Admin approval${approver ? ' — ' + approver : ''})`);
       closeOverlay(); render(); toast('Account blacklisted.');
     });
     return;
@@ -17720,9 +17579,9 @@ function onClick(e) {
   if (closest('.js-lift-blacklist')) {
     e.stopPropagation();
     const rec = closest('.js-lift-blacklist').dataset.rec;
-    requireAdmin('Lifting a Blacklist requires an Admin/Owner password.', () => {
+    requireAdmin('Lifting a Blacklist needs Admin approval.', (approver) => {
       const c = IDX.customer.get(rec); if (!c) return;
-      delete c.block; reindex('customers', c); logAction(c, 'Blacklist lifted (Admin/Owner authorization)');
+      delete c.block; reindex('customers', c); logAction(c, `Blacklist lifted (Admin approval${approver ? ' — ' + approver : ''})`);
       render(); toast('Blacklist lifted.');
     });
     return;
@@ -17853,7 +17712,6 @@ function onClick(e) {
   if (closest('.js-qr')) { closeMenus(); return shareSession(); }
   if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); closeMenus(); return render(); }
   if (closest('.js-hotkeys')) { closeMenus(); return openOverlay({ kind: 'hotkeys' }); }
-  if (closest('.js-app-update')) { closeMenus(); return checkForUpdate(); }   // manual "Update" — force the newest build past a stale mobile cache
   if (closest('.js-lint')) {   // R0 flash-lint toggle — persists per device
     const on = document.body.classList.toggle('rw-lint');
     try { localStorage.setItem('jactec.lint', on ? '1' : '0'); } catch (err) {}
@@ -18028,7 +17886,6 @@ function onClick(e) {
   if (closest('.js-file-add')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.fileForm = !o.fileForm; o.fileUpload = null; renderOverlay(); } return; }   // §7.13: +File inline create (toggle)
   if (closest('.js-ff-cancel')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'board') { o.fileForm = false; o.fileUpload = null; renderOverlay(); } return; }
   if (closest('.js-ff-save')) { e.stopPropagation(); return saveFileForm(); }
-  if (closest('.js-fleet-qr')) { e.stopPropagation(); return downloadFleetQRCodes(); }   // Company Files → Fleet QR Codes print sheet (gated on scanEnabled() at the button)
   if (closest('.js-vendor-tax')) { e.stopPropagation(); const b = closest('.js-vendor-tax'); const v = recOf('vendors', b.dataset.rec); if (v) { const ex = b.dataset.val === '1'; if (!!v.salesTaxExempt !== ex) { v.salesTaxExempt = ex; reindex('vendors', v); logAction(v, `Sales tax → ${ex ? 'Exempt' : 'Taxed'}`); } if (state.overlay?.kind === 'board') renderOverlay(); render(); } return; }
   if (closest('.js-cardgraph')) { e.stopPropagation(); const b = closest('.js-cardgraph'); const card = b.dataset.card, src = b.dataset.src || card; const cs = activeSession().cards[card]; if (!cs.graphView) { if (graphViewsFor(src)) return gvOpen(card, src); cs.graphView = true; return render(); } cs.graphView = false; return render(); }   // §13.7 gauge-strip toggle (Shop 'all': the stackbars worklist)
   if (closest('.js-cardglobe')) {   // R33 — toggle card-search global mode; lights/dims EVERY grid-card globe in lockstep
@@ -18062,11 +17919,6 @@ function onClick(e) {
   if (closest('.js-bv-customize')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.customize = !o.customize; renderOverlay(); } return; }
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
-  // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched):
-  // open/collapse + submit here; the funnel-pick option itself lives with the other dropdown
-  // handlers below (js-custqa-funnel-pick, next to js-setfunnel).
-  if (closest('.js-custqa-open')) { e.stopPropagation(); state.custQuickAdd.open = true; return render(); }
-  if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelDropdown(closest('.js-custqa-funnel')); }
   if (closest('.js-new-unit-search')) { e.stopPropagation(); return quickAddUnitFromSearch(activeSession().cards.units.search); }
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
   if (closest('.js-coltab')) {
@@ -18117,9 +17969,6 @@ function onClick(e) {
   // funnel stage pill → stage dropdown; set; +Add Category / Record / Schedule
   if (closest('.js-setfunnel')) { const b = closest('.js-setfunnel'); return setFunnelStage(b.dataset.rec, b.dataset.which, b.dataset.val); }
   if (closest('.js-funnel')) { const b = closest('.js-funnel'); e.stopPropagation(); return openFunnelDropdown(b.dataset.rec, b.dataset.which, b); }
-  // Customers-list quick-add draft's funnel pick — writes state.custQuickAdd.funnel (no
-  // customer record exists yet, so this can't ride js-setfunnel/setFunnelStage above).
-  if (closest('.js-custqa-funnel-pick')) { const b = closest('.js-custqa-funnel-pick'); state.custQuickAdd.funnel = b.dataset.val; document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (custQuickAddValid()) return custQuickAddCreate(); return render(); }   // the funnel PICK is the 4th selection (any value incl N/A) — with first/last/phone valid → create + open detail; else show the picked funnel
   if (closest('.js-fleet-filter')) {
     const b = closest('.js-fleet-filter'); e.stopPropagation();
     // A1 — the fleet-bar segment routes through the search bar as a removable pill (one
@@ -18239,6 +18088,7 @@ function onClick(e) {
   }
   // ── v2 build: condition/wash segs · yard captures · site popup · WO complete · history chips ──
   if (closest('.js-cond')) { const b = closest('.js-cond'); return setUnitCondition(b.dataset.rec, b.dataset.val); }
+  if (closest('.js-open-checklist')) { e.stopPropagation(); return openChecklist(closest('.js-open-checklist').dataset.rec); }
   if (closest('.js-ck-item')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-item'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n) { n.items = n.items || {}; n.items[b.dataset.id] = b.dataset.val; renderOverlay(); } } return; }
   if (closest('.js-ck-evrm')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-evrm'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n && n.itemEvidence && n.itemEvidence[b.dataset.id]) { n.itemEvidence[b.dataset.id].splice(Number(b.dataset.i), 1); saveSoon(); renderOverlay(); } } return; }
   if (closest('.js-ck-walkrm')) { e.stopPropagation(); const o = state.overlay, b = closest('.js-ck-walkrm'); if (o && o.kind === 'checklist') { const n = IDX.insp.get(o.inspId); if (n && n.evidence) { n.evidence.splice(Number(b.dataset.i), 1); saveSoon(); renderOverlay(); } } return; }
@@ -18246,6 +18096,7 @@ function onClick(e) {
   if (closest('.js-ck-pending')) { e.stopPropagation(); closeOverlay(); toast('Inspection kept as pending — resume it anytime.'); return; }
   if (closest('.js-washseg')) { const b = closest('.js-washseg'); return setUnitWash(b.dataset.rec, b.dataset.val); }
   if (closest('.js-yard')) { const b = closest('.js-yard'); return yardCapture(b.dataset.rec, b.dataset.cap, b.dataset.unit); }
+  if (closest('.js-cap-save')) return saveYardCapture();
   // ── inline transport editor (replaces the old `site` popup) ──
   if (closest('.js-site-go')) { const b = closest('.js-site-go'); e.stopPropagation(); return openTransportEdit(b.dataset.rec, b.dataset.unit || null, 'delivery'); }   // legacy dispatch links still open the editor
   if (closest('.js-tedit-open')) { const b = closest('.js-tedit-open'); e.stopPropagation(); return openTransportEdit(b.dataset.rec, b.dataset.unit || null, b.dataset.leg || 'delivery'); }
@@ -18323,7 +18174,7 @@ function onClick(e) {
   if (closest('.js-sortdir')) { const card = closest('.js-sortdir').dataset.card; const cs = activeSession().cards[card]; cs.sort.dir = cs.sort.dir === 'asc' ? 'desc' : 'asc'; saveSort(card, cs.sort); render(); return; }
 
   // inline edit (click a value → input)
-  if (closest('.inline-edit')) { e.stopPropagation(); const _ie = closest('.inline-edit'); if (_ie.dataset.admin === '1' && !adminUnlocked()) return requireAdmin('Categories and pricing are Admin-only.', () => startInlineEdit(_ie)); if (_ie.dataset.money === '1' && !canMoney()) return toast('Cost fields are Office/Admin only.'); return startInlineEdit(_ie); }
+  if (closest('.inline-edit')) { e.stopPropagation(); const _ie = closest('.inline-edit'); if (_ie.dataset.admin === '1' && !adminUnlocked()) { const _k = { edit: _ie.dataset.edit || '', card: _ie.dataset.card || '', field: _ie.dataset.field || '', rec: _ie.dataset.rec || '' }; return requireAdmin('Categories and pricing are Admin-only.', () => { const n = Array.from(document.querySelectorAll('.inline-edit')).find((x) => (x.dataset.edit || '') === _k.edit && (x.dataset.card || '') === _k.card && (x.dataset.field || '') === _k.field && (x.dataset.rec || '') === _k.rec) || _ie; startInlineEdit(n); }); } if (_ie.dataset.money === '1' && !canMoney()) return toast('Cost fields are Office/Admin only.'); return startInlineEdit(_ie); }   // a live-refresh render() during the approval wait can orphan the saved span — re-find it by its FULL identifying tuple (edit+card+field+rec) so a sibling admin field on the same record can't be opened by mistake; fall back to the original node if it's still attached
 
   // X-to-swap / remove on pills (handle before the pill-open)
   const xEl = closest('.x');
@@ -18890,24 +18741,75 @@ function adminUnlocked() { return roleTier(currentRole) >= tierRank('admin'); }
 /** Dev/design tools (Lint / Inspector / Rulebook) — Developer tier only. */
 function devUnlocked() { return roleTier(currentRole) >= tierRank('developer'); }
 
-/** Verify an Admin password (reuses the Settings gate), then run onOk. Demo/offline → allowed. */
+/** Admin-tier gate. At/above Admin tier (or demo/offline) → straight through. Below tier:
+ *  flag-ON (phoneIdentity) → the tierAuth shell (an Admin approves with a one-time code texted
+ *  to their own phone); flag-OFF → the legacy Admin-password prompt (the backout path).
+ *  onOk receives the approver's roster name (when a code approved it) for audit strings. */
 async function requireAdmin(reason, onOk) {
-  const pw = adminUnlocked() ? backendPassword
-    : (window.prompt((reason ? reason + '\n\n' : '') + 'Enter an Admin password to override:') || '');
-  if (!pw && backendPassword) return;
-  if (!backendPassword) { onOk(); return; }          // demo: no backend to verify against
+  if (!backendPassword || adminUnlocked()) { onOk(); return; }   // demo/offline, or the tier already carries it
+  if (flagOn('phoneIdentity')) {
+    openOverlay({ kind: 'tierAuth', minTier: 'admin', azAction: 'custom', pwReason: reason, step: 'pick', busy: false, error: '', onOk });
+    return;
+  }
+  const pw = window.prompt((reason ? reason + '\n\n' : '') + 'Enter an Admin password to override:') || '';
+  if (!pw) return;
   try { const r = await backendCall('getConfig', { password: pw }); if (r && r.ok) onOk(); else toast('Not an Admin password — override denied.'); }
   catch (e) { toast('Couldn’t verify the password — try again.'); }
 }
-/* Phase 3 (2026-07-10 account/agreements redesign) — the app has role TIERS + ONE verifiable
-   backend password (no separate "Manager password" / "Owner password" secret exists). Per Jac's
-   confirmed call (2026-07-10): reuse the tier ladder + the existing admin password rather than
-   invent a new auth surface. `minTier` gates who passes WITHOUT a prompt; if the current user is
-   below that tier, the SAME backend password (verified the same way requireAdmin does) authorizes
-   the one action. Demo/offline (no backendPassword) always passes — matches every other money gate
-   in the app. Used for: the D14 per-action Manager override on a blocked rental, the D22 Net-Terms
-   change, and (at minTier='admin') the D13 Blacklist set/lift — 'owner' already maps to the admin
-   tier (config.js BUILTIN_ROLE_TIERS), so there is no separate Owner password to build. */
+/* ── Tier-gate approval by phone code (2026-07-15) — the shared password is retired; per-person
+   phone identity (spec 2026-07-13-text-link-identity §6) supplies the replacement. A below-tier
+   user picks a Manager/Admin off the Team Roster; the backend texts THAT person's own phone a
+   one-time 6-digit approval code (`authzStart` — the destination is always resolved server-side
+   from the roster, never client-supplied) and entering it authorizes the ONE action
+   (`authzVerify` — single-use, tier-checked at mint AND verify, never mints a session; a login
+   code can't approve and an approval code can't log in — separate backend namespaces).
+   At/above `minTier` (or demo/offline, matching every other money gate) it's a plain confirm.
+   Backend contract: docs/handoffs/phone-identity-backend.gs §authz. Used for: the D22 Net-Terms
+   change and D14 rental-gate override (manager), and every requireAdmin gate (admin) —
+   'owner' already maps to the admin tier (config.js BUILTIN_ROLE_TIERS). */
+function tierAuthSelfOk(minTier) { return !backendPassword || roleTier(currentRole) >= tierRank(minTier); }
+function tierAuthApprovers(minTier) {
+  return (((state.settings || {}).employees) || []).filter((e) => e && e.name && roleTier(e.role) >= tierRank(minTier));
+}
+function tierAuthLabel(o) {
+  return o.azAction === 'netTerms' ? `Setting Net Terms to ${o.pwVal || 'None'}` : (o.pwReason || 'This action');
+}
+/* Apply whatever the tierAuth shell was guarding. `approver` = the roster name that entered the
+   code ('' when the user's own tier / demo passed) — it lands in the audit log line. */
+function tierAuthApply(o, approver) {
+  const c = o.custId ? IDX.customer.get(o.custId) : null;
+  if (c && o.azAction === 'netTerms') {
+    const days = o.pwVal === 'None' ? 0 : (parseInt(o.pwVal, 10) || 0);
+    const old = c.netDays; c.netDays = days; reindex('customers', c);
+    logAction(c, `Net Terms: ${old == null || old === '' ? 'None' : old + 'd'} → ${o.pwVal} (Manager approval${approver ? ' — ' + approver : ''})`);
+    closeOverlay(); render(); toast(`Net Terms set to ${o.pwVal}.`); return;
+  }
+  const onOk = o.onOk;   // rentalOverride / requireAdmin path — the caller supplies what "approved" means
+  closeOverlay();
+  if (typeof onOk === 'function') onOk(approver || '');
+}
+/* Text (or re-text) the one-time approval code to the picked approver. Shared by pick + resend. */
+function tierAuthSendCode(o) {
+  o.busy = true; o.error = ''; renderOverlay();
+  (async () => {
+    let r = null;
+    try { r = await backendCall('authzStart', { approverId: o.approverId, minTier: o.minTier || 'manager', reason: tierAuthLabel(o) }); } catch (e) {}
+    if (state.overlay !== o) return;
+    o.busy = false;
+    if (r && r.ok && r.sent) { o.step = 'code'; o.masked = r.masked || ''; o.approverName = r.name || o.approverName || ''; o.error = ''; }
+    else {
+      o.error = r && r.reason === 'too-soon' ? 'Hold on — a code just went out. Give it 30 seconds.'
+        : r && r.reason === 'rate' ? 'Too many codes for them this hour — try again later.'
+        : r && (r.error === 'under-tier' || r.error === 'no-approver') ? `They can't approve this — pick a ${tierRank(o.minTier || 'manager') >= tierRank('admin') ? 'Admin' : 'Manager'}-tier hand.`
+        : "Couldn't text the code — try again.";
+    }
+    renderOverlay();
+  })();
+}
+/* The flag-OFF backout path only (phoneIdentity OFF → the legacy shared-password world).
+   `minTier` gates who passes WITHOUT a prompt; below that tier, the shared backend password
+   (verified the same way the legacy requireAdmin prompt does) authorizes the one action.
+   Demo/offline (no backendPassword) always passes — matches every other money gate. */
 async function verifyTierOrPassword(minTier, pw) {
   if (roleTier(currentRole) >= tierRank(minTier)) return true;
   if (!backendPassword) return true;   // demo/offline — no backend to verify against, matches requireAdmin
@@ -18919,10 +18821,10 @@ async function verifyTierOrPassword(minTier, pw) {
 function cardOverrideRental(rentalId, val) {
   const r = IDX.rental.get(rentalId); if (!r) return;
   const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
-  requireAdmin(`${cust ? cust.name : 'This customer'} — ${cardGateReason(cust) || 'card gate'}. Booking is blocked.`, () => {
+  requireAdmin(`${cust ? cust.name : 'This customer'} — ${cardGateReason(cust) || 'card gate'}. Booking is blocked.`, (approver) => {
     r.cardOverride = true;
-    logAction(r, `Admin override — booked ${getStatus('rentalStatus', val).label} (${cardGateReason(cust) || 'card gate'})`);
-    if (cust) logAction(cust, 'Admin override used to book past the card/agreement gate');
+    logAction(r, `Admin override${approver ? ' (' + approver + ')' : ''} — booked ${getStatus('rentalStatus', val).label} (${cardGateReason(cust) || 'card gate'})`);
+    if (cust) logAction(cust, `Admin override used to book past the card/agreement gate${approver ? ' — approved by ' + approver : ''}`);
     setRentalStatus(rentalId, val);
   });
 }
@@ -18933,7 +18835,7 @@ function cardOverrideRental(rentalId, val) {
    the pre-existing, previously-dormant §9 `/Blacklist/i` check — nothing ever set that string
    until Phase 3's blockPicker). That leaves `failed-payment` and `invoice-hold` uncovered by
    anything today — this is their gate: a D14 per-action Manager override, verified the same way
-   managerPw does. Critically NON-PERSISTENT — `bypassAccountBlock` is a plain function-call
+   tierAuth does. Critically NON-PERSISTENT — `bypassAccountBlock` is a plain function-call
    argument threaded through the retry, never written to the record, so every future attempt
    re-prompts (Jac, 2026-07-10: "that's the point"). */
 function accountBlockGate(cust) {
@@ -18942,9 +18844,9 @@ function accountBlockGate(cust) {
 }
 function accountBlockOverride(cust, onOk) {
   const ab = accountBlockGate(cust);
-  openOverlay({ kind: 'managerPw', custId: cust ? cust.customerId : null, pwAction: 'rentalOverride',
+  openOverlay({ kind: 'tierAuth', minTier: 'manager', custId: cust ? cust.customerId : null, azAction: 'rentalOverride',
     pwReason: `${cust ? cust.name : 'This customer'} — ${ab ? ab.reason : 'account block'}.`,
-    busy: false, error: '', onOk });
+    step: 'pick', busy: false, error: '', onOk });
 }
 /* Admin "Rental Rules" (Settings → Rental Rules) — HARD-BLOCK On Rent until every
    requirement an admin marked Required is met. Pure + defensive: with no rules set
@@ -19088,48 +18990,18 @@ function setUnitCondition(unitId, val) {
   const u = IDX.unit.get(unitId); if (!u) return;
   const lock = unitCondLock(u);
   if (lock) return flashOr(`.js-wo-complete[data-rec="${lock.woId}"]`, `🔒 Condition locked — WO “${lock.woReport}” is open from a ${lock.woType === 'Field Call' ? 'field call' : 'failed inspection'}. Complete it to update the condition.`);
-  // PASS is the gate (Jac 2026-07-17 — the confusing "+ Inspection" button is retired; the toggle
-  // IS the interface). Already Passed → Pass re-opens the done inspection to view; a checklist
-  // category → Pass opens the checklist takeover (completing it cascades to Pass); otherwise a
-  // direct pass, which still needs a wash decision first (R19 — glow the wash toggle, not an error).
-  if (val === 'Pass') {
-    if (u.inspectionStatus === 'Ready') return openInspectionRecord(unitId);
-    if (checklistRequired(u)) return openChecklist(unitId);
-    const washedToday = (u.serviceLog || []).some((l) => l.taskId === 'svc-wash' && l.date === TODAY_ISO);
-    if (!u.washChoice && !u.washRequested && !washedToday) return attnFlash('.seg-wash');
-    u.condAt = TODAY_ISO; u.condClock = nowClock();
-    return setInspResult(newInspectionForUnit(u).inspectionId, 'Pass');
-  }
-  // FAIL: a unit that breaks while OUT ON RENT is a field call (red-flag the rental, roll a truck,
-  // show in dispatch); a yard unit with no active rental is a bench failed-inspection like before.
-  if (val === 'Fail') {
-    u.condAt = TODAY_ISO; u.condClock = nowClock();   // stamp the condition change on either path
-    const ar = activeRentalForUnit(unitId);
-    if (ar) return markFieldCall(ar.rentalId);        // on-rent breakdown → field call (truck roll + dispatch)
-    const n = newInspectionForUnit(u); n.wash = n.wash || 'No';
-    return setInspResult(n.inspectionId, 'Fail');     // yard bench fail: auto-WO + §12.8 photo/notes popup
-  }
-  // NOT READY resets the inspection back to pending.
+  // R19: Pass needs a wash decision first — glow the wash toggle instead of an error
+  const washedToday = (u.serviceLog || []).some((l) => l.taskId === 'svc-wash' && l.date === TODAY_ISO);
+  if (val === 'Pass' && !u.washChoice && !u.washRequested && !washedToday) return attnFlash('.seg-wash');
   u.condAt = TODAY_ISO; u.condClock = nowClock();
+  if (val === 'Pass' || val === 'Fail') {
+    const n = newInspectionForUnit(u);
+    if (val === 'Fail') n.wash = n.wash || 'No';
+    return setInspResult(n.inspectionId, val);     // handles unit status, auto-WO + fail popup
+  }
   u.inspectionStatus = 'Not Ready';
   reindex('units', u); logAction(u, 'Condition → Not Ready');
   toast('Condition → Not Ready'); reanchorRender();
-}
-/* Pass-again on a passed unit "gets back into" the completed inspection: a real checklist
-   record re-opens the takeover; a plain condition-pass opens the §12.8 record popup. */
-function openInspectionRecord(unitId) {
-  const u = IDX.unit.get(unitId); if (!u) return;
-  let n = latestInspForUnit(unitId);
-  if (!n) {
-    // A unit marked Ready with no inspection record on file (seed/legacy). Materialise a
-    // lightweight pass record so "click Pass again to view the done inspection" always lands
-    // on the real (pass-aware) view — never a dead-end toast, and never a blank pending
-    // checklist spun up for an already-passed unit.
-    n = newInspectionForUnit(u); n.checklist = 'Pass'; reindexDraft('inspections', n);
-  }
-  const hasItems = !!(checklistFor(u) && n.items && typeof n.items === 'object' && Object.keys(n.items).length);
-  state.overlay = hasItems ? { kind: 'checklist', unitId, inspId: n.inspectionId } : { kind: 'inspection', recId: n.inspectionId };
-  render(); renderOverlay();
 }
 // A required-checklist inspection started but not yet completed (Jac: kept as Pending).
 function pendingInspForUnit(unitId) {
@@ -19191,8 +19063,7 @@ function sellUnit(unitId, price, date, note) {
   render();
 }
 /* yard journey: +Start/+Log Delivery and +End/+Log Recovery are the SAME capture
-   either way (one event, shared video); +FC = markFieldCall. No popup — the tap fires
-   the camera and ending the video saves it; re-tapping a logged node re-records it. */
+   either way (one event, shared video); +FC = markFieldCall. Popup gates every log. */
 /* §20 a capture is PER UNIT: cur = that unit's entry (fallback to the rental for
    safety). Logging a delivery/recovery moves just that unit's status. */
 const captureUnit = (r, unitId) => unitEntry(r, unitId);
@@ -19203,19 +19074,11 @@ function setUnitCapture(r, eu, key, stamp) {
 function yardCapture(rentalId, cap, unitId, opts = {}) {
   const r = IDX.rental.get(rentalId); if (!r) return;
   const cur = captureUnit(r, unitId) || r;
-  const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
-  // A video already on file → this tap RE-RECORDS it (Jac: "delete that video in trade
-  // for a new one by doing the same process again"). A re-record only swaps the video —
-  // it must NOT move status again, re-run the §9 delivery gates, or re-raise a field call.
-  const replace = !!cur[key] || (cap === 'fc' && !!r.fieldCall);
-  // §14 a first Start/Delivery moves the unit On Rent — run the §9 gates UP FRONT so a
-  // blocked delivery never opens the camera (mirrors setRentalStatus/setUnitStatus so the
-  // driver is never made to record a video that would only then be rejected).
-  if (cap === 'start' && !replace) {
+  // §14 a delivery log goes On Rent — block the driver up front when the account's
+  // card/agreement gate isn't clear (the journey node reads locked, not dead).
+  if (cap === 'start') {
     const gc = r.customerId ? IDX.customer.get(r.customerId) : null;
-    if (!r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
     if (gc && (accountBlock(gc)?.type === 'blacklist' || /Blacklist/i.test(gc.accountType || ''))) { toast(`🔒 ${gc.name} — blacklisted. Delivery blocked.`); return; }
-    const rb = rentalRuleBlock(r, gc, 'On Rent'); if (rb) { flashOr('.js-add-card', rb); return; }
     if (cardGateBlocked(gc) && !r.cardOverride) { toast(`🔒 ${gc.name} — ${cardGateReason(gc)}. Sign the card before logging a delivery.`); return; }
     // Phase 3 (T3.3) — account-block gate (failed-payment / invoice-hold), same Manager-tier,
     // per-action, non-persisted override as the booking-status gates above.
@@ -19224,63 +19087,45 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
       if (abg) { toast(`🔒 ${gc.name} — ${abg.reason}. Manager authorization required.`); accountBlockOverride(gc, () => yardCapture(rentalId, cap, unitId, { bypassAccountBlock: true })); return; }
     }
   }
-  // A first End/Recovery needs its Start/Delivery logged first (a re-record already has it).
-  if (cap === 'end' && !replace && !cur.startCapture) return flashOr('.js-yard[data-cap="start"]', 'Log the Start/Delivery first.');
-  // No popup — fire the camera straight from the tap; ending the video saves it. opts
-  // carries a manager's granted account-block override through to the commit's status move.
-  openYardCamera(rentalId, cap, unitId || null, opts);
+  if (cap === 'start' && cur.startCapture) return toast('Start already captured — video on file.');
+  if (cap === 'end' && cur.endCapture) return toast('End already captured — video on file.');
+  if (cap === 'end' && !cur.startCapture) return flashOr('.js-yard[data-cap="start"]', 'Log the Start/Delivery first.');
+  if (cap === 'fc' && (cur.fcCapture || r.fieldCall)) return toast('Field Call already logged.');
+  state.capFile = null;
+  openOverlay({ kind: 'capture', rentalId, cap, unitId: unitId || null });
 }
-/* Fire the device camera straight from the yard-journey tap. The tap IS the user
-   gesture the browser needs to open the camera, so we synchronously create + click a
-   capture input; when the recording comes back we commit it — no confirm step. */
-function openYardCamera(rentalId, cap, unitId, opts = {}) {
-  const input = el('input'); input.type = 'file'; input.accept = 'video/*,image/*';
-  input.setAttribute('capture', 'environment'); input.style.display = 'none';
-  input.addEventListener('change', () => {
-    const f = input.files && input.files[0]; input.remove();
-    if (!f) return;   // camera dismissed with no recording — nothing logged
-    const rd = new FileReader();
-    rd.onload = () => commitYardCapture(rentalId, cap, unitId, rd.result, opts);
-    rd.onerror = () => toast('Could not read that video.');
-    rd.readAsDataURL(f);
-  });
-  document.body.appendChild(input); input.click();
-}
-function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
-  const r = IDX.rental.get(rentalId); if (!r) return;
-  const eu = captureUnit(r, unitId);
-  const tgt = eu || r;
-  const uname = IDX.unit.get(unitId)?.name || '';
-  const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
-  // Re-record → swap the video only; keep the status where it is and don't re-raise the FC.
-  const replace = !!tgt[key] || (cap === 'fc' && !!r.fieldCall);
-  // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the stamp
-  // persists immediately; the video uploads to Drive and only its URL lands on the
-  // stamp afterwards (uploadCapture backend action).
-  const eu0 = eu || (r.units || [])[0] || null;
-  const drvId = eu0 ? (cap === 'end' ? (eu0.recoveryDriverId || eu0.deliveryDriverId) : eu0.deliveryDriverId) : null;
+function saveYardCapture() {
+  const o = state.overlay; if (!o || o.kind !== 'capture') return;
+  const r = IDX.rental.get(o.rentalId); if (!r) return closeOverlay();
+  const eu = captureUnit(r, o.unitId);
+  const uname = IDX.unit.get(o.unitId)?.name || '';
+  // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the
+  // stamp persists immediately; the video uploads to Drive and only its URL
+  // lands on the stamp afterwards (uploadCapture backend action).
+  const file = state.capFile;
+  const eu0 = captureUnit(r, o.unitId) || (r.units || [])[0] || null;
+  const drvId = eu0 ? (o.cap === 'end' ? (eu0.recoveryDriverId || eu0.deliveryDriverId) : eu0.deliveryDriverId) : null;
   // Driver-stamped capture (spec rentals-dispatch D7): the assigned leg driver rides the stamp;
   // no assignment → the logged-in operator name, so the stamp is never anonymous.
   const stamp = { date: TODAY_ISO, clock: nowClock(), video: '', driver: drvId ? driverName(drvId) : (currentUser || currentRole || '') };
-  // move just this unit's status (or the whole rental when no unit context); a first
-  // move can still hit a §9 gate, in which case we keep nothing.
+  // move just this unit's status (or the whole rental when no unit context); a §9
+  // gate may block it, in which case the popup stays open.
   const moveStatus = (val) => {
-    // carry a manager's granted account-block override (from yardCapture) into the status
-    // move so an authorized delivery isn't re-blocked and the recording lost.
-    if (unitId && eu) { setUnitStatus(rentalId, unitId, val, { bypassAccountBlock: opts.bypassAccountBlock }); return unitStatus(r, eu) === val; }
-    setRentalStatus(rentalId, val, { bypassAccountBlock: opts.bypassAccountBlock }); return r.status === val;
+    if (o.unitId && eu) { setUnitStatus(o.rentalId, o.unitId, val); return unitStatus(r, eu) === val; }
+    setRentalStatus(o.rentalId, val); return r.status === val;
   };
-  if (cap === 'start') {
-    if (!replace && !moveStatus('On Rent')) return;
-    setUnitCapture(r, eu, 'startCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}Start/Delivery video ${replace ? 're-captured' : 'captured'}`);
-  } else if (cap === 'end') {
-    if (!replace && !moveStatus('Returned')) return;
-    setUnitCapture(r, eu, 'endCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}End/Recovery video ${replace ? 're-captured' : 'captured'}`);
-  } else if (cap === 'fc') {
+  if (o.cap === 'start') {
+    if (!moveStatus('On Rent')) return;
+    setUnitCapture(r, eu, 'startCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}Start/Delivery video captured`);
+  } else if (o.cap === 'end') {
+    if (!moveStatus('Returned')) return;
+    setUnitCapture(r, eu, 'endCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}End/Recovery video captured`);
+  } else if (o.cap === 'fc') {
     setUnitCapture(r, eu, 'fcCapture', stamp);
-    if (!replace) markFieldCall(rentalId);
+    markFieldCall(o.rentalId);
   }
-  uploadCaptureMedia(r, eu, cap, dataUrl);
+  uploadCaptureMedia(r, eu, o.cap, file);
+  state.capFile = null; state.overlay = null;
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
   render(); renderOverlay();
 }
@@ -19774,16 +19619,6 @@ function onInput(e) {
     if (o?.kind === 'gpsRoundup') { o.swapQuery = e.target.value; const sel = e.target.selectionStart; renderOverlay(); const q = document.querySelector('.overlay .js-gpsru-swap-search'); if (q) { q.focus(); q.setSelectionRange(sel, sel); } }
     return;
   }
-  // Customers-list quick-add row — draft fields update state.custQuickAdd WITHOUT a render()
-  // (typing must keep focus). Typing NEVER creates; the funnel PICK is the completion trigger
-  // (js-custqa-funnel-pick), so a partial phone can't auto-fire mid-entry. (Jac 2026-07-17)
-  if (e.target.classList.contains('js-custqa-first') || e.target.classList.contains('js-custqa-last') || e.target.classList.contains('js-custqa-phone')) {
-    const d = state.custQuickAdd;
-    if (e.target.classList.contains('js-custqa-first')) d.first = e.target.value;
-    else if (e.target.classList.contains('js-custqa-last')) d.last = e.target.value;
-    else d.phone = e.target.value;
-    return;
-  }
   if (e.target.classList.contains('chat-input')) { state.chat.draft = e.target.value; return; }
   if (e.target.classList.contains('js-comms-in')) { commsDrafts.set(state.commsRail.cat + '|' + e.target.dataset.cust, e.target.value); return; }   // D8 window composer — draft survives re-renders
   // Company Files live search → re-render the board popup and restore the caret.
@@ -19891,6 +19726,15 @@ function onChange(e) {
     const rd = new FileReader();
     rd.onload = () => { downscaleImage(rd.result, 600, 0.5, (out) => { if (!out) { toast('Could not read that image.'); return; } state.receiptPhoto = out; renderOverlay(); }); };
     rd.onerror = () => toast('Could not read that image.');
+    rd.readAsDataURL(f);
+    return;
+  }
+  // v2 yard capture: attach the video/photo, re-render the popup to show ✓
+  if (e.target.classList.contains('js-cap-file')) {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { state.capFile = rd.result; renderOverlay(); };
+    rd.onerror = () => toast('Could not read that file.');
     rd.readAsDataURL(f);
     return;
   }
@@ -20023,10 +19867,14 @@ function switchUser() {
   sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
 }
-// Settings (Admin-only): manage the role passwords. Admin is already authed with the
-// admin password; a staff role must enter it. Loads the live config, then opens the editor.
+// Settings (Admin-tier): loads the live config, then opens the editor. Below-Admin with
+// per-person phone identity ON gets a plain refusal — Settings is a whole Admin surface
+// backed by the server-tier-gated setConfig, so a one-shot approval code can't honestly
+// carry it (unlike the single-action tierAuth gates); get re-tiered or round up an Admin.
+// Flag-OFF keeps the legacy Admin-password prompt (the backout path).
 async function openSettings() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
+  if (!adminUnlocked() && backendPassword && flagOn('phoneIdentity')) { toast('Settings is Admin-tier — round up an Admin, or have one re-tier your role.'); return; }
   const adminPw = adminUnlocked() ? backendPassword : (window.prompt('Settings is Admin-only.\nEnter the Admin password:') || '');
   if (!adminPw) return;
   // Open the shell immediately in a loading state so the wait is visible, not a frozen UI.
@@ -20117,41 +19965,6 @@ function quickAddCustomerFromSearch(value) {
   render();
   toast(`${c.name || 'Customer'} added — drag it onto a rental or invoice to link.`);
   return true;
-}
-/* Customers-list inline quick-add (Jac 2026-07-17, ADDITIVE — the search-bar quick-add
- * above stays as-is). Enabled once First/Last/Phone are all filled AND the phone looks
- * real — same ≥7-digit check as parseQuickCustomer's phone match, so the two quick-add
- * paths agree on "looks like a phone number". */
-function custQuickAddValid() {
-  const d = state.custQuickAdd;
-  return !!(d.first.trim() && d.last.trim() && d.phone.replace(/\D/g, '').length >= 7);
-}
-// Discard the +New Customer draft (implicit cancel) — clearing it collapses the row back to the
-// +New Customer button. Called on a successful create AND whenever the user navigates AWAY from
-// the customers list without finishing (clicking a record → openStandard, switching cards →
-// goToCard). There is no Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when idle.
-function resetCustQuickAdd() {
-  const d = state.custQuickAdd;
-  if (d && (d.open || d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
-    state.custQuickAdd = { open: false, first: '', last: '', phone: '', funnel: 'N/A' };
-  }
-}
-/* Create + open — mirrors quickAddCustomerFromSearch's create-object field set verbatim,
- * except membershipStage comes from the draft's own funnel picker (set DIRECTLY, never
- * via setFunnelStage — it hard-rejects a manual 'Signed'/'Paid', and the funnel picker
- * itself already locks 'Signed' the same way openFunnelDropdown does, F3) and usedSalesStage
- * stays its ordinary 'N/A' default. Always opens the new customer in Standard view
- * (openStandard), same "unlinked — drag it where it goes" landing as the search-bar path. */
-function custQuickAddCreate() {
-  if (!custQuickAddValid()) return;
-  const d = state.custQuickAdd;
-  const firstName = d.first.trim(), lastName = d.last.trim(), phone = d.phone.trim();
-  const id = nextCustomerId();
-  const c = { customerId: id, firstName, lastName, name: `${firstName} ${lastName}`.trim(), company: '', phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: d.funnel || 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
-  DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
-  logAction(c, 'Customer quick-added');
-  resetCustQuickAdd();
-  openStandard('customers', id);
 }
 /* QUICK ADD — a fruitless Units/Categories search offers a +New button (the empty state).
    It creates the record with the typed text as its name and drops you into its Standard
@@ -20720,19 +20533,8 @@ async function checkAchStatus(invoiceId, piId) {
 // Charge an invoice off_session; on 3DS fall back to an on-session confirm, then
 // re-verify server-side before marking paid. The payment overlay has no Card
 // Element, so re-rendering it for busy/error states is safe.
-/* PO gate (customers-crm requiresPO, Jac 2026-07-15): a customer flagged "PO required"
-   must carry a PO # on the invoice before ANY money moves on it OR it's sent to them — a
-   HARD block ("Block ALL"), beyond the advisory red "PO #" chip + the on-rent warning.
-   Guards EVERY payment path (card charge, cash, check — human UI + Mr. Wrangler) and both
-   customer-facing sends. cust.requiresPO && !inv.po. */
-function invoicePoBlocked(inv) {
-  if (!inv) return false;
-  const c = inv.customerId ? IDX.customer.get(inv.customerId) : null;
-  return !!(c && c.requiresPO && !inv.po);
-}
 async function chargeInvoiceFlow(invoiceId) {
   if (!canMoney()) { toast('Pay/Charge/Refund is Office/Admin only.'); return; }   // #552 audit item 4: defence-in-depth
-  { const inv = IDX.invoice.get(invoiceId); if (invoicePoBlocked(inv)) { toast('PO required for this customer — add the PO # before charging a card.'); return; } }   // PO gate — hard-block the card charge until a PO # is on the invoice
   const o = state.overlay; if (!o || o.kind !== 'payment') return;
   const live = () => state.overlay === o;   // bail if the overlay changed/closed mid-await
   // §19: when the allocation rows are present, the gross + per-line split come
@@ -20869,7 +20671,6 @@ async function postManualPayment({ invoiceId, amountCents, method, checkNum }) {
 async function recordManualPayment(invoiceId) {
   const o = state.overlay; if (!o || o.kind !== 'payment') return;
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
-  if (invoicePoBlocked(inv)) { o.error = 'PO required for this customer — add the PO # before recording a payment.'; return renderOverlay(); }   // PO gate — Block ALL: cash/check blocked too until a PO # is on the invoice
   const numEl = document.querySelector('.overlay .js-check-num'); if (numEl) o.checkNum = numEl.value.trim();   // survive the error re-render
   const t = invoiceTotals(inv);
   const amtEl = document.querySelector('.overlay .js-manual-amt');
@@ -21156,7 +20957,6 @@ async function sendInvoiceEmail(invoiceId, anchorEl) {
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
   const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
   if (!cust || !cust.email) { toast('No email on file for this customer.'); return; }   // guard — button is disabled, this is belt-and-suspenders
-  if (invoicePoBlocked(inv)) { toast('PO required for this customer — add the PO # before sending.'); return; }   // PO gate — hard-block the send until a PO # is on the invoice
   if (!backendPassword) {   // demo/offline — the pre-pipe mailto path, unchanged
     const subject = `Quote from ${companyName()} – ${inv.invoiceId}`;
     window.location.href = `mailto:${encodeURIComponent(cust.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(invoiceQuoteSummary(inv))}`;
@@ -21181,7 +20981,6 @@ async function sendInvoiceText(invoiceId) {
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
   const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
   if (!cust || !cust.phone) { toast('No phone on file for this customer.'); return; }
-  if (invoicePoBlocked(inv)) { toast('PO required for this customer — add the PO # before sending.'); return; }   // PO gate — hard-block the send until a PO # is on the invoice
   if (!backendPassword) {   // demo/offline — the pre-pipe deep-link path, unchanged
     const t = invoiceTotals(inv);
     const first = cust.firstName || (cust.name || '').trim().split(/\s+/)[0] || 'there';
@@ -21228,11 +21027,6 @@ async function lockInvoiceFlow(invoiceId, lock) {
 function startNewReceipt() {
   state.receiptPhoto = null;
   openOverlay({ kind: 'receiptform', expenseId: null });   // the record is only created on Save — Cancel leaves no stub
-  // Jac 2026-07-16: skip the extra tap — jump straight to the camera. openOverlay
-  // rendered the popup (and its capture input) synchronously, so this fires inside the
-  // button's live user gesture (a file input won't open otherwise). The popup renders
-  // behind the camera and is waiting when they finish OR cancel — no lost tap either way.
-  document.querySelector('.js-rf-file')?.click();
 }
 
 function startNewInspection(unitId) {
@@ -21254,10 +21048,7 @@ function startNewWorkOrder(unitId) {
   const draft = { woId: id, unitId: u.unitId, customerId: null, woReport: 'New Work Order', woType: 'Manual', description: '', phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(draft); IDX.wo.set(id, draft); reindex('workOrders', draft);
   logAction(draft, 'Work order created');
-  // born on the Unit card (+Work Order above Specs/GPS) — the WO section appears in place.
-  // Both the section and the new row collapse by default now, so open them so the draft shows.
-  state.unitSecOpen = state.unitSecOpen || {}; state.unitSecOpen[u.unitId] = state.unitSecOpen[u.unitId] || {}; state.unitSecOpen[u.unitId].workorders = true;
-  state.woRowOpen = state.woRowOpen || {}; state.woRowOpen[u.unitId] = id;
+  // born on the Unit card (+Work Order above Specs/GPS) — the WO section appears in place
   render();
   attnFlash(`.card[data-card="units"] .wo-${id}`);
 }
@@ -22201,33 +21992,14 @@ let gpsToken = '';                                        // in-memory session t
 const gpsBase = () => (GPS_BACKEND_URL || '').replace(/\/$/, '');
 const gpsConfigured = () => !!gpsBase();
 
-/* Re-mint a lapsed GPS token (Jac 2026-07-16). The token is minted ONCE at sign-in and
-   expires server-side; before this, a lapsed token 401'd EVERY subsequent call — fleet
-   snapshot ("NO GPS"), the history feed ("Couldn't load history"), the 30s view poll — and
-   nothing re-authenticated short of a full page reload, so the whole GPS section went dark
-   and a manual Refresh only re-fired the same dead token. gpsFetch now re-logs-in once on a
-   401 and retries; single-flight so N concurrent 401s share ONE login (the team password
-   stays server-side — gpsLogin proxies through GAS, never the public client). */
-let _gpsReloginInflight = null;
-function gpsRelogin() {
-  if (!_gpsReloginInflight) _gpsReloginInflight = gpsLogin().finally(() => { _gpsReloginInflight = null; });
-  return _gpsReloginInflight;
-}
-
 /* One authed round-trip to the GPS backend. JSON in/out, 30s timeout (reuses
    withTimeout). Throws a tagged Error on non-2xx (callers decide how to degrade);
-   never returns a failure disguised as success. `_retried` guards the single 401 re-auth. */
-async function gpsFetch(path, opts = {}, _retried = false) {
+   never returns a failure disguised as success. */
+async function gpsFetch(path, opts = {}) {
   if (!gpsConfigured()) throw new Error('gps-not-configured');
   const headers = Object.assign({ 'x-auth-token': gpsToken }, opts.headers || {});
   if (opts.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
   const res = await withTimeout(fetch(gpsBase() + path, Object.assign({}, opts, { headers })), 30000, 'GPS backend');
-  // §token-lapse — a 401 means the session token expired; re-authenticate ONCE and retry so a
-  // stale token heals everywhere (incl. the manual Refresh) instead of staying dark until reload.
-  if (res.status === 401 && !_retried) {
-    const ok = await gpsRelogin();
-    if (ok && gpsToken) return gpsFetch(path, opts, true);
-  }
   const text = await res.text();
   let body = null; try { body = JSON.parse(text); } catch {}
   if (!res.ok) { const e = new Error('gps-http-' + res.status); e.status = res.status; e.body = body; throw e; }
@@ -23996,8 +23768,8 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault(); e.returnValue = '';
 });
 function renderLogin(msg) {
-  resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
   if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
+  if (state.commsRail) { state.commsRail.cat = null; state.commsRail.sessions && Object.values(state.commsRail.sessions).forEach((s) => { s.menuOpen = false; }); }   // D8 — clock-in = an EMPTY rail (sessions persist per device, nothing summons itself)
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
@@ -24051,7 +23823,6 @@ function renderLogin(msg) {
 }
 function finishLoad() {
   snapshotSaved();                                              // baseline = what the backend currently holds
-  resetCommsRailForLogin();                                    // the visible fix for "old chats on login": empty the rail on EVERY login mode, before the first main render (Jac 2026-07-17)
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
   if (flagOn('phoneIdentity')) { try { const emp = ((state.settings || {}).employees) || []; localStorage.setItem('jactec.pidRoster', JSON.stringify(emp.map((e) => ({ id: e.id, name: e.name })))); } catch (e) {} }   // cache non-secret roster names for the shared-device name-pick
   // (views no longer pull from the backend — personal per-device "my views", spec search-views D2)
@@ -24064,11 +23835,6 @@ function finishLoad() {
   refreshWranglerNotifications();                               // §18f populate the notification-bell badge
   refreshCommsThreads();                                        // D8 comms rail — the chips wear their worst-of-category dots from clock-in (the rail itself stays empty)
   startRefreshPoll();                                           // live multi-user: poll for others' changes (§ refreshFromBackend)
-  // GPS silent login + live snapshot — runs for EVERY login mode. Previously this lived ONLY in
-  // the password-login handler, so a phone-identity login (the staging/production default) never
-  // minted a GPS token → the whole GPS section read "NO GPS" and every on-demand call started
-  // unauthenticated (Jac 2026-07-16). Fire-and-forget; gpsConfigured() no-ops when GPS is off.
-  if (gpsConfigured()) gpsLogin().then((ok) => { if (ok) { refreshGpsLive(); startGpsViewPoll(); refreshDrivingScore(); } });
   if (migrationDirty) { migrationDirty = false; saveSoon(); }   // push parsed first/last names up to the Sheet
   // #edit=<id> — desktop→phone handoff opens that customer's account form (§7.1).
   const em = (location.hash || '').match(/edit=([\w-]+)/i);
@@ -24158,7 +23924,7 @@ async function attemptLogin() {
     let role = '';
     try {
       const a = await backendCall('auth');
-      if (a && a.ok) { role = a.role || ''; if (a.scanDeviceToken) scanTokenSet(a.scanDeviceToken); }   // remember this device for decal scans (write-only token)
+      if (a && a.ok) role = a.role || '';
       else if (a && /unauthorized/i.test(a.error || '')) throw new Error('unauthorized');
     } catch (e2) { if (/unauthorized/i.test(e2.message || '')) throw e2; }
     currentRole = role;
@@ -24166,10 +23932,10 @@ async function attemptLogin() {
     try { localStorage.setItem('jactec.user', name); } catch {}
     try { sessionStorage.setItem('jactec.role', role); } catch {}
     sessionStorage.setItem('jactec.pw', pw);
+    gpsLogin().then((ok) => { if (ok) { refreshGpsLive(); startGpsViewPoll(); refreshDrivingScore(); } });   // silent GPS login (§5, via GAS token proxy) → live snapshot (step 3) + view-scoped refresh (step 4) + fleet driving score (step 7); fire-and-forget, never blocks main login
     applyLoadResponse(await loadPromise);
-    finishLoad();   // GPS silent-login now lives in finishLoad (runs for every login mode, not just this one)
+    finishLoad();
     applyRoleLanding();   // each role lands on its default main/sub-card
-    maybeReplayScan();    // a #u= decal scan parked pre-login → open the capture screen now (renders last, wins #app)
   } catch (e) {
     backendPassword = ''; sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
     renderLogin(/unauthorized/i.test(String(e && e.message)) ? 'That password wasn’t recognized.' : "Couldn't reach the database. Check your connection and try again.");
@@ -24194,28 +23960,10 @@ function pidRosterCache() { try { return JSON.parse(localStorage.getItem('jactec
 function pidAdopt(r, tok, personal) {
   backendPassword = tok; currentRole = (r && r.role) || pidUI._role || ''; currentUser = (r && r.name) || pidUI.name || '';
   pidTokenSet(tok, personal);
-  if (r && r.scanDeviceToken) scanTokenSet(r.scanDeviceToken);   // remember this device for decal scans (write-only token)
   try { sessionStorage.setItem('jactec.role', currentRole); localStorage.setItem('jactec.user', currentUser); } catch (e) {}
 }
 function pidLoadFail() { pidTokenClear(); backendPassword = ''; pidUI.step = 'identify'; renderPhoneLogin("Couldn't reach the database. Try again."); }
-function pidEnter() {
-  const s = document.querySelector('.login-screen');
-  if (s) {
-    s.classList.add('signing-in');
-    // Hold every button in the busy state through the (second, slower) data load so it never
-    // flips back to a clickable "Verify"/"Saddle Up?" mid-sign-in — that flip read as "it failed,
-    // click again" (and a second click re-fired with a spent code). Jac, 2026-07-16.
-    s.querySelectorAll('.login-btn, .login-ghost').forEach((b) => { b.disabled = true; });
-    const go = s.querySelector('.login-btn'); if (go) go.textContent = 'Wrangling the herd…';
-  }
-  // Roll the Mr. Wrangler intro behind the box while the slow backend load runs (same treatment
-  // as the shared-password sign-in) — a little entertainment for the wait. play() fires after the
-  // auth round-trip, so the tap's autoplay activation may have lapsed; if an unmuted play is
-  // rejected, retry muted so the video still rolls — audio is the bonus, the video is the point.
-  const vid = document.getElementById('login-video');
-  if (vid) { try { vid.muted = state.loginMuted; const p = vid.play(); if (p && p.catch) p.catch(() => { vid.muted = true; const p2 = vid.play(); if (p2 && p2.catch) p2.catch(() => {}); }); } catch (e) {} }
-  loadFromBackend().then(finishLoad).then(applyRoleLanding).then(maybeReplayScan).catch(pidLoadFail);   // maybeReplayScan: replay a #u= decal scan parked before this login
-}
+function pidEnter() { const s = document.querySelector('.login-screen'); if (s) s.classList.add('signing-in'); loadFromBackend().then(finishLoad).then(applyRoleLanding).catch(pidLoadFail); }
 // Boot (flag on): resume a trusted device, else show the phone login.
 function phoneBoot() {
   const tok = pidTokenGet();
@@ -24228,20 +23976,14 @@ function phoneBoot() {
 function pidErr(msg) { pidUI.err = msg || ''; const e = document.getElementById('pid-err'); if (e) e.textContent = pidUI.err; return null; }
 async function pidCall(btnId, fn) {
   const btn = document.getElementById(btnId), prev = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = 'Wrangling the herd…'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
   try { const r = await fn(); if (btn) { btn.disabled = false; btn.textContent = prev; } return r; }
   catch (e) { if (btn) { btn.disabled = false; btn.textContent = prev; } pidErr("Couldn't reach the database. Try again."); return null; }
 }
 function renderPhoneLogin(msg) {
-  resetCommsRailForLogin();   // clock-in = an EMPTY rail (covers a direct phone-login render, e.g. phoneBoot) — Jac 2026-07-17
   if (msg != null) pidUI.err = msg;
   const P = PHONE_IDENTITY, step = pidUI.step, roster = pidRosterCache();
   let inner = '';
-  // Intro-video mute toggle — the same control the classic sign-in carries, so the phone login
-  // keeps audio parity. Icon-only utility toggle (sibling of the password eye), NOT a lint-family
-  // pill → no data-r, matching the classic #login-mute. Rendered in the actions row of the steps
-  // that trigger sign-in (code / setpin / pin), right where the intro it mutes is about to play.
-  const muteBtn = `<button type="button" class="login-mute${state.loginMuted ? ' is-muted' : ''}" id="login-mute" aria-pressed="${state.loginMuted}" aria-label="Mute intro sound" data-tip="${state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute'}">${state.loginMuted ? I.volumeOff : I.volume}</button>`;
   if (step === 'identify') {
     inner = `<div class="login-field"><label class="login-lbl" for="pid-phone">Mobile number</label>
         <input id="pid-phone" class="login-input" type="tel" inputmode="tel" autocomplete="tel" placeholder="(337) 555-0100" value="${esc(pidUI._phone)}" /></div>
@@ -24257,13 +23999,13 @@ function renderPhoneLogin(msg) {
   } else if (step === 'code') {
     inner = `<div class="login-hint">Enter the ${P.codeLen}-digit code sent to ${esc(pidUI.masked)}</div>
       <div class="login-field"><input id="pid-code" class="login-input login-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="${P.codeLen}" placeholder="000000" /></div>
-      <div class="login-actions">${muteBtn}<button type="submit" class="login-btn" data-r="R17" id="pid-verify">Confirm</button></div>
+      <button type="submit" class="login-btn" data-r="R17" id="pid-verify">Verify</button>
       <button type="button" class="login-ghost" id="pid-resend">Resend code</button>`;
   } else if (step === 'setpin') {
     inner = `<div class="login-hint">Set a PIN for this shared computer, ${esc(pidUI.name || 'partner')}</div>
       <div class="login-field"><input id="pid-pin" class="login-input login-otp" inputmode="numeric" autocomplete="new-password" maxlength="${P.pinMaxLen}" placeholder="New PIN" /></div>
       <div class="login-field"><input id="pid-pin2" class="login-input login-otp" inputmode="numeric" autocomplete="new-password" maxlength="${P.pinMaxLen}" placeholder="Confirm PIN" /></div>
-      <div class="login-actions">${muteBtn}<button type="submit" class="login-btn" data-r="R17" id="pid-savepin">Set PIN &amp; sign in</button></div>`;
+      <button type="submit" class="login-btn" data-r="R17" id="pid-savepin">Set PIN &amp; sign in</button>`;
   } else if (step === 'pinpick') {
     inner = `<div class="login-ask">Who's signing in?</div>
       <div class="login-pick">${roster.map((p) => `<button type="button" class="login-pick-btn" data-id="${esc(p.id)}">${esc(p.name || '—')}</button>`).join('') || '<div class="login-hint">No one saved on this device yet — use your phone.</div>'}</div>
@@ -24271,10 +24013,10 @@ function renderPhoneLogin(msg) {
   } else if (step === 'pin') {
     inner = `<div class="login-hint">PIN for ${esc(pidUI.name || 'you')}</div>
       <div class="login-field"><input id="pid-loginpin" class="login-input login-otp" inputmode="numeric" autocomplete="off" maxlength="${P.pinMaxLen}" placeholder="PIN" /></div>
-      <div class="login-actions">${muteBtn}<button type="submit" class="login-btn" data-r="R17" id="pid-signin">Saddle Up?</button></div>
+      <button type="submit" class="login-btn" data-r="R17" id="pid-signin">Saddle Up?</button>
       <button type="button" class="login-ghost" id="pid-needcode">Forgot PIN — text me a code</button>`;
   }
-  $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="pid-form" autocomplete="off">
+  $('#app').innerHTML = `<div class="login-screen"><form class="login-box" id="pid-form" autocomplete="off">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
       <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
@@ -24299,30 +24041,6 @@ function pidWire() {
   on('pid-needcode', () => { pidUI.step = 'identify'; pidUI._phone = ''; renderPhoneLogin(''); });
   document.querySelectorAll('.login-choice-btn').forEach((b) => b.addEventListener('click', () => { pidUI.kind = b.getAttribute('data-kind'); pidUI.step = 'code'; renderPhoneLogin(''); }));
   document.querySelectorAll('.login-pick-btn').forEach((b) => b.addEventListener('click', () => { pidUI.personId = b.getAttribute('data-id'); const r = pidRosterCache().find((x) => String(x.id) === String(pidUI.personId)); pidUI.name = r ? r.name : ''; pidUI.step = 'pin'; renderPhoneLogin(''); }));
-  // Intro-video mute toggle — mirrors the classic sign-in's #login-mute handler: flip the
-  // per-device preference, restyle the button, and mute/unmute the live video if it's already rolling.
-  const muteEl = document.getElementById('login-mute');
-  if (muteEl) muteEl.addEventListener('click', () => {
-    state.loginMuted = !state.loginMuted;
-    try { localStorage.setItem('jactec.loginMuted', state.loginMuted ? '1' : '0'); } catch (e) {}
-    muteEl.classList.toggle('is-muted', state.loginMuted);
-    muteEl.setAttribute('aria-pressed', String(state.loginMuted));
-    muteEl.setAttribute('data-tip', state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute');
-    muteEl.innerHTML = state.loginMuted ? I.volumeOff : I.volume;
-    const vid = document.getElementById('login-video'); if (vid) vid.muted = state.loginMuted;
-  });
-  // Auto-submit the code the moment all 6 digits are in — no Verify tap needed. Also catches
-  // the OS one-time-code autofill (it drops all 6 at once → instant sign-in). Kept digits-only
-  // so a stray char can't desync the count; the in-flight guard stops a paste/autofill from
-  // double-firing the verify. Jac, 2026-07-16.
-  const codeEl = document.getElementById('pid-code');
-  if (codeEl) codeEl.addEventListener('input', () => {
-    const digits = codeEl.value.replace(/\D/g, '');
-    if (codeEl.value !== digits) codeEl.value = digits;
-    if (digits.length !== PHONE_IDENTITY.codeLen) return;
-    const b = document.getElementById('pid-verify'); if (b && b.disabled) return;   // a verify is already running — don't fire twice
-    pidDoVerify();
-  });
   const focusId = { identify: 'pid-phone', code: 'pid-code', setpin: 'pid-pin', pin: 'pid-loginpin' }[step];
   if (focusId) { const el = document.getElementById(focusId); if (el) el.focus(); }
 }
@@ -24340,8 +24058,7 @@ async function pidDoVerify() {
   if (code.length !== PHONE_IDENTITY.codeLen) return pidErr(`Enter the ${PHONE_IDENTITY.codeLen}-digit code.`);
   const r = await pidCall('pid-verify', () => backendCall('authVerify', { personId: pidUI.personId, code, deviceKind: pidUI.kind }));
   if (!r) return;
-  if (!r.ok) { const el = document.getElementById('pid-code'); if (el) { el.value = ''; el.focus(); }   // clear the bad digits so a retype re-triggers the auto-submit (maxlength blocks editing a full field)
-    return pidErr(r.error === 'bad-code' ? `That code didn't match${r.left != null ? ` — ${r.left} left` : ''}.` : r.error === 'expired' ? 'That code expired — resend a fresh one.' : r.error === 'too-many' ? 'Too many tries — resend a fresh code.' : 'Could not verify — resend a code.'); }
+  if (!r.ok) return pidErr(r.error === 'bad-code' ? `That code didn't match${r.left != null ? ` — ${r.left} left` : ''}.` : r.error === 'expired' ? 'That code expired — resend a fresh one.' : r.error === 'too-many' ? 'Too many tries — resend a fresh code.' : 'Could not verify — resend a code.');
   pidUI._role = r.role || ''; pidUI._tok = r.token || '';
   const personal = pidUI.kind === 'personal';
   if (!personal && !r.pinSet) { pidUI.step = 'setpin'; return renderPhoneLogin(''); }
@@ -24397,189 +24114,7 @@ function warmBackend() {
   if (_backendWarmed) return; _backendWarmed = true;
   try { fetch(BACKEND_URL, { method: 'GET', mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) {}
 }
-/* ══════════════ SCAN-TO-LOG (QR DECAL → VIDEO) — standalone capture (FEATURES.qrScanLog) ══════════════
-   A #u=<unitId> decal scan opens this focused full-screen plate (mounted like renderLogin), records
-   ONE video, and files it to the unit's correct rental log — the SERVER (captureByScan) decides
-   start/end/block, so a remembered phone needs no session and never loads customer data. Auth is the
-   write-only scanDeviceToken (localStorage) OR a live session — NEVER pidToken (a full-access
-   credential). Backend contract: docs/backend-snippets/captureByScan.md. Dormant until flag + backend. */
-let pendingScan = null;
-let scanActive = false;   // true once the scan capture screen owns #app — render() bails so nothing repaints over it
-const scanUI = { unitId: '', unitName: '', action: '', phase: '', reason: '' };
-// Activation: in PRODUCTION the scan route is inert until FEATURES.qrScanLog flips ON (after the
-// backend deploys); on the staging mirror + localhost it's always active for review — same files, so
-// we key off APP_ENV, not a committed flag. Preview = canned captureByScan responses (no backend):
-// forced by FEATURES.qrScanPreview and automatic off-production, so staging is walkable before deploy.
-const scanEnabled = () => flagOn('qrScanLog') || APP_ENV !== 'production';
-const scanPreviewOn = () => flagOn('qrScanPreview') || APP_ENV !== 'production';
-function scanTokenGet() { try { return localStorage.getItem('jactec.scanDevice') || ''; } catch (e) { return ''; } }
-function scanTokenSet(t) { try { if (t) localStorage.setItem('jactec.scanDevice', t); } catch (e) {} }
-function scanTokenClear() { try { localStorage.removeItem('jactec.scanDevice'); } catch (e) {} }
-// Replayed at the end of a login chain (after applyRoleLanding, so it renders LAST and wins #app).
-function maybeReplayScan() {
-  let u = pendingScan;
-  if (!u) { try { u = sessionStorage.getItem('jactec.pendingScan') || ''; } catch (e) {} }   // recover a scan parked before a reload/backgrounding at the login step
-  if (u && scanEnabled()) { pendingScan = null; try { sessionStorage.removeItem('jactec.pendingScan'); } catch (e) {} renderScanCapture(u); }
-}
-// captureByScan is authorized by the scan token OR the session; the server resolves everything and
-// returns only equipment-level data (unit name + slot) or a block reason — never customer PII.
-function scanCall(extra) {
-  if (scanPreviewOn()) return Promise.resolve(scanPreviewResponse(extra || {}));   // staging/local or forced — canned, no backend
-  return backendCall('captureByScan', Object.assign({ unitId: scanUI.unitId, scanToken: scanTokenGet() }, extra || {}));
-}
-// Canned captureByScan responses for the staging review (FEATURES.qrScanPreview) — the unit-id suffix
-// drives the state so a handful of printed test decals exercise every branch. NOT a real code path.
-function scanPreviewResponse(extra) {
-  const id = String(scanUI.unitId || ''), m = extra.mode || 'record', last = id.slice(-1);
-  if (last === '4') return { ok: false, code: 'unit_not_found' };
-  if (last === '3') return { ok: true, blocked: true, unitName: id, reason: id + ' is reserved for later, not out today — nothing to log yet.' };
-  const action = last === '2' ? 'end' : 'start';
-  return m === 'peek' ? { ok: true, unitName: id, action } : { ok: true, filedAs: action, unitName: id };
-}
-function renderScanCapture(unitId) {
-  scanActive = true;   // take over #app; render() now bails so background loaders / the refresh poll can't clobber this screen
-  Object.assign(scanUI, { unitId, unitName: '', action: '', phase: 'loading', reason: '' });
-  drawScanScreen();
-  scanCall({ mode: 'peek' }).then((r) => {                       // resolve unit + intended slot (or block), no upload
-    if (r && r.ok) {
-      if (r.blocked) { scanUI.phase = 'blocked'; scanUI.reason = r.reason || 'Nothing to log for this unit right now.'; scanUI.unitName = r.unitName || ''; }
-      else { scanUI.phase = 'ready'; scanUI.unitName = r.unitName || unitId; scanUI.action = r.action || 'start'; }
-    } else if (r && r.code === 'unit_not_found') { scanUI.phase = 'notfound'; }
-    else if (r && /unauthorized/i.test(r.error || '')) { scanTokenClear(); pendingScan = unitId; warmBackend(); return renderLogin(); }
-    else { scanUI.phase = 'error'; }
-    drawScanScreen();
-  }).catch(() => { scanUI.phase = 'error'; drawScanScreen(); });
-}
-function scanRecord(file) {
-  if (!file) return;
-  const rd = new FileReader();
-  rd.onerror = () => { scanUI.phase = 'error'; drawScanScreen(); };
-  rd.onload = () => {
-    scanUI.phase = 'uploading'; drawScanScreen();
-    scanCall({ dataUrl: rd.result, name: 'scan_' + scanUI.unitId }).then((r) => {   // server re-resolves + files it
-      if (r && r.ok && r.filedAs) { scanUI.phase = 'done'; scanUI.action = r.filedAs; scanUI.unitName = r.unitName || scanUI.unitName; }
-      else if (r && r.blocked) { scanUI.phase = 'blocked'; scanUI.reason = r.reason || ''; }
-      else { scanUI.phase = 'error'; }
-      drawScanScreen();
-    }).catch(() => { scanUI.phase = 'error'; drawScanScreen(); });
-  };
-  rd.readAsDataURL(file);
-}
-function drawScanScreen() {
-  const u = scanUI, stamp = (t) => `<div class="scan-stamp">${esc(t)}</div>`;
-  let body = '';
-  if (u.phase === 'loading') {
-    body = `<div class="scan-unit">${esc(u.unitId)}</div>${stamp('Checking this unit…')}<div class="scan-spin">${I.video}</div>`;
-  } else if (u.phase === 'ready') {
-    const act = u.action === 'end' ? 'End · Return' : 'Start · Delivery';
-    body = `<div class="scan-unit">${esc(u.unitName)}</div><div class="scan-uid">${esc(u.unitId)}</div>${stamp('Recording the ' + act + ' video')}`
-      + `<label class="scan-rec" data-r="R17">${I.video}<span>Record</span><input type="file" accept="video/*" capture="environment" class="js-scan-file" hidden></label>`
-      + `<p class="scan-hint">Tap Record — your camera opens, then the video files itself. No On&nbsp;Rent / End&nbsp;Rent to choose.</p>`;
-  } else if (u.phase === 'uploading') {
-    body = `<div class="scan-unit">${esc(u.unitName || u.unitId)}</div>${stamp('Filing your video…')}<div class="scan-spin">${I.video}</div>`;
-  } else if (u.phase === 'done') {
-    const act = u.action === 'end' ? 'End · Return' : 'Start · Delivery';
-    body = `<div class="scan-ok">${I.check || '✓'}</div><div class="scan-unit">${esc(u.unitName || u.unitId)}</div>${stamp('Filed as the ' + act + ' video')}`
-      + `<button type="button" class="scan-ghost js-scan-again" data-r="R18">Record another</button>`
-      + `<p class="scan-hint">All set — you can close this window.</p>`;
-  } else if (u.phase === 'blocked') {
-    body = `<div class="scan-unit">${esc(u.unitName || u.unitId)}</div><div class="scan-block">${esc(u.reason || 'Nothing to log for this unit right now.')}</div>`
-      + `<button type="button" class="scan-ghost js-scan-retry" data-r="R18">Check again</button>`;
-  } else if (u.phase === 'notfound') {
-    body = `<div class="scan-unit">${esc(u.unitId)}</div><div class="scan-block">Unit not found — this decal may need re-linking.</div>`
-      + `<button type="button" class="scan-ghost js-scan-retry" data-r="R18">Try again</button>`;
-  } else {
-    body = `<div class="scan-unit">${esc(u.unitName || u.unitId)}</div><div class="scan-block">Couldn’t reach the yard. Check your signal and try again.</div>`
-      + `<button type="button" class="scan-ghost js-scan-retry" data-r="R18">Try again</button>`;
-  }
-  $('#app').innerHTML = `<div class="scan-screen"><div class="scan-box">`
-    + `<span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>`
-    + `<div class="scan-plate"><div class="scan-brand"><span class="scan-brandtxt">Jac<b>Rentals</b></span><span class="scan-tag">Scan to log</span></div>`
-    + `<div class="scan-body">${body}</div></div></div></div>`;
-  const f = document.querySelector('.js-scan-file');
-  if (f) f.addEventListener('change', (e) => scanRecord(e.target.files && e.target.files[0]));
-  const again = document.querySelector('.js-scan-again'); if (again) again.addEventListener('click', () => renderScanCapture(scanUI.unitId));
-  const retry = document.querySelector('.js-scan-retry'); if (retry) retry.addEventListener('click', () => renderScanCapture(scanUI.unitId));
-}
-// ── FLEET QR CODES — an on-demand print sheet of scan decals (Company Files card, gated
-//    scanEnabled()). Units still owned & in the fleet only — Inactive/Sold are retired, not
-//    scannable. Generated CLIENT-SIDE from live DATA.units at click time (no stored file, so
-//    it's always current) with the vendored qrcode-generator encoder (never a network call).
-const FLEET_QR_STATUSES = ['Active', 'Onboard', 'Purchased', 'For Sale'];   // excludes Inactive, Sold
-/** Each decal encodes the PERMANENT PRODUCTION scan URL — always the fixed app.jacrentals.com
- *  base, NEVER location.origin — so a sheet printed from staging/localhost still resolves once
- *  taped to the machine. Visual models the .scan-box/.login-box plate (dark steel, hazard-stripe
- *  cap, stamped Saira Condensed labels); the QR itself always sits on a WHITE quiet-zone field —
- *  the one hard print rule, never QR-on-dark. This is a standalone print document (own <style>,
- *  like openSignedPdf/openMembershipAgreementPdf above), so it carries its own literal colors. */
-function downloadFleetQRCodes() {
-  const units = (DATA.units || []).filter((u) => u.unitId && FLEET_QR_STATUSES.includes(u.fleetStatus));
-  if (!units.length) { toast('No active units to print.'); return; }
-  const e2 = (t) => String(t == null ? '' : t).replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
-  const decal = (u) => {
-    const cat = IDX.category.get(u.categoryId);
-    let svg = '';
-    try {
-      const q = qrcode(0, 'M');
-      q.addData('https://app.jacrentals.com/#u=' + u.unitId);
-      q.make();
-      svg = q.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
-    } catch (e) { svg = ''; }   // a malformed unitId still prints a legible fallback plate (id + name), no QR
-    return `<div class="qd-plate">
-      <div class="qd-hazard" aria-hidden="true"></div>
-      <div class="qd-body">
-        <div class="qd-qr">${svg}</div>
-        <div class="qd-name">${e2(u.name || u.unitId)}</div>
-        ${cat && cat.name ? `<div class="qd-cat">${e2(cat.name)}</div>` : ''}
-        <div class="qd-id">${e2(u.unitId)}</div>
-      </div>
-    </div>`;
-  };
-  const dateStr = new Date().toLocaleDateString();
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Fleet QR Codes — ${e2(dateStr)}</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
-    <style>
-      * { box-sizing: border-box; }
-      body { margin: 0; padding: 22px; background: #dfe2e7; font-family: 'Saira Condensed', system-ui, sans-serif; }
-      .qd-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 0 4px 16px; gap: 12px; flex-wrap: wrap; }
-      .qd-title { font-weight: 800; font-size: 21px; letter-spacing: 1.6px; text-transform: uppercase; color: #14181d; }
-      .qd-sub { font-size: 12px; letter-spacing: .6px; color: #5b6472; margin-top: 2px; }
-      .qd-print { font-family: 'Saira Condensed', system-ui, sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 1.6px;
-        text-transform: uppercase; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;
-        background: linear-gradient(180deg, #ff9038, #ff7a1a); color: #1a1205; }
-      .qd-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-      .qd-plate { position: relative; overflow: hidden; border-radius: 12px; background: linear-gradient(180deg, #1b2129, #13171d);
-        border: 1px solid #2a313b; break-inside: avoid; page-break-inside: avoid; }
-      .qd-hazard { height: 9px; width: 100%; background: repeating-linear-gradient(135deg, #f5c542 0 13px, #14181d 13px 26px); border-bottom: 1px solid #000; }
-      .qd-body { display: flex; flex-direction: column; align-items: center; padding: 14px 12px 16px; }
-      .qd-qr { background: #fff; border-radius: 8px; padding: 8px; width: 128px; height: 128px; display: flex; align-items: center; justify-content: center; }
-      .qd-qr svg { width: 112px; height: 112px; display: block; }
-      .qd-name { margin-top: 10px; font-weight: 800; font-size: 15px; letter-spacing: .4px; text-transform: uppercase; color: #eef2f6; text-align: center; }
-      .qd-cat { font-size: 10.5px; letter-spacing: 1.2px; text-transform: uppercase; color: #8b94a3; margin-top: 2px; }
-      .qd-id { margin-top: 6px; font-size: 13px; font-weight: 700; letter-spacing: 1.8px; color: #ff9038; }
-      @page { margin: 12mm; }
-      @media print {
-        body { background: #fff; padding: 0; }
-        .qd-print { display: none; }
-        .qd-grid { gap: 10px; }
-      }
-    </style></head><body>
-    <div class="qd-head">
-      <div><div class="qd-title">Fleet QR Codes</div><div class="qd-sub">${units.length} active unit${units.length === 1 ? '' : 's'} · generated ${e2(dateStr)}</div></div>
-      <button class="qd-print" onclick="window.print()">Print / Save as PDF</button>
-    </div>
-    <div class="qd-grid">${units.map(decal).join('')}</div>
-    </body></html>`;
-  const w = window.open('', '_blank');
-  if (!w) { toast('Allow pop-ups to download the QR sheet.'); return; }
-  w.document.write(html); w.document.close();
-  w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 300);
-}
 function boot() {
-  // Tidy the URL after a manual Update (checkForUpdate adds ?_u=<t> to bust the cached index) —
-  // strip ONLY the _u param, preserving any others.
-  try { const sp = new URLSearchParams(location.search); if (sp.has('_u')) { sp.delete('_u'); const q = sp.toString(); history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash); } } catch (e) {}
   // Recovery hatch: app.jacrentals.com/#reset-settings (or #safe-mode) wipes saved customizations
   // before they apply — the guaranteed way back if a bad setting ever breaks the screen.
   try {
@@ -24914,13 +24449,7 @@ function boot() {
     // card-to-List never fired. Dismiss it and re-resolve the row beneath the cursor.
     let target = e.target;
     if (target.closest('.hover-preview')) { hideHoverPreview(); target = document.elementFromPoint(e.clientX, e.clientY) || target; }
-    if (!target.closest('.card') && !target.closest('.overlay .popup')) {
-      // The phone footer jog (.card-jog inside .mobile-toolbar) sits OUTSIDE any .card, so
-      // this early-return used to let the NATIVE context menu leak on a long-press of
-      // Back/Forward. Swallow it for the jog specifically (tap still fires) (Jac 2026-07-17).
-      if (target.closest('.card-jog')) e.preventDefault();
-      return;
-    }
+    if (!target.closest('.card') && !target.closest('.overlay .popup')) return;
     e.preventDefault();
     if (performance.now() - lastTouchCtx < 700) return;                        // §M3 — our touch long-press already opened it; swallow the trailing native event
     hideHoverPreview();                                                        // clear any preview still mid-fuse so it can't reappear over the menu
@@ -24963,18 +24492,6 @@ function boot() {
   const hash = (location.hash || '').toLowerCase();
   if (hash.includes('local')) { return offlineBoot(); }     // #local — render from data.js, no backend
   if (hash.includes('reseed')) { return reseedFromFile(); }  // #reseed — REPLACE live data with the file
-  // #u=<unitId> — QR decal scan → log a video (FEATURES.qrScanLog). A remembered device (scan token)
-  // or a live session goes straight to the standalone capture; a cold phone falls through to whatever
-  // login is active (phone or shared-pw) with the scan parked, replayed after login (maybeReplayScan).
-  if (scanEnabled()) {
-    const su = (location.hash || '').match(/[#&]u=([\w-]+)/i);
-    if (su) {
-      history.replaceState(null, '', location.pathname + location.search);
-      if (scanTokenGet() || backendPassword || scanPreviewOn()) return renderScanCapture(su[1]);   // remembered/session, OR preview (no backend, no PII) → straight in
-      pendingScan = su[1];   // cold PRODUCTION → fall through to the normal login gate below; replay after it
-      try { sessionStorage.setItem('jactec.pendingScan', su[1]); } catch (e) {}   // survive a reload / OS-backgrounding while sitting at the login screen
-    }
-  }
 
   // Per-person login (flagOn('phoneIdentity')): resume a trusted device or show the phone
   // login. Strictly gated — the shared-password gate below is the flag-OFF path, untouched.
@@ -25050,7 +24567,7 @@ function exposeTestApi() {
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
       companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
-      tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
+      tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, saveYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend
       autoRunRepair, autoRunAnchorsFor, secToClock, AUTORUN_DAY_START_SEC, AUTORUN_EOD_DEADLINE_SEC, AUTORUN_LOAD_BUFFER_SEC, dispatchPinOf,
