@@ -43,13 +43,6 @@
   ],
   "queue": [
     {
-      "session": "735c1743-5b83-578e-82da-93ecd48b05d6-slotrefresh-3",
-      "branch": "claude/staging-slot-refresh",
-      "feature": "staging-slot-refresh",
-      "since": 1784290250047,
-      "expiresAt": 1784290666859
-    },
-    {
       "session": "83e7a933-bf08-596f-82fa-801fdde4f218",
       "branch": "claude/qr-decal-video-logging-6fj6fh",
       "feature": "qr-decal-video-logging-6fj6fh",
