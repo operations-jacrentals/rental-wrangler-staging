@@ -625,6 +625,12 @@ export const FEATURES = {
   // OFF = today's shared team-password login. The BACKEND enforces the real auth
   // independently — this flag only switches the login EXPERIENCE, never the gate.
   phoneIdentity: true,
+  // Instant Cache — on a PERSONAL (trusted) device, paint the last known-good backend
+  // load from an on-device IndexedDB snapshot instantly on open, then reconcile with
+  // the live backend (spec 2026-07-16-instant-cache). Display-only: the cache is never
+  // a save baseline, so it can't corrupt the Sheet; personal devices only (no PII at
+  // rest on shared machines). ON = paint-from-cache path; OFF = today's splash + load.
+  instantCache: true,
 };
 
 /* Phone-identity client constants (non-secret — display/UX only; the backend owns the
