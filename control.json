@@ -8,25 +8,18 @@
       "id": 1,
       "url": "https://operations-jacrentals.github.io/rental-wrangler-staging/",
       "holder": {
-        "session": "f3534f24-89f2-5b9c-9387-a85c8ebf44d4",
-        "branch": "claude/random-improvements-2c43ou",
-        "feature": "random-improvements-2c43ou",
-        "acquiredAt": 1784290073006,
-        "renewedAt": 1784290104556,
-        "expiresAt": 1784291904556
+        "session": "735c1743-5b83-578e-82da-93ecd48b05d6",
+        "branch": "claude/staging-slot1-refresh",
+        "feature": "staging-slot1-refresh",
+        "acquiredAt": 1784295801511,
+        "renewedAt": 1784295801511,
+        "expiresAt": 1784297601511
       }
     },
     {
       "id": 2,
       "url": "https://operations-jacrentals.github.io/rental-wrangler-staging-2/",
-      "holder": {
-        "session": "6b431a8a-d0ed-50ee-9c35-7d862d1696c5",
-        "branch": "claude/invoice-copy-fidelity",
-        "feature": "invoice-copy-fidelity",
-        "acquiredAt": 1784291579797,
-        "renewedAt": 1784291612130,
-        "expiresAt": 1784293412130
-      }
+      "holder": null
     },
     {
       "id": 3,
