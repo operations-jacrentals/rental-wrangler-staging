@@ -2334,7 +2334,7 @@ const state = {
   custAcctOpen: {},           // Phase 1 (2026-07-10 account/agreements redesign, D19) — is the top-of-card Account section expanded? { [customerId]: true }; collapsed by default, view-local
   custAgOpen: {},             // Phase 1 — which Agreements row is expanded inside the Account section — { [customerId]: cardId | '__new__' | null } (one open at a time, mirrors custInvOpen); '__new__' = the +Agreement/Card creation panel
   custAgDraft: {},            // Phase 2b — the in-progress NEW-agreement draft — { [customerId]: {accountType, startDate, selfie, signature} }; view-local, cleared on sign/cancel
-  custQuickAdd: { first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list inline quick-add row (always shown at the top of the list, mirrors +New Rental's .newrow) — the single in-progress draft; view-local, cleared on create or navigate-away
+  custQuickAdd: { open: false, first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list "+ New Customer" inline quick-add row (leads the list, mirrors +New Rental's .newrow) — collapsed/open + the single in-progress draft; view-local, reset on cancel/create
   svcSecOpen: {},             // Unit detail — is the Services (service-order) section expanded? { [unitId]: true }; collapsed by default (mirrors custAcctOpen), view-local, reset on a fresh unit open
   unitSecOpen: {},            // Unit detail — which generic collapsible sections are expanded per unit: { [unitId]: { workorders|specs|gps|investment: true } }; all collapsed by default, view-local, reset on a fresh unit open (mirrors svcSecOpen). Coverage is folded into Investment (Jac 2026-07-16) — no separate 'coverage' key.
   woRowOpen: {},              // Unit detail — which Work Order row is expanded (accordion, one per unit, mirrors custInvOpen) — { [unitId]: woId | null }; collapsed by default, view-local, reset on a fresh unit open
@@ -9373,19 +9373,22 @@ function listView(cardDef, session) {
   return wrap;
 }
 /* ADDITIVE inline single-line quick-add (Jac, 2026-07-17) — leads the Customers list,
-   mirroring the Rentals list's +New Rental .newrow trigger; the EXISTING search-bar
-   quick-add (quickAddCustomerFromSearch) and the fruitless-search js-new-cust-search
-   prompt both stay untouched. The fields are ALWAYS shown — the earlier collapsed blue
-   +New Customer .bigbtn was traded for the inline fields (Jac 2026-07-17), so the row is
-   its own always-on prompt. No Cancel/Wrangle buttons, no stamped field captions: the
-   placeholders label the text fields and the funnel pill labels itself. ONE inline flex
-   row — First · Last · Phone · the R1 funnel picker (draft-scoped, defaults N/A, same
-   height as the inputs). First + Last + a ≥7-digit Phone, then a funnel PICK (any value
-   incl N/A — the pick IS the 4th selection) auto-creates the customer and opens its
-   detail view; a created customer — or navigating away — just clears the draft back to
-   empty fields (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
+   mirroring the Rentals list's +New Rental .newrow/.bigbtn trigger; the EXISTING
+   search-bar quick-add (quickAddCustomerFromSearch) and the fruitless-search
+   js-new-cust-search prompt both stay untouched. Collapsed = the plain unstamped
+   .bigbtn (same as +New Rental — R5b language, not a lint-family element). Open =
+   ONE inline flex row: First · Last · Phone · the R1 funnel picker (draft-scoped,
+   defaults N/A) · a quiet Cancel (R18 ghostPill) · the "Wrangle" R17 ignition create
+   button, enabled only once First/Last/Phone are all filled and the phone looks real
+   (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
 function custQuickAddRowHtml() {
   const d = state.custQuickAdd;
+  if (!d.open) return `<button class="bigbtn js-custqa-open">${I.plus} New Customer</button>`;
+  // No Cancel/Wrangle buttons, no stamped field captions (Jac 2026-07-17): the placeholders
+  // label the text fields and the funnel pill labels itself. First + Last + a ≥7-digit Phone,
+  // then a funnel PICK (any value incl N/A — the pick IS the 4th selection) auto-creates the
+  // customer and opens its detail view. A created customer — or navigating away — resets to the
+  // collapsed +New Customer button.
   return `<div class="qa-cust">`
     + `<div class="qa-cust-row">`
     + `<div class="qa-field qa-first"><input type="text" class="qa-in js-custqa-first" placeholder="First name" value="${esc(d.first)}"></div>`
@@ -10057,11 +10060,41 @@ function footerJogInner() {
   const cs = s.cards ? s.cards[member] : null;
   return cardJog(member, cs, { always: true });
 }
+// §M7 (Jac 2026-07-17) — the phone comms row: three BIG floating tiles (Team · Customers ·
+// Mr. Wrangler), each labeled + wearing its worst-status dot. Reuses .js-comms-chip so the same
+// click funnel fires (Customer → the channel menu). The icon-only chips stay a desktop idiom.
+function commsTilesHtml() {
+  const tile = (cat) => {
+    const meta = COMMS_CAT_META[cat];
+    const on = cat === 'customer' ? commsCustActive()
+      : cat === 'team' ? state.chat.open
+      : (state.wrangler.open && !state.wrangler.min);
+    const worst = cat === 'customer' ? commsCustWorst() : commsCatWorst(cat);
+    const label = cat === 'customer' ? 'Customers' : (cat === 'wrangler' ? 'Wrangler' : meta.label);
+    const mode = cat === 'customer' ? `<span class="mtile-mode">${commsCustCh === 'email' ? 'Email' : 'Text'}</span>` : '';
+    return `<button class="mtile js-comms-chip${on ? ' on' : ''}" data-cat="${cat}" aria-pressed="${on}" data-tip="${esc(meta.tip)}">`
+      + `${worst ? `<span class="mtile-dot c-${worst}" aria-hidden="true"></span>` : ''}`
+      + `<span class="mtile-ico">${meta.icon()}</span><span class="mtile-lbl">${esc(label)}</span>${mode}</button>`;
+  };
+  return `<div class="mfoot-comms" role="group" aria-label="Comms — Team, Customers, Mr. Wrangler">${COMMS_CHIP_CATS.map(tile).join('')}</div>`;
+}
+// §M7 — the phone FOOTER: a floating, backdrop-less comms band. Three big comms tiles fill the
+// left; the Back/Forward jog rides top-right with Receipt · Tools · notifications tucked under it
+// (all icon-only, same size). The merged Customer menu floats above the band when summoned.
 function mobileToolbarEl() {
   const d = el('div', 'mobile-toolbar');
-  // The jog is a SIBLING of the (horizontally-scrollable) tool row, pinned to the bottom-RIGHT
-  // so it can never scroll off-screen; the tools scroll in the space to its left.
-  d.innerHTML = `<div class="top-toolbar">${bottomBarInner()}${commsBellBtn()}</div><div class="mfoot-jog">${footerJogInner()}</div>`;
+  const cat = state.commsRail.cat;
+  const menuOpen = (cat === 'text' || cat === 'email') && state.commsRail.sessions[cat] && state.commsRail.sessions[cat].menuOpen;
+  const menuHtml = menuOpen ? `<div class="comms-pop comms-menu comms-menu-m">${commsMenuHtml(cat, { readonly: true })}</div>` : '';
+  d.innerHTML = menuHtml
+    + commsTilesHtml()
+    + `<div class="mfoot-utils">`
+    +   `<div class="mfoot-jog">${footerJogInner()}${commsBellBtn()}</div>`
+    +   `<div class="mfoot-urow">`
+    +     `<button class="iconbtn js-newitem" data-new="receipt" aria-label="New receipt" data-tip="New receipt">${CARD_ICON.expenses}</button>`
+    +     toolsBtn()
+    +   `</div>`
+    + `</div>`;
   return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
@@ -18119,7 +18152,8 @@ function onClick(e) {
   if (closest('.js-chat-end')) { e.stopPropagation(); closeMenus(); return commsEndConv(closest('.js-chat-end').dataset.chat, 'team'); }   // admin ends the chat (phone-safe: cat pinned)
   if (closest('[data-chat-member]')) { e.stopPropagation(); return chatToggleMember(closest('[data-chat-member]').dataset.chatMember); }
   // D8/D9 THE COMMS RAIL — toolbar chips · session tabs · the single window · ALL menu
-  if (closest('.js-comms-chip')) { e.stopPropagation(); return commsToggleCat(closest('.js-comms-chip').dataset.cat); }
+  if (closest('.js-comms-chip')) { e.stopPropagation(); const cat = closest('.js-comms-chip').dataset.cat; return cat === 'customer' ? commsToggleCustomer() : commsToggleCat(cat); }
+  if (closest('.js-comms-ch')) { e.stopPropagation(); const ch = closest('.js-comms-ch').dataset.ch; setCommsCustCh(ch); return commsSummonChannel(ch); }
   if (closest('.js-comms-new')) { e.stopPropagation(); return commsNewChat(); }   // D9 ALL menu: + New chat (team → newChat(), wrangler → wranglerNewChat())
   if (closest('[data-comms-hide]')) { e.stopPropagation(); return commsHideTab(closest('[data-comms-hide]').dataset.commsHide); }   // ✕ hides from the rail only — never ends
   if (closest('.js-comms-menu-x')) { e.stopPropagation(); const s = commsSess(); if (s) { s.menuOpen = false; saveCommsRail(); } return render(); }
@@ -18222,9 +18256,9 @@ function onClick(e) {
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
   // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched):
-  // the fields are always shown (no open/collapse — the blue +New Customer button was traded for
-  // them), so only the funnel gate needs a click handler here; the funnel-pick option itself lives
-  // with the other dropdown handlers below (js-custqa-funnel-pick, next to js-setfunnel).
+  // open/collapse + submit here; the funnel-pick option itself lives with the other dropdown
+  // handlers below (js-custqa-funnel-pick, next to js-setfunnel).
+  if (closest('.js-custqa-open')) { e.stopPropagation(); state.custQuickAdd.open = true; return render(); }
   if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelDropdown(closest('.js-custqa-funnel')); }
   if (closest('.js-new-unit-search')) { e.stopPropagation(); return quickAddUnitFromSearch(activeSession().cards.units.search); }
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
@@ -20274,7 +20308,6 @@ function openLogoMenu(anchorEl) {
 // Switch user — clear this session's password/role (name stays remembered) → login.
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
-  try { flushUserPrefsNow(); } catch (e) {}   // §cross-device-sync — push a pending prefs edit before the token is dropped
   backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person
   sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
@@ -20386,14 +20419,14 @@ function custQuickAddValid() {
   const d = state.custQuickAdd;
   return !!(d.first.trim() && d.last.trim() && d.phone.replace(/\D/g, '').length >= 7);
 }
-// Discard the inline quick-add draft (implicit cancel) — clears the always-shown fields back to
-// empty. Called on a successful create AND whenever the user navigates AWAY from the customers list
-// without finishing (clicking a record → openStandard, switching cards → goToCard). There is no
-// Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when the draft is already empty.
+// Discard the +New Customer draft (implicit cancel) — clearing it collapses the row back to the
+// +New Customer button. Called on a successful create AND whenever the user navigates AWAY from
+// the customers list without finishing (clicking a record → openStandard, switching cards →
+// goToCard). There is no Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when idle.
 function resetCustQuickAdd() {
   const d = state.custQuickAdd;
-  if (d && (d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
-    state.custQuickAdd = { first: '', last: '', phone: '', funnel: 'N/A' };
+  if (d && (d.open || d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
+    state.custQuickAdd = { open: false, first: '', last: '', phone: '', funnel: 'N/A' };
   }
 }
 /* Create + open — mirrors quickAddCustomerFromSearch's create-object field set verbatim,
@@ -24059,7 +24092,7 @@ async function refreshFromBackend() {
   } catch (e) { /* offline / blip → retry next tick */ }
   finally { refreshing = false; }
 }
-function startRefreshPoll() { clearInterval(refreshTimer); refreshTimer = setInterval(() => { refreshToday(); refreshFromBackend(); if (syncOn() && !state.userPrefs) loadUserPrefs(); }, 18000); }   // §cross-device-sync — re-drive a prefs load that never hydrated (past the 5-try login cutoff) so a cold-GAS blip doesn't disable sync all session
+function startRefreshPoll() { clearInterval(refreshTimer); refreshTimer = setInterval(() => { refreshToday(); refreshFromBackend(); }, 18000); }
 
 // ── Team-chat sync (Jac 2026-06-15) ────────────────────────────────────────
 // Chat threads were browser-local, so one user's chat never reached another (a
@@ -24259,13 +24292,7 @@ function syncMirrorGuard() {
   if (!syncOn()) return;
   try {
     const tag = syncMirrorTag(), prev = localStorage.getItem('jactec.syncMirrorTag') || '';
-    // Wipe ONLY when a KNOWN DIFFERENT person synced on this device before. On a first-ever
-    // adopt (prev === '') the local mirror is THIS device's existing prefs — KEEP it so
-    // loadUserPrefs/seedUserPrefsFromLocal adopts it as the person's baseline, instead of
-    // silently deleting everyone's saved Views/dispatch/prefs on their first post-activation
-    // login (the wipe used to run before the seed could capture it).
-    if (prev && prev !== tag) { wipeSyncMirror(); resetSyncStateToDefault(); }
-    if (prev !== tag) localStorage.setItem('jactec.syncMirrorTag', tag);
+    if (prev !== tag) { wipeSyncMirror(); resetSyncStateToDefault(); localStorage.setItem('jactec.syncMirrorTag', tag); }
   } catch (e) {}
 }
 
@@ -24276,26 +24303,6 @@ function flushUserPrefs(section) {
   if (section) _userPrefsDirty[section] = true;
   else ['prefs', 'views', 'dispatch', 'comms', 'session'].forEach((s) => { _userPrefsDirty[s] = true; });
   clearTimeout(_userPrefsTimer); _userPrefsTimer = setTimeout(pushUserPrefs, 1200);
-}
-// Flush any pending debounced change on tab-background/close (visibilitychange/pagehide) so an edit
-// made in the last ~1.2s isn't dropped by the debounce. Uses navigator.sendBeacon — a plain fetch
-// started during unload is aborted before it's sent; a beacon is queued by the browser and survives
-// the close. Mirrors backendCall's payload (sessionToken carries the auth). Best-effort, no response.
-function flushUserPrefsNow() {
-  try { clearTimeout(_userPrefsTimer); } catch (e) {}
-  if (!syncOn() || !state.userPrefs) return;
-  const dirty = _userPrefsDirty; const doc = {}; let any = false;
-  Object.keys(dirty).forEach((s) => { if (dirty[s] && state.userPrefs[s] !== undefined) { doc[s] = state.userPrefs[s]; any = true; } });
-  if (!any) return;
-  doc.v = state.userPrefs.v || 1; _userPrefsDirty = {};
-  try {
-    let queued = false;
-    if (navigator.sendBeacon) {
-      const payload = JSON.stringify({ action: 'setUserPrefs', password: backendPassword, sessionToken: backendPassword, doc });
-      queued = navigator.sendBeacon(BACKEND_URL, new Blob([payload], { type: 'text/plain;charset=utf-8' }));   // false = payload over the ~64KB / pending-queue limit
-    }
-    if (!queued) { Object.keys(doc).forEach((s) => { if (s !== 'v') _userPrefsDirty[s] = true; }); pushUserPrefs(); }   // no beacon OR beacon rejected → best-effort fetch, re-mark dirty
-  } catch (e) { /* best-effort — the change also re-flushes on the next edit */ }
 }
 async function pushUserPrefs() {
   if (!syncOn() || !state.userPrefs) return;
@@ -24316,9 +24323,6 @@ async function loadUserPrefs(_try) {
     const r = await backendCall('getUserPrefs');
     if (r && r.ok && r.doc && typeof r.doc === 'object' && Object.keys(r.doc).length) hydrateUserPrefs(r.doc);
     else seedUserPrefsFromLocal();                                   // no row yet → seed baseline from this device
-    // Announce the cutover ONCE per device: existing device-local prefs/saved-views can reset when
-    // sync turns on (a shared-device wipe leaves no server copy to restore) — nudge re-saving a view.
-    try { if (state.userPrefs && !localStorage.getItem('jactec.syncWelcomed')) { localStorage.setItem('jactec.syncWelcomed', '1'); toast('Cross-device sync is on — your settings now follow you across your devices. If a saved view is missing, just re-save it.'); } } catch (e) {}
   } catch (e) {
     // A transient blip at login must NOT disable sync for the whole session (state.userPrefs
     // would stay null and every stamp would silently no-op). Retry with backoff while still
@@ -24776,11 +24780,6 @@ window.addEventListener('beforeunload', (e) => {
   flushSave();
   e.preventDefault(); e.returnValue = '';
 });
-// §cross-device-sync — flush a pending prefs edit when the tab is hidden/closed (the 1.2s
-// debounce would otherwise drop a just-made change). visibilitychange fires while the page is
-// still alive so the async push can complete; pagehide is the close backstop.
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { flushUserPrefsNow(); } catch (e) {} } });
-window.addEventListener('pagehide', () => { try { flushUserPrefsNow(); } catch (e) {} });
 function renderLogin(msg) {
   resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
   if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
@@ -24983,7 +24982,7 @@ async function attemptLogin() {
 const pidUI = { step: 'identify', personId: '', name: '', masked: '', kind: '', err: '', _phone: '', _tok: '', _role: '' };
 function pidTokenGet() { try { return localStorage.getItem('jactec.pidToken') || sessionStorage.getItem('jactec.pidToken') || ''; } catch (e) { return ''; } }
 function pidTokenSet(tok, personal) { try { if (personal) { localStorage.setItem('jactec.pidToken', tok); sessionStorage.removeItem('jactec.pidToken'); } else { sessionStorage.setItem('jactec.pidToken', tok); localStorage.removeItem('jactec.pidToken'); } } catch (e) {} }
-function pidTokenClear() { try { flushUserPrefsNow(); } catch (e) {} try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} try { dataCache.wipe(); } catch (e) {} currentPersonId = ''; state.userPrefs = null; }   // §instant-cache: logout clears the on-device snapshot. §cross-device-sync: flush any pending prefs, then drop identity + the in-memory doc — but do NOT wipe the mirror here. The login-time syncMirrorGuard (tag-guarded) is the SINGLE wipe point, so a load-fail relogin can't delete a never-backed-up mirror (which would then seed an empty baseline). Shared-device safety still holds: a DIFFERENT person's next login (prev !== tag) wipes it, exactly as switchUser already defers to.
+function pidTokenClear() { try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} try { dataCache.wipe(); } catch (e) {} try { if (syncOn()) { wipeSyncMirror(); localStorage.removeItem('jactec.syncMirrorTag'); } } catch (e) {} currentPersonId = ''; state.userPrefs = null; }   // §instant-cache: logout clears the on-device snapshot; §cross-device-sync: + the per-person prefs mirror + the in-memory doc so the next user on a shared device starts clean (Blocker 1). GUARDED on syncOn() — when userSync is OFF the mirror keys ARE the user's only (device-local) prefs, so a token-expiry relogin must NOT wipe them.
 function pidRosterCache() { try { return JSON.parse(localStorage.getItem('jactec.pidRoster') || '[]'); } catch (e) { return []; } }
 // The verified token becomes the per-call credential: a truthy backendPassword keeps every
 // existing online-guard working, and backendCall sends it as sessionToken (backend prefers it).
@@ -26091,6 +26090,10 @@ const COMMS_CAT_META = {
   team:     { label: 'Team',        icon: () => I.users,         channel: null,    tip: 'Team — the shop-floor chat' },
   text:     { label: 'Texts',       icon: () => I.messageSquare, channel: 'sms',   tip: 'Texts — customer SMS threads' },
   email:    { label: 'Email',       icon: () => I.mail,          channel: 'email', tip: 'Email — customer email threads' },
+  // D8 merged Customer chip — one button for texts + emails; the channel toggle lives in its
+  // menu. icon() follows the current channel (commsCustCh). Never used as a rail `cat` — the chip
+  // delegates to the real 'text'/'email' cats via commsToggleCustomer/commsSummonChannel.
+  customer: { label: 'Customers',   icon: () => (commsCustCh === 'email' ? I.mail : I.messageSquare), channel: null, tip: 'Customers — texts & emails in one place (toggle inside)' },
   wrangler: { label: 'Mr. Wrangler', icon: () => I.lasso,        channel: null,    tip: 'Mr. Wrangler — ask the yard AI, or report a bug' },
 };
 const commsOnline = () => typeof backendPassword !== 'undefined' && !!backendPassword;
@@ -26142,6 +26145,17 @@ function commsCatWorst(cat) {
   list.forEach((t) => { const s = commsConvStatus(t, COMMS_CAT_META[cat].channel); if (!worst || COMMS_ST_RANK[s] < COMMS_ST_RANK[worst]) worst = s; });
   return (!worst || worst === 'gray') ? 'green' : worst;   // nothing waiting = green (quiet line)
 }
+/* ── merged Customer chip (Jac 2026-07-17): Texts + Email collapse into ONE comms button;
+   a Text/Email toggle in its menu picks the channel. The underlying 'text'/'email' categories,
+   their sessions, threads and sends are UNCHANGED — this is a chip-row + menu presentation over
+   them. commsCustCh = which channel the merged chip currently wears (a per-device view pref). ── */
+const COMMS_CUSTCH_LS = 'jactec.commsCustCh';
+let commsCustCh = 'text';
+try { if (localStorage.getItem(COMMS_CUSTCH_LS) === 'email') commsCustCh = 'email'; } catch (e) {}
+const commsCustCat = () => (commsCustCh === 'email' ? 'email' : 'text');
+function setCommsCustCh(ch) { commsCustCh = ch === 'email' ? 'email' : 'text'; try { localStorage.setItem(COMMS_CUSTCH_LS, commsCustCh); } catch (e) {} }
+const commsCustActive = () => (state.commsRail.cat === 'text' || state.commsRail.cat === 'email');
+function commsCustWorst() { return [commsCatWorst('text'), commsCatWorst('email')].sort((a, b) => COMMS_ST_RANK[a] - COMMS_ST_RANK[b])[0]; }
 /* ── Team category (D9) — conversations derive from the APP-23 chat store ── */
 const commsChatLastAt = (c) => Math.max(0, ...(c.messages || []).map((m) => m.at || 0));
 function commsTeamChats() {   // every un-ended team chat, newest first (End resurrects on a newer message)
@@ -26220,18 +26234,20 @@ function commsAliasesEnsure() {     // lazy one-shot alias fetch for the email F
   commsAliasList().then((a) => { if (a && a.length) render(); });
 }
 /* ── the four toolbar chips (bottom-left, before the tool buttons) ────────── */
+const COMMS_CHIP_CATS = ['team', 'customer', 'wrangler'];   // D8 merged row — Texts+Email fold into 'customer'
 function commsChipsHtml() {
   const phone = document.body.classList.contains('is-phone');
   const chip = (cat) => {
     const meta = COMMS_CAT_META[cat];
-    // phones have no rail — the team/wrangler chips still bridge to their bottom-sheet docks there
-    const on = phone
-      ? (cat === 'team' ? state.chat.open : cat === 'wrangler' ? (state.wrangler.open && !state.wrangler.min) : state.commsRail.cat === cat)
+    // 'customer' is on whenever a customer channel (text OR email) is summoned; its dot rolls up both.
+    // phones have no rail — the team/wrangler chips still bridge to their bottom-sheet docks there.
+    const on = cat === 'customer' ? commsCustActive()
+      : phone ? (cat === 'team' ? state.chat.open : (state.wrangler.open && !state.wrangler.min))
       : state.commsRail.cat === cat;
-    const worst = commsCatWorst(cat);
+    const worst = cat === 'customer' ? commsCustWorst() : commsCatWorst(cat);
     return `<button class="iconbtn comms-chip js-comms-chip${on ? ' on' : ''}" data-cat="${cat}" data-tip="${esc(meta.tip)}" aria-pressed="${on}">${meta.icon()}${worst ? `<span class="cc-dot c-${worst}" aria-hidden="true"></span>` : ''}</button>`;
   };
-  return `<span class="comms-chips" role="group" aria-label="Comms — Team, Texts, Email, Mr. Wrangler">${COMMS_CATS.map(chip).join('')}</span><span class="bb-sep bb-stitch" aria-hidden="true"></span>`;
+  return `<span class="comms-chips" role="group" aria-label="Comms — Team, Customers, Mr. Wrangler">${COMMS_CHIP_CATS.map(chip).join('')}</span><span class="bb-sep bb-stitch" aria-hidden="true"></span>`;
 }
 /* ── the summoned session's tabs on the rail (ALL first, then conversations).
    D9: one builder, four categories — a tab's is-active means "this is THE open
@@ -26324,9 +26340,11 @@ function commsWranglerPopupHtml() {
 }
 /* ── the ALL menu: every un-ended conversation, Open / End per row (D9: Team and
    Mr. Wrangler list their chats too, with a + New chat at the foot) ────────── */
-function commsMenuHtml(cat) {
+function commsMenuHtml(cat, opts = {}) {
   const meta = COMMS_CAT_META[cat];
-  const row = (id, name, st, snip) => `<div class="cm-row js-comms-mrow" data-cust="${esc(id)}" data-tip="Open"><span class="cp-dot c-${st}" aria-hidden="true"></span><span class="cm-who">${esc(name)}</span><span class="cm-snip">${esc(snip)}</span>${ghostPill('End', { js: 'js-comms-mend', data: { cust: id }, tip: cat === 'team' || cat === 'wrangler' ? 'End it — the history stays stored' : 'End it — the history stays on the profile' })}</div>`;
+  const row = (id, name, st, snip) => opts.readonly
+    ? `<div class="cm-row cm-ro"><span class="cp-dot c-${st}" aria-hidden="true"></span><span class="cm-who">${esc(name)}</span><span class="cm-snip">${esc(snip)}</span></div>`
+    : `<div class="cm-row js-comms-mrow" data-cust="${esc(id)}" data-tip="Open"><span class="cp-dot c-${st}" aria-hidden="true"></span><span class="cm-who">${esc(name)}</span><span class="cm-snip">${esc(snip)}</span>${ghostPill('End', { js: 'js-comms-mend', data: { cust: id }, tip: cat === 'team' || cat === 'wrangler' ? 'End it — the history stays stored' : 'End it — the history stays on the profile' })}</div>`;
   let rows = '', empty = 'Nothing on the line — right-click a customer to start one.', newRow = '';
   if (cat === 'team') {
     rows = commsTeamChats().map((c) => {
@@ -26350,8 +26368,16 @@ function commsMenuHtml(cat) {
       return row(id, (c && fullName(c)) || id, commsConvStatus(t, meta.channel), (ch.lastDirection === 'inbound' ? 'them: ' : 'you: ') + (ch.lastSnippet || ''));
     }).join('');
   }
+  const isCust = cat === 'text' || cat === 'email';
+  const chanToggle = isCust ? `<div class="comms-chan" role="tablist" aria-label="Channel — text or email">
+      <button class="comms-chan-b js-comms-ch${commsCustCh === 'text' ? ' on' : ''}" data-ch="text" role="tab" aria-selected="${commsCustCh === 'text'}">${I.messageSquare}<span>Text</span></button>
+      <button class="comms-chan-b js-comms-ch${commsCustCh === 'email' ? ' on' : ''}" data-ch="email" role="tab" aria-selected="${commsCustCh === 'email'}">${I.mail}<span>Email</span></button>
+    </div>` : '';
+  const title = isCust ? 'Customers' : esc(meta.label);
+  const sub = isCust ? (commsCustCh === 'email' ? 'Emailing customers' : 'Texting customers') : 'Open &amp; un-ended';
   return `<div class="cp-cap" aria-hidden="true"></div>
-    <div class="cp-head"><span class="cp-cat">${esc(meta.label)}</span><span class="cp-who">Open &amp; un-ended</span><span class="spacer"></span><button class="cp-x js-comms-menu-x" aria-label="Tuck the list away" data-tip="Tuck away — nothing ends">${I.x}</button></div>
+    <div class="cp-head"><span class="cp-cat">${title}</span><span class="cp-who">${sub}</span><span class="spacer"></span><button class="cp-x js-comms-menu-x" aria-label="Tuck the list away" data-tip="Tuck away — nothing ends">${I.x}</button></div>
+    ${chanToggle}
     <div class="cp-feed cp-list">${rows || `<div class="cp-empty">${empty}</div>`}${newRow}</div>`;
 }
 /* Mount THE open window ABOVE its own tab (Messenger metaphor, D9 single-open: at
@@ -26411,7 +26437,7 @@ function mountCommsPops() {
     }
   }
   if (sess.menuOpen && (!COMMS_CAT_META[cat].channel || commsOnline())) {
-    const at = document.querySelector(`.js-comms-chip[data-cat="${cat}"]`) || document.querySelector('.comms-rail');
+    const at = document.querySelector(`.js-comms-chip[data-cat="${cat}"]`) || document.querySelector('.js-comms-chip[data-cat="customer"]') || document.querySelector('.comms-rail');
     if (at) { const node = el('div', 'comms-pop comms-menu'); node.innerHTML = commsMenuHtml(cat); host.appendChild(node); place(node, at, 340); }
   }
   commsOpenPt = null;   // one render-cycle scope — consumed by the window mount above
@@ -26423,6 +26449,27 @@ function commsLeaveCat(cat) {
   if (cat === 'wrangler' && state.wrangler.open && !document.body.classList.contains('is-phone')) {
     wranglerRailSnapshot(); state.wrangler.open = false; state.wrangler.min = false;
   }
+}
+// D8 merged Customer chip — summon a customer CHANNEL ('text'|'email') onto the rail and land
+// on its menu (the Text/Email toggle rides the menu head). One thin funnel over commsToggleCat's
+// summon logic so text/email keep behaving exactly as before.
+function commsSummonChannel(ch) {
+  const cat = ch === 'email' ? 'email' : 'text';
+  const rail = state.commsRail, prev = rail.cat;
+  if (prev && prev !== cat) commsLeaveCat(prev);
+  rail.cat = cat;
+  refreshCommsThreads();
+  const s = rail.sessions[cat];
+  s.menuOpen = true; s.lastOpen = null;   // show the list + toggle; no auto-opened window
+  saveCommsRail(); render();
+}
+// The Customer chip click: reveal the channel menu (with the toggle); a second tap sweeps it shut.
+function commsToggleCustomer() {
+  const rail = state.commsRail, cur = rail.cat, curSess = cur ? rail.sessions[cur] : null;
+  if (commsCustActive() && curSess && curSess.menuOpen) {   // open menu → close
+    rail.cat = null; curSess.menuOpen = false; commsLeaveCat(cur); saveCommsRail(); return render();
+  }
+  commsSummonChannel(commsCustCat());
 }
 function commsToggleCat(cat) {
   const phone = document.body.classList.contains('is-phone');
