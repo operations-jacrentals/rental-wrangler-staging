@@ -17,14 +17,7 @@
     {
       "id": 3,
       "url": "https://operations-jacrentals.github.io/rental-wrangler-staging-3/",
-      "holder": {
-        "session": "verify-dep-3",
-        "branch": "claude/verify-n3",
-        "feature": "verify-n3",
-        "acquiredAt": 1784282185985,
-        "renewedAt": 1784282217657,
-        "expiresAt": 1784284017657
-      }
+      "holder": null
     }
   ],
   "queue": []
