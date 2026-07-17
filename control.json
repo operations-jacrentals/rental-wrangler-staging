@@ -7,14 +7,7 @@
     {
       "id": 1,
       "url": "https://operations-jacrentals.github.io/rental-wrangler-staging/",
-      "holder": {
-        "session": "83e7a933-bf08-596f-82fa-801fdde4f218",
-        "branch": "claude/qr-decal-video-logging-6fj6fh",
-        "feature": "qr-decal-video-logging-6fj6fh",
-        "acquiredAt": 1784285378807,
-        "renewedAt": 1784288224228,
-        "expiresAt": 1784290024228
-      }
+      "holder": null
     },
     {
       "id": 2,
