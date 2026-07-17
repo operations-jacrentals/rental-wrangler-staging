@@ -2334,7 +2334,7 @@ const state = {
   custAcctOpen: {},           // Phase 1 (2026-07-10 account/agreements redesign, D19) — is the top-of-card Account section expanded? { [customerId]: true }; collapsed by default, view-local
   custAgOpen: {},             // Phase 1 — which Agreements row is expanded inside the Account section — { [customerId]: cardId | '__new__' | null } (one open at a time, mirrors custInvOpen); '__new__' = the +Agreement/Card creation panel
   custAgDraft: {},            // Phase 2b — the in-progress NEW-agreement draft — { [customerId]: {accountType, startDate, selfie, signature} }; view-local, cleared on sign/cancel
-  custQuickAdd: { open: false, first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list "+ New Customer" inline quick-add row (leads the list, mirrors +New Rental's .newrow) — collapsed/open + the single in-progress draft; view-local, reset on cancel/create
+  custQuickAdd: { first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list inline quick-add row (always shown at the top of the list, mirrors +New Rental's .newrow) — the single in-progress draft; view-local, cleared on create or navigate-away
   svcSecOpen: {},             // Unit detail — is the Services (service-order) section expanded? { [unitId]: true }; collapsed by default (mirrors custAcctOpen), view-local, reset on a fresh unit open
   unitSecOpen: {},            // Unit detail — which generic collapsible sections are expanded per unit: { [unitId]: { workorders|specs|gps|investment: true } }; all collapsed by default, view-local, reset on a fresh unit open (mirrors svcSecOpen). Coverage is folded into Investment (Jac 2026-07-16) — no separate 'coverage' key.
   woRowOpen: {},              // Unit detail — which Work Order row is expanded (accordion, one per unit, mirrors custInvOpen) — { [unitId]: woId | null }; collapsed by default, view-local, reset on a fresh unit open
@@ -9373,22 +9373,19 @@ function listView(cardDef, session) {
   return wrap;
 }
 /* ADDITIVE inline single-line quick-add (Jac, 2026-07-17) — leads the Customers list,
-   mirroring the Rentals list's +New Rental .newrow/.bigbtn trigger; the EXISTING
-   search-bar quick-add (quickAddCustomerFromSearch) and the fruitless-search
-   js-new-cust-search prompt both stay untouched. Collapsed = the plain unstamped
-   .bigbtn (same as +New Rental — R5b language, not a lint-family element). Open =
-   ONE inline flex row: First · Last · Phone · the R1 funnel picker (draft-scoped,
-   defaults N/A) · a quiet Cancel (R18 ghostPill) · the "Wrangle" R17 ignition create
-   button, enabled only once First/Last/Phone are all filled and the phone looks real
-   (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
+   mirroring the Rentals list's +New Rental .newrow trigger; the EXISTING search-bar
+   quick-add (quickAddCustomerFromSearch) and the fruitless-search js-new-cust-search
+   prompt both stay untouched. The fields are ALWAYS shown — the earlier collapsed blue
+   +New Customer .bigbtn was traded for the inline fields (Jac 2026-07-17), so the row is
+   its own always-on prompt. No Cancel/Wrangle buttons, no stamped field captions: the
+   placeholders label the text fields and the funnel pill labels itself. ONE inline flex
+   row — First · Last · Phone · the R1 funnel picker (draft-scoped, defaults N/A, same
+   height as the inputs). First + Last + a ≥7-digit Phone, then a funnel PICK (any value
+   incl N/A — the pick IS the 4th selection) auto-creates the customer and opens its
+   detail view; a created customer — or navigating away — just clears the draft back to
+   empty fields (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
 function custQuickAddRowHtml() {
   const d = state.custQuickAdd;
-  if (!d.open) return `<button class="bigbtn js-custqa-open">${I.plus} New Customer</button>`;
-  // No Cancel/Wrangle buttons, no stamped field captions (Jac 2026-07-17): the placeholders
-  // label the text fields and the funnel pill labels itself. First + Last + a ≥7-digit Phone,
-  // then a funnel PICK (any value incl N/A — the pick IS the 4th selection) auto-creates the
-  // customer and opens its detail view. A created customer — or navigating away — resets to the
-  // collapsed +New Customer button.
   return `<div class="qa-cust">`
     + `<div class="qa-cust-row">`
     + `<div class="qa-field qa-first"><input type="text" class="qa-in js-custqa-first" placeholder="First name" value="${esc(d.first)}"></div>`
@@ -18225,9 +18222,9 @@ function onClick(e) {
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
   // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched):
-  // open/collapse + submit here; the funnel-pick option itself lives with the other dropdown
-  // handlers below (js-custqa-funnel-pick, next to js-setfunnel).
-  if (closest('.js-custqa-open')) { e.stopPropagation(); state.custQuickAdd.open = true; return render(); }
+  // the fields are always shown (no open/collapse — the blue +New Customer button was traded for
+  // them), so only the funnel gate needs a click handler here; the funnel-pick option itself lives
+  // with the other dropdown handlers below (js-custqa-funnel-pick, next to js-setfunnel).
   if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelDropdown(closest('.js-custqa-funnel')); }
   if (closest('.js-new-unit-search')) { e.stopPropagation(); return quickAddUnitFromSearch(activeSession().cards.units.search); }
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
@@ -20388,14 +20385,14 @@ function custQuickAddValid() {
   const d = state.custQuickAdd;
   return !!(d.first.trim() && d.last.trim() && d.phone.replace(/\D/g, '').length >= 7);
 }
-// Discard the +New Customer draft (implicit cancel) — clearing it collapses the row back to the
-// +New Customer button. Called on a successful create AND whenever the user navigates AWAY from
-// the customers list without finishing (clicking a record → openStandard, switching cards →
-// goToCard). There is no Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when idle.
+// Discard the inline quick-add draft (implicit cancel) — clears the always-shown fields back to
+// empty. Called on a successful create AND whenever the user navigates AWAY from the customers list
+// without finishing (clicking a record → openStandard, switching cards → goToCard). There is no
+// Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when the draft is already empty.
 function resetCustQuickAdd() {
   const d = state.custQuickAdd;
-  if (d && (d.open || d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
-    state.custQuickAdd = { open: false, first: '', last: '', phone: '', funnel: 'N/A' };
+  if (d && (d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
+    state.custQuickAdd = { first: '', last: '', phone: '', funnel: 'N/A' };
   }
 }
 /* Create + open — mirrors quickAddCustomerFromSearch's create-object field set verbatim,
@@ -24252,7 +24249,7 @@ function resetSyncStateToDefault() {
   // early edit (before loadUserPrefs resolves) would stamp A's leftover prefs and push them to
   // B's backend row (userPrefsMerge_ is one-level-deep, so a whole-section flush carries A's
   // sibling keys). Null it so every upSet*/upSync* no-ops until B's own doc loads.
-  state.userPrefs = null; _userPrefsPreloadDirty = {};   // drop any prior person's pending pre-load edit flags too
+  state.userPrefs = null;
 }
 function syncMirrorTag() { return cacheTokenTag(currentPersonId || pidLocalToken()); }
 // Called at login once currentPersonId is set (pidAdopt). Keep this person's mirror; wipe a
@@ -24266,16 +24263,13 @@ function syncMirrorGuard() {
 }
 
 // ── debounced writer (mirrors pushChatsSoon / pushWranglerRailSoon: 1200ms, boot-guarded) ──
-let _userPrefsTimer = null, _userPrefsDirty = {}, _userPrefsPreloadDirty = {};   // preload-dirty = sections the user edited BEFORE the doc loaded (state.userPrefs still null); preserved on hydrate
+let _userPrefsTimer = null, _userPrefsDirty = {};
 function flushUserPrefs(section) {
   if (booting || !syncOn()) return;                                   // device-local only; never push during boot/reset
   if (section) _userPrefsDirty[section] = true;
   else ['prefs', 'views', 'dispatch', 'comms', 'session'].forEach((s) => { _userPrefsDirty[s] = true; });
   clearTimeout(_userPrefsTimer); _userPrefsTimer = setTimeout(pushUserPrefs, 1200);
 }
-// Push any pending debounced change IMMEDIATELY — wired to visibilitychange/pagehide so an edit
-// made in the last ~1.2s before a tab-close/background isn't dropped by the debounce.
-function flushUserPrefsNow() { try { clearTimeout(_userPrefsTimer); } catch (e) {} if (syncOn() && state.userPrefs) pushUserPrefs(); }
 async function pushUserPrefs() {
   if (!syncOn() || !state.userPrefs) return;
   const dirty = _userPrefsDirty; _userPrefsDirty = {};
@@ -24295,9 +24289,6 @@ async function loadUserPrefs(_try) {
     const r = await backendCall('getUserPrefs');
     if (r && r.ok && r.doc && typeof r.doc === 'object' && Object.keys(r.doc).length) hydrateUserPrefs(r.doc);
     else seedUserPrefsFromLocal();                                   // no row yet → seed baseline from this device
-    // Announce the cutover ONCE per device: existing device-local prefs/saved-views can reset when
-    // sync turns on (a shared-device wipe leaves no server copy to restore) — nudge re-saving a view.
-    try { if (state.userPrefs && !localStorage.getItem('jactec.syncWelcomed')) { localStorage.setItem('jactec.syncWelcomed', '1'); toast('Cross-device sync is on — your settings now follow you across your devices. If a saved view is missing, just re-save it.'); } } catch (e) {}
   } catch (e) {
     // A transient blip at login must NOT disable sync for the whole session (state.userPrefs
     // would stay null and every stamp would silently no-op). Retry with backoff while still
@@ -24310,31 +24301,21 @@ function collectSortMirror() {
   try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('jactec.sort.') === 0) { try { const v = JSON.parse(localStorage.getItem(k)); if (v && v.field) out[k.slice(12)] = { field: v.field, dir: v.dir }; } catch (e) {} } } } catch (e) {}
   return out;
 }
-// Build one section of the doc from THIS device's current local state (shared by the seed path
-// and the during-load-edit preserve below).
-function _upBuildSection(s) {
-  if (s === 'prefs') return { previewsOff: !state.previewsOn, hapticsOff: !!state.hapticsOff, loginMuted: !!state.loginMuted,
-    sort: collectSortMirror(), collapsedGroups: Object.assign({}, COLLAPSED_GROUPS), ruRange: ruRangeLoad() };
-  if (s === 'views') return _viewsMap();
-  if (s === 'dispatch') return { order: _lsJSON('jactec.dispatchOrder'), schedule: _lsJSON('jactec.dispatchSchedule'), lanes: _lsJSON('jactec.dispatchLanes'), times: _lsJSON('jactec.dispatchTimes') };
-  if (s === 'comms') return { ended: commsEndedMap(), rail: { sessions: (state.commsRail && state.commsRail.sessions) || {} } };
-  if (s === 'session') return { col: state.mobileCol, mobileCol: state.mobileCol };
-  return {};
-}
 function seedUserPrefsFromLocal() {
   if (!syncOn()) return;
-  state.userPrefs = { v: 1, prefs: _upBuildSection('prefs'), views: _upBuildSection('views'), dispatch: _upBuildSection('dispatch'), comms: _upBuildSection('comms'), session: _upBuildSection('session') };
-  _userPrefsPreloadDirty = {};                                      // the seed already captured the whole local state, incl. any during-load edit
+  state.userPrefs = {
+    v: 1,
+    prefs: { previewsOff: !state.previewsOn, hapticsOff: !!state.hapticsOff, loginMuted: !!state.loginMuted,
+      sort: collectSortMirror(), collapsedGroups: Object.assign({}, COLLAPSED_GROUPS), ruRange: ruRangeLoad() },
+    views: _viewsMap(),
+    dispatch: { order: _lsJSON('jactec.dispatchOrder'), schedule: _lsJSON('jactec.dispatchSchedule'), lanes: _lsJSON('jactec.dispatchLanes'), times: _lsJSON('jactec.dispatchTimes') },
+    comms: { ended: commsEndedMap(), rail: { sessions: (state.commsRail && state.commsRail.sessions) || {} } },
+    session: { col: state.mobileCol, mobileCol: state.mobileCol }
+  };
   flushUserPrefs();                                                  // push the whole seeded doc up as the baseline
 }
 function hydrateUserPrefs(doc) {
   state.userPrefs = normalizeUserPrefs(doc);
-  // Preserve edits made DURING the load window: for a section the user touched before the server
-  // doc arrived (state.userPrefs was null so the stamp only hit localStorage + recorded here), keep
-  // THEIR local value — build it from local NOW, before the body below overwrites localStorage —
-  // instead of letting the server doc discard it; flush the preserved sections up afterward.
-  const pd = _userPrefsPreloadDirty; _userPrefsPreloadDirty = {};
-  ['prefs', 'views', 'dispatch', 'comms', 'session'].forEach((s) => { if (pd[s]) state.userPrefs[s] = _upBuildSection(s); });
   const p = state.userPrefs.prefs;
   if ('previewsOff' in p) { state.previewsOn = !p.previewsOff; lsSet('jactec.previewsOff', p.previewsOff ? '1' : '0'); }
   if ('hapticsOff' in p) { state.hapticsOff = !!p.hapticsOff; lsSet('jactec.hapticsOff', p.hapticsOff ? '1' : '0'); }
@@ -24374,17 +24355,16 @@ function hydrateUserPrefs(doc) {
     if (state.mobileCol === landIdx) state.mobileCol = sv.mobileCol;
   }
   render();
-  Object.keys(pd).forEach((s) => { if (pd[s]) flushUserPrefs(s); });   // push the preserved during-load edits up (server field-merges by section)
 }
 // ── stamp helpers: called from each synced localStorage write-site to also update the
 //    person's doc + schedule a flush. All no-op for a legacy login (state.userPrefs null). ──
-function upSetPref(key, value) { const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.prefs = true; return; } (up.prefs || (up.prefs = {}))[key] = value; flushUserPrefs('prefs'); }
-function upSetSort(card, sort) { if (!sort || !sort.field) return; const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.prefs = true; return; } const pr = up.prefs || (up.prefs = {}); (pr.sort || (pr.sort = {}))[card] = { field: sort.field, dir: sort.dir }; flushUserPrefs('prefs'); }
-function upSyncCollapsed() { const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.prefs = true; return; } (up.prefs || (up.prefs = {})).collapsedGroups = Object.assign({}, COLLAPSED_GROUPS); flushUserPrefs('prefs'); }
-function upSyncViews() { const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.views = true; return; } up.views = _viewsMap(); flushUserPrefs('views'); }
-function upSyncDispatch() { const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.dispatch = true; return; } up.dispatch = { order: _lsJSON('jactec.dispatchOrder'), schedule: _lsJSON('jactec.dispatchSchedule'), lanes: _lsJSON('jactec.dispatchLanes'), times: _lsJSON('jactec.dispatchTimes') }; flushUserPrefs('dispatch'); }
-function upSyncComms() { const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.comms = true; return; } up.comms = { ended: commsEndedMap(), rail: { sessions: (state.commsRail && state.commsRail.sessions) || {} } }; flushUserPrefs('comms'); }
-function upSyncSession() { if (booting) return; const up = state.userPrefs; if (!up) { _userPrefsPreloadDirty.session = true; return; } up.session = { col: state.mobileCol, mobileCol: state.mobileCol }; flushUserPrefs('session'); }
+function upSetPref(key, value) { const up = state.userPrefs; if (!up) return; (up.prefs || (up.prefs = {}))[key] = value; flushUserPrefs('prefs'); }
+function upSetSort(card, sort) { const up = state.userPrefs; if (!up || !sort || !sort.field) return; const pr = up.prefs || (up.prefs = {}); (pr.sort || (pr.sort = {}))[card] = { field: sort.field, dir: sort.dir }; flushUserPrefs('prefs'); }
+function upSyncCollapsed() { const up = state.userPrefs; if (!up) return; (up.prefs || (up.prefs = {})).collapsedGroups = Object.assign({}, COLLAPSED_GROUPS); flushUserPrefs('prefs'); }
+function upSyncViews() { const up = state.userPrefs; if (!up) return; up.views = _viewsMap(); flushUserPrefs('views'); }
+function upSyncDispatch() { const up = state.userPrefs; if (!up) return; up.dispatch = { order: _lsJSON('jactec.dispatchOrder'), schedule: _lsJSON('jactec.dispatchSchedule'), lanes: _lsJSON('jactec.dispatchLanes'), times: _lsJSON('jactec.dispatchTimes') }; flushUserPrefs('dispatch'); }
+function upSyncComms() { const up = state.userPrefs; if (!up) return; up.comms = { ended: commsEndedMap(), rail: { sessions: (state.commsRail && state.commsRail.sessions) || {} } }; flushUserPrefs('comms'); }
+function upSyncSession() { const up = state.userPrefs; if (!up || booting) return; up.session = { col: state.mobileCol, mobileCol: state.mobileCol }; flushUserPrefs('session'); }
 /* ── §18h Wrangler Ops — the developer live-chat bridge (from-spec re-implementation,
    2026-07-09, of the stale claude/mirror-wrangler-chats-l8pjfd branch). A Developer-tier
    operator (roleTier(currentRole) >= tierRank('developer') — the SAME gate as Design
@@ -25522,10 +25502,6 @@ function boot() {
     if (mcolRaf) return;
     mcolRaf = requestAnimationFrame(() => { mcolRaf = 0; syncMobileColFromScroll(); });
   }, true);
-  // §cross-device-sync — flush any pending pref/comms change when the tab is backgrounded or closed,
-  // so an edit in the last ~1.2s before a close isn't dropped by the debounce (no-op unless synced).
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushUserPrefsNow(); });
-  window.addEventListener('pagehide', () => { flushUserPrefsNow(); });
   initDrag();   // §15c drag & drop link engine — #drag-layer singleton + document pointer listeners
   try { loadGoogleMaps(); } catch (e) {}   // §2.3 warm the Maps SDK at boot so the dispatch cockpit + transport editor open instantly (no first-open wait / "load it twice")
   // R0 flash-lint: ON by default — violations self-report by pulsing (SPEC v8)
