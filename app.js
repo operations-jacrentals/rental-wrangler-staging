@@ -31,7 +31,6 @@ import {
   legacyTransportPrice, computeTransportPrice, isFueledType, legsForType, YARD_ORIGIN, GOOGLE_MAPS_KEY, GPS_BACKEND_URL,
   fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, refreshTodayISO, invoiceShort, TRANSPORT_MAP,
   FLAG_META, FLAG_SEVERITY_RANK, INSURANCE_COVERAGE_TYPES, FEATURES, PHONE_IDENTITY,
-  FUNNELS, FUNNEL_KEYS,
 } from './config.js';
 // Feature-flag reader (scaffold only, dev-workflow trunk-based redesign D5): a big
 // replacement's new code path checks flagOn('key') instead of running unconditionally,
@@ -109,91 +108,6 @@ function parseCustomerName(raw, existingCompany) {
   return { firstName: parts.shift() || '', lastName: parts.join(' '), company };
 }
 const fullName = (c) => `${c.firstName || ''} ${c.lastName || ''}`.trim() || c.name || '';
-/* ── Customer funnels (redesign 2026-07-17, spec: customer-funnel-redesign) ──
-   EXPLICIT membership: a customer stores WHICH funnels they're in on `funnels`
-   (booleans), independent of the stored stage — so a lead can be "a Member" while
-   their sales stage is still empty, and the three tracks stay independent. Rental
-   membership is special: `funnels.rental` is only the MANUAL rental-prospect fork;
-   an actual renter lights up live via inRental() reading their rental records
-   (Phase 2), so a renter needs no stored flag. FUNNEL_KEYS = ['rental','member','equipment']. */
-const blankFunnels = () => ({ rental: false, member: false, equipment: false });
-// Never assume the object exists (a backend record can arrive pre-migration): return a
-// live, initialized `c.funnels` so a writer can toggle a membership on it in place.
-function ensureFunnels(c) {
-  if (!c) return blankFunnels();
-  if (c.funnels == null || typeof c.funnels !== 'object') c.funnels = blankFunnels();
-  else FUNNEL_KEYS.forEach((k) => { if (typeof c.funnels[k] !== 'boolean') c.funnels[k] = !!c.funnels[k]; });
-  return c.funnels;
-}
-/* ── Funnel derivations (Phase 2, spec: customer-funnel-redesign) ────────────
-   The Rental funnel is ACTIVITY-DRIVEN: its stage is read live off the customer's
-   own rental records, never a manual pick. Member/Equipment stages are the stored
-   membershipStage/usedSalesStage. `inRental` is the auto-join rule of thumb — anyone
-   who has ever reserved/rented is in the Rental funnel (plus a manual prospect fork). */
-const RENTAL_OUT = new Set(['On Rent', 'End Rent', 'Off Rent']);   // physically out in the field → 'Rented'
-function customerRentals(c) {
-  const id = c && c.customerId; if (id == null) return [];
-  return DATA.rentals.filter((r) => r.customerId === id);
-}
-// Has the customer EVER reserved or rented? (Quote / Cancelled / No Show aren't a commitment.)
-function hasRentalActivity(c) {
-  return customerRentals(c).some((r) => r.status && r.status !== 'Quote' && r.status !== 'Cancelled' && r.status !== 'No Show');
-}
-// In the Rental funnel = an explicit rental-prospect fork OR real rental activity (Jac's rule of thumb).
-function inRental(c) {
-  return !!(c && (ensureFunnels(c).rental || hasRentalActivity(c)));
-}
-// Derived Rental stage: physically out → 'Rented'; a live Reserved → 'Reserved'; else 'Lead'.
-function rentalFunnelStage(c) {
-  const rs = customerRentals(c);
-  if (rs.some((r) => RENTAL_OUT.has(r.status))) return 'Rented';
-  if (rs.some((r) => r.status === 'Reserved'))  return 'Reserved';
-  return 'Lead';
-}
-// The current stage of a given funnel for a customer (Rental derived; Member/Equipment stored).
-function funnelStageOf(c, funnel) {
-  if (funnel === 'rental')    return rentalFunnelStage(c);
-  if (funnel === 'member')    return c.membershipStage || 'N/A';
-  if (funnel === 'equipment') return c.usedSalesStage || 'N/A';
-  return 'N/A';
-}
-// Is the customer in a given funnel? Rental is special (activity OR manual fork); the others are the stored flag.
-function inFunnel(c, funnel) {
-  return funnel === 'rental' ? inRental(c) : !!ensureFunnels(c)[funnel];
-}
-// Is `stage` an AUTO (locked, derived) stage for `funnel`? (Rental Reserved/Rented, Member Signed, Equipment Paid.)
-function isAutoStage(funnel, stage) {
-  const f = FUNNELS[funnel]; return !!(f && f.auto && f.auto.includes(stage));
-}
-// Which stored field a manual funnel writes its stage to (Rental is derived → no field).
-function funnelStageField(funnel) { return funnel === 'member' ? 'membershipStage' : funnel === 'equipment' ? 'usedSalesStage' : null; }
-/* The ONE source of truth both the adaptive menu (Phase 3) and the detail ladder (Phase 5)
-   render from, so they can never disagree. Track A is the combined Rental→Member ladder with
-   the spec's visibility rules baked in; Equipment is the separate track. Each rung:
-   { funnel, stage, auto, current } — `auto` = locked/derived, `current` = the live position. */
-function funnelTrackA(c) {
-  const inR = inRental(c), mem = inFunnel(c, 'member');
-  const rStage = rentalFunnelStage(c), memStage = c.membershipStage || 'N/A';
-  const rungs = [];
-  // Entry 'Lead': Member owns it (manual pick) when Member is on; else it's the derived rental entry.
-  if (mem) rungs.push({ funnel: 'member', stage: 'Lead', auto: false, current: memStage === 'Lead' });
-  else if (inR) rungs.push({ funnel: 'rental', stage: 'Lead', auto: true, current: rStage === 'Lead' });
-  // Rental auto stages — shown only when the customer is in the Rental funnel (activity or manual fork).
-  if (inR) {
-    rungs.push({ funnel: 'rental', stage: 'Reserved', auto: true, current: rStage === 'Reserved' });
-    rungs.push({ funnel: 'rental', stage: 'Rented',   auto: true, current: rStage === 'Rented' });
-  }
-  // Member continuation — shown only when Member is selected (spec's "no distraction" rule).
-  if (mem) {
-    ['Contacted', 'Not A No!', 'Payment Discussed', 'Signed'].forEach((s) => rungs.push({ funnel: 'member', stage: s, auto: isAutoStage('member', s), current: memStage === s }));
-  }
-  return rungs;
-}
-function funnelTrackEquip(c) {
-  if (!inFunnel(c, 'equipment')) return [];
-  const s = c.usedSalesStage || 'N/A';
-  return FUNNELS.equipment.stages.map((st) => ({ funnel: 'equipment', stage: st, auto: isAutoStage('equipment', st), current: s === st }));
-}
 let migrationDirty = false;
 /* One-time, idempotent: give every customer firstName/lastName parsed from `name`,
    then keep `name` as the derived "First Last" display. Runs on seed AND loaded data. */
@@ -270,23 +184,6 @@ function migrateCustomers() {
       c.funnelNAApplied = true; migrationDirty = true;
     }
     if (c.membershipStage === 'Paid') { c.membershipStage = 'Signed'; migrationDirty = true; }   // F3 — membership terminal relabeled Paid→Signed (auto-set by signing)
-    // ── Funnel redesign backfill (2026-07-17) — one-time per customer ──
-    // Collapse the legacy split-lead vocabulary onto the new unified 'Lead' entry
-    // stage, then derive EXPLICIT funnel membership from the stored stages: Member
-    // from membershipStage, Equipment from usedSalesStage. Rental stays a manual fork
-    // (false here) — real renters surface via inRental() at read time, so there is no
-    // O(customers×rentals) history scan on load. No stage values are otherwise changed.
-    if (c.funnels == null) {
-      ['membershipStage', 'usedSalesStage'].forEach((f) => {
-        if (c[f] === 'Inbound Lead' || c[f] === 'Outbound Lead') c[f] = 'Lead';
-      });
-      c.funnels = {
-        rental:    false,
-        member:    !!(c.membershipStage && c.membershipStage !== 'N/A'),
-        equipment: !!(c.usedSalesStage && c.usedSalesStage !== 'N/A'),
-      };
-      migrationDirty = true;
-    }
   });
 }
 /* ── §20 multi-unit rentals — "a Rental is an EVENT" ──
@@ -588,7 +485,6 @@ function attachHeldSigning(c, k) {
 function markMembershipSigned(c, key) {
   if (key !== 'membership' || !c || c.membershipStage === 'Signed') return;
   c.membershipStage = 'Signed';
-  ensureFunnels(c).member = true;   // funnel redesign: a signed member IS in the Member funnel — else the Signed terminal is hidden (funnelTrackA needs inFunnel('member'))
   logAction(c, 'Membership agreement signed → Signed');
 }
 function signCardAgreement(c, k, signature, selfie) {
@@ -1863,21 +1759,7 @@ const invoiceCollectionsActive = (inv) => !!(inv && inv.collections && inv.colle
 /** Does ANOTHER invoice for this invoice's customer still sit in active Collections? Gates the
  *  recall-lifts-blacklist decision so one recall can't un-blacklist while a 2nd is live (#552-r3). */
 function collectionsHasOtherActive(inv) { return !!inv && (DATA.invoices || []).some((i2) => i2 !== inv && i2.customerId === inv.customerId && invoiceCollectionsActive(i2)); }
-// Render-scoped memo — reset at the top of render() and cleared to null at its end, so a call
-// OUTSIDE a render always recomputes fresh (zero staleness risk). These pure per-record derivations
-// (invoiceTotals · activeRentalForUnit · unitRepairCost · unitTotalRevenue) get called many times in
-// ONE render — group-bucketing over the full set, then the windowed row build, then flag/color — so
-// caching for the life of a single render kills the redundant recompute. The cache is thrown away and
-// rebuilt every render, so it can never serve stale data. (Jac 2026-07-17 snappiness)
-let RENDER_MEMO = null;
-function rmemo(bucket, key, compute) {
-  if (!RENDER_MEMO) return compute();
-  let m = RENDER_MEMO[bucket]; if (!m) m = RENDER_MEMO[bucket] = new Map();
-  if (m.has(key)) return m.get(key);
-  const v = compute(); m.set(key, v); return v;
-}
 function invoiceTotals(inv) {
-  return rmemo('invTotals', inv, () => {
   const subtotal = (inv.lineItems || []).reduce((a, li) => a + (Number(li.amount) || 0), 0);
   const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
   const exempt = !!(inv.taxExempt || cust?.salesTaxExempt);
@@ -1909,7 +1791,6 @@ function invoiceTotals(inv) {
     }
   }
   return { subtotal, tax, total, exempt, paid, balance, status };
-  });
 }
 
 /** The active rental driving a unit's mirrored Rental Status (excludes
@@ -1937,11 +1818,11 @@ function rentalRevStatus(r) {
 function activeRentalForUnit(unitId) {
   // §20 judge by the UNIT's OWN status, not the rental roll-up — a No-Show /
   // Returned unit on an otherwise-active rental is NOT actively renting.
-  return rmemo('activeRental', unitId, () => DATA.rentals.filter((r) => {
+  return DATA.rentals.filter((r) => {
     if (!rentalHasUnit(r, unitId) || r.status === 'Quote') return false;
     const eu = unitEntry(r, unitId);
     return ACTIVE_RENTAL.has(eu ? unitStatus(r, eu) : r.status);
-  }).sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null);
+  }).sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null;
 }
 
 /* ── §10 Availability Tool (derived, never stored) ──────────────────────────
@@ -2155,8 +2036,8 @@ function topServiceForUnit(unit) {
 }
 /** Total repair cost for a unit = Σ its WO line-item costs (SPEC §12.4). */
 function unitRepairCost(unitId) {
-  return rmemo('unitRepair', unitId, () => DATA.workOrders.filter((w) => w.unitId === unitId)
-    .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0));
+  return DATA.workOrders.filter((w) => w.unitId === unitId)
+    .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0);
 }
 /** §7.6 WO "Price if billed": tiered parts markup (by each part's cost) + $150/hr labor.
  *  Tiers (Jac 2026-06-07): ≤$50 ×2.0 · ≤$200 ×1.5 · ≤$1000 ×1.3 · >$1000 ×1.2. */
@@ -2170,8 +2051,8 @@ function woBillable(w) {
 }
 /** Total revenue a unit has earned = Σ its rentals' derived prices (SPEC §12.4). */
 function unitTotalRevenue(unitId) {
-  return rmemo('unitRev', unitId, () => DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
-    .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0));   // §20 this unit's own line
+  return DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
+    .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0);   // §20 this unit's own line
 }
 
 /** Inspection result (handles the pending state: no checklist yet = Not Ready). */
@@ -2330,6 +2211,7 @@ function loadSort(card) {
 }
 function saveSort(card, sort) {
   try { localStorage.setItem(SORT_LS_KEY(card), JSON.stringify({ field: sort.field, dir: sort.dir })); } catch {}
+  flushUserPrefsSoon();   // §userSync
 }
 // the entity-card a record belongs to (Shop holds 3 entity types via recType)
 const entityCardOf = (card, recType) => (card === 'shop' ? recType : card);
@@ -2366,25 +2248,7 @@ function loadCommsRail() {
   } catch (e) {}
   return rail;
 }
-function saveCommsRail() { try { localStorage.setItem(COMMS_LS_KEY, JSON.stringify({ sessions: state.commsRail.sessions })); } catch (e) {} }
-/* Clock-in = an EMPTY comms rail. Resets every in-memory flag that decides whether a chat
-   window or tab strip is summoned on screen — cat, each session's menuOpen + lastOpen, the
-   Mr. Wrangler dock (open/min) and the Team dock (open) — then persists the emptied rail so a
-   dismissed conversation can't resurrect from localStorage either. MUST run on EVERY path back
-   to login: the old one-liner lived BELOW renderLogin()'s `phoneIdentity` early-return, so under
-   the live phoneIdentity:true default it was dead code (never ran), and even on the flag-OFF path
-   it only cleared cat/menuOpen — never the dock or lastOpen flags that ride an in-memory Switch
-   User straight into the next operator's session. Exactly the "wired to the old login only" shape
-   as the GPS-token bug (MEMORY 2026-07-17). Called from both login screens + finishLoad. (Jac 2026-07-17) */
-function resetCommsRailForLogin() {
-  if (state.commsRail) {
-    state.commsRail.cat = null;
-    Object.values(state.commsRail.sessions || {}).forEach((s) => { s.menuOpen = false; s.lastOpen = null; });
-    saveCommsRail();
-  }
-  if (state.wrangler) { state.wrangler.open = false; state.wrangler.min = false; }
-  if (state.chat) state.chat.open = false;
-}
+function saveCommsRail() { try { localStorage.setItem(COMMS_LS_KEY, JSON.stringify({ sessions: state.commsRail.sessions })); } catch (e) {} flushUserPrefsSoon(); }   // §userSync — the open rail follows the person (spec §3)
 /* 'Ended' conversations (spec D8: End ≠ delete — the full history persists forever;
    the conversation just leaves the All list + rail). A CLIENT-side per-device map of
    `id|channel` → ended-at epoch (D9: the timestamp lets Team/Wrangler chats RESURRECT
@@ -2405,8 +2269,8 @@ function commsIsEnded(id, channel, lastAt) {
   if (ts === undefined) return false;
   return !(typeof ts === 'number' && (lastAt || 0) > ts);
 }
-function commsEnd(customerId, channel) { const m = commsEndedMap(); m[String(customerId) + '|' + channel] = Date.now(); try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} }
-function commsUnend(customerId, channel) { const m = commsEndedMap(); const k = String(customerId) + '|' + channel; if (k in m) { delete m[k]; try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} } }
+function commsEnd(customerId, channel) { const m = commsEndedMap(); m[String(customerId) + '|' + channel] = Date.now(); try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} flushUserPrefsSoon(); }   // §userSync
+function commsUnend(customerId, channel) { const m = commsEndedMap(); const k = String(customerId) + '|' + channel; if (k in m) { delete m[k]; try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} flushUserPrefsSoon(); } }   // §userSync
 
 const state = {
   data: DATA,
@@ -2437,7 +2301,6 @@ const state = {
   custAcctOpen: {},           // Phase 1 (2026-07-10 account/agreements redesign, D19) — is the top-of-card Account section expanded? { [customerId]: true }; collapsed by default, view-local
   custAgOpen: {},             // Phase 1 — which Agreements row is expanded inside the Account section — { [customerId]: cardId | '__new__' | null } (one open at a time, mirrors custInvOpen); '__new__' = the +Agreement/Card creation panel
   custAgDraft: {},            // Phase 2b — the in-progress NEW-agreement draft — { [customerId]: {accountType, startDate, selfie, signature} }; view-local, cleared on sign/cancel
-  custQuickAdd: { open: false, first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list "+ New Customer" inline quick-add row (leads the list, mirrors +New Rental's .newrow) — collapsed/open + the single in-progress draft; view-local, reset on cancel/create
   svcSecOpen: {},             // Unit detail — is the Services (service-order) section expanded? { [unitId]: true }; collapsed by default (mirrors custAcctOpen), view-local, reset on a fresh unit open
   unitSecOpen: {},            // Unit detail — which generic collapsible sections are expanded per unit: { [unitId]: { workorders|specs|gps|investment: true } }; all collapsed by default, view-local, reset on a fresh unit open (mirrors svcSecOpen). Coverage is folded into Investment (Jac 2026-07-16) — no separate 'coverage' key.
   woRowOpen: {},              // Unit detail — which Work Order row is expanded (accordion, one per unit, mirrors custInvOpen) — { [unitId]: woId | null }; collapsed by default, view-local, reset on a fresh unit open
@@ -2660,7 +2523,6 @@ function sweepEmptyDrafts(keepId) {
   }
 }
 function openStandard(card, recId, recType) {
-  if (columnOfMember(card) === columnOfMember('customers')) resetCustQuickAdd();   // discard the +New Customer draft ONLY when the customers column is displaced (a customer/invoice detail) — not on a cross-column reference click that leaves the list visible (Jac 2026-07-17; scoped per review)
   const cs = activeSession().cards[card];
   if (cs && cs.mode === 'standard' && cs.recId != null) {
     if (String(cs.recId) === String(recId)) { render(); return; }            // already showing it — no-op
@@ -2673,6 +2535,7 @@ function openStandard(card, recId, recType) {
   sweepEmptyDrafts(recId);   // #8 — leaving an empty draft deletes it
   pushCardHistory(cs);       // Task 1 — record the prior (list) view so Back can return
   cs.mode = 'standard'; cs.recId = recId; cs.recType = recType || null; cs.graphView = false;   // opening a record exits the in-column graph view
+  if (card === 'customers' && state.funnelTab) delete state.funnelTab[recId];   // §3.5 — a fresh customer open resets the funnel toggle to Rental
   if (card === 'customers') { if (state.custInvOpen) delete state.custInvOpen[recId]; if (state.custInvMenu) delete state.custInvMenu[recId]; }   // §3.3 — collapse the embedded Invoices accordion on a fresh open (openInvoice re-sets it after)
   if (card === 'customers') { if (state.custAcctOpen) delete state.custAcctOpen[recId]; if (state.custAgOpen) delete state.custAgOpen[recId]; if (state.custAgDraft) delete state.custAgDraft[recId]; }   // Phase 1/2b — collapse the Account section + its Agreements accordion + any in-progress draft on a fresh open
   if (card === 'units') { if (state.svcSecOpen) delete state.svcSecOpen[recId]; if (state.unitSecOpen) delete state.unitSecOpen[recId]; if (state.woRowOpen) delete state.woRowOpen[recId]; }   // collapse the Services + Work Orders / Specs / GPS / Investment sections + any open Work Order row on a fresh open (mirrors the Account/Invoices collapse above)
@@ -2872,9 +2735,8 @@ function cardFwd(card) {
 }
 // A Back/Forward jog RE-opens a view you already visited — so return to where you were
 // reading it, not the top. render() zeroes a record view on the assumption it's a fresh open
-// (§0.6, app.js:16297); the per-view scrollMemo still holds the offset (keyed card|<view>, the
-// view portion being recType:recId — stable per record), so re-apply it AFTER render paints. A
-// never-scrolled view has no entry
+// (§0.6, app.js:16297); the per-view scrollMemo still holds the offset (keyed recType:recId,
+// stable per record), so re-apply it AFTER render paints. A never-scrolled view has no entry
 // → stays at 0. (Fresh opens don't call this, so they still start at the top.)
 function restoreJogScroll(card) {
   const c = document.querySelector(`.card[data-card="${card}"]`);
@@ -4123,65 +3985,31 @@ function custMetaField(c, field, label, ph) {
   const val = c[field];
   return `<div class="kv"><span class="pfx">${esc(label)}</span><span class="v inline-edit" data-edit="custField" data-field="${esc(field)}" data-rec="${esc(c.customerId)}" data-ph="${esc(ph)}">${val ? esc(val) : `<span class="add-field" data-r="R5c">+${esc(label)}</span>`}</span></div>`;
 }
-/* R35 — the funnel LADDER: a customer's stage journey as a row of rungs (arrows between),
-   the current rung lit, auto rungs (Reserved/Rented/Signed/Paid) locked. The whole ladder
-   is one press target that opens the adaptive funnel menu (js-funnelmenu). Bespoke — it is
-   NOT a .pill (so it stays out of the R0 lint family), the container carries the stamp. */
-function funnelRung(r) {
-  const st = getStatus('funnelStage', r.stage);
-  return `<span class="frung c-${st.color}${r.current ? ' current' : ''}${r.auto ? ' auto' : ''}">${esc(st.label)}${r.auto ? `<span class="fr-lock">${I.lock}</span>` : ''}</span>`;
-}
-function funnelLadder(c, rungs) {
-  const pills = rungs.map((r, i) => `${i ? '<span class="fl-arw">›</span>' : ''}${funnelRung(r)}`).join('');
-  return `<div class="fladder js-funnelmenu" data-r="R35" data-rec="${esc(c.customerId)}" data-tip="Edit funnel">${pills}</div>`;
-}
-const funnelJoinBtn = (c, label) => addBtn(label, { link: true, js: 'js-funnelmenu', data: { rec: c.customerId } });
-// A small urgency pip on a track header when that track's Next Actions are due/soon (carries
-// the signal the old per-tab RYG dot gave, now that the tabs are gone).
-function funnelUrgPip(c, scope) {
-  const u = naDotClass(c, scope);
-  return u === 'ok' ? '' : `<span class="ftk-urg ${u}" data-tip="${u === 'due' ? 'Action due or overdue' : 'Action due soon'}"></span>`;
-}
-function funnelTrackCard(dotCls, title, hint, urg, headExtra, inner) {
-  return `<div class="ftk">`
-    + `<div class="ftk-hd"><span class="ftk-dot ${dotCls}"></span><span class="ftk-nm">${esc(title)}</span>${urg}<span class="ftk-hint">${esc(hint)}</span>${headExtra || ''}</div>`
-    + `<div class="ftk-body">${inner}</div>`
-    + `</div>`;
-}
-/* Two-track customer funnel (redesign 2026-07-17, spec: customer-funnel-redesign) — replaces
-   the old Rental / Equipment-Sales 2-tab. Track A is the combined Rental→Member ladder (Member
-   stages appear only when Member is selected; Reserved/Rented only when the customer is rental-
-   active); Track B is the separate Equipment-sales ladder. Both edit through the ONE adaptive
-   funnel menu (funnelMenuHtml). Next Actions / Action Log keep their 'rental' | 'usedSales' scopes. */
 function funnelSectionHtml(c) {
-  const trackA = funnelTrackA(c);
-  const equip = funnelTrackEquip(c);
-  const mem = inFunnel(c, 'member'), eq = inFunnel(c, 'equipment');
-  // ── Track A — Rental → Member ──
-  const titleA = mem ? 'Rental → Member' : 'Rental';
-  const hintA = mem ? 'membership continuation' : (inRental(c) ? 'rental only' : 'not started');
-  const aInner = trackA.length
-    ? funnelLadder(c, trackA)
-      + (mem ? `<div class="fieldstack funnel-fields">${membershipMetaHtml(c)}</div>` : '')
+  const tab = (state.funnelTab && state.funnelTab[c.customerId]) || 'rental';
+  const seg = segCtl([
+    { label: 'Rental', js: `js-funnel-tab ${naDotClass(c, 'rental')}`, data: { rec: c.customerId, tab: 'rental' }, on: tab === 'rental' ? 'accent' : null },
+    { label: 'Equipment Sales', js: `js-funnel-tab ${naDotClass(c, 'usedSales')}`, data: { rec: c.customerId, tab: 'usedSales' }, on: tab === 'usedSales' ? 'accent' : null },
+  ]);
+  let body;
+  if (tab === 'rental') {
+    body = `<div class="fb-toprow">${funnelPill(c.customerId, 'membership', c.membershipStage || 'N/A')}${acctBtn(c)}</div>`
+      + `<div class="fieldstack funnel-fields">${membershipMetaHtml(c)}</div>`
       + nextActionsHtml(c, 'rental')
-      + actionLogHtml(c, 'rental')
-    : `<div class="ftk-empty">Not a rental or member lead yet. ${funnelJoinBtn(c, 'Funnel')}</div>`;
-  const trackACard = funnelTrackCard('a', titleA, hintA, funnelUrgPip(c, 'rental'), acctBtn(c), aInner);
-  // ── Track B — Equipment ──
-  const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id, tag: 'Cat' }) : ''; }).join('');
-  const intMakes = (c.interestedMakes || []).map((mk) => refPill(null, mk, mk, { x: 'intmake-remove', xData: mk, tag: 'Make', tone: 'tan' })).join('');
-  const bInner = eq
-    ? funnelLadder(c, equip)
+      + actionLogHtml(c, 'rental');
+  } else {
+    const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id, tag: 'Cat' }) : ''; }).join('');
+    const intMakes = (c.interestedMakes || []).map((mk) => refPill(null, mk, mk, { x: 'intmake-remove', xData: mk, tag: 'Make', tone: 'tan' })).join('');
+    body = `<div class="fb-toprow">${funnelPill(c.customerId, 'usedSales', c.usedSalesStage || 'N/A')}${acctBtn(c)}</div>`
       + `<div class="fieldstack funnel-fields">${custMetaField(c, 'desiredAge', 'Desired Age', 'Add desired age')}${custMetaField(c, 'desiredHours', 'Desired Hours', 'Add desired hours')}</div>`
       + `<div class="funnel-sublabel">Interested in</div>`
       + `<div class="kv pillrow interested">${intCats}${intMakes}${addBtn('Make / Category', { link: true, js: 'js-addmakecat', h: 26, data: { rec: c.customerId } })}</div>`
       + nextActionsHtml(c, 'usedSales')
-      + actionLogHtml(c, 'usedSales')
-    : `<div class="ftk-empty">Not an equipment-sales lead. ${funnelJoinBtn(c, 'Equipment')}</div>`;
-  const trackBCard = funnelTrackCard('b', 'Equipment', eq ? 'separate sales track' : 'not started', funnelUrgPip(c, 'usedSales'), '', bInner);
+      + actionLogHtml(c, 'usedSales');
+  }
   return `<div class="section funnel-sec">`
-    + `<div class="funnel-hd"><span class="fh-rule"></span><span class="fh-title">Funnel</span><span class="fh-rule"></span></div>`
-    + `<div class="funnel-tracks">${trackACard}${trackBCard}</div>`
+    + `<div class="funnel-hd"><span class="fh-rule"></span>${seg}<span class="fh-rule"></span></div>`
+    + `<div class="funnel-body">${body}</div>`
     + `</div>`;
 }
 /* ── Phase 1 (2026-07-10 Account/Agreements + Membership redesign, spec §3/§7b
@@ -4537,6 +4365,7 @@ function customerAccountSection(c) {
     : '<i>No contact info yet</i>';
   return `<div class="acct${open ? ' open' : ''}">`
     + `<div class="acct-bar js-acct-toggle" data-rec="${esc(c.customerId)}">`
+    + `<span class="acct-lbl">Account</span>`
     + `<span class="acct-sum">${summary}</span>`
     + `<span class="type-chip ${chip.tone}">${esc(chip.text)}</span>`
     + `<span class="acct-chev">${I.chev}</span>`
@@ -5830,21 +5659,10 @@ function unitStatusGate(r, eu) {
   const st = getStatus('rentalStatus', unitStatus(r, eu));
   return `<span class="pill gate c-${st.color} js-unit-status" data-r="R1" data-rec="${esc(r.rentalId)}" data-unit="${esc(eu.unitId)}">${I.chev}${esc(st.label)}</span>`;
 }
-/** R1: funnel-stage gate — displays a customer's stored stage (`which` picks the label the
- *  caller passes in) and opens the ONE adaptive funnel menu (redesign 2026-07-17). Used by the
- *  Sales pipeline board's Used-Equipment / Membership columns. */
+/** R1: funnel-stage gate (§7.1). */
 function funnelPill(custId, which, stage) {
   const st = getStatus('funnelStage', stage);
-  return `<span class="pill gate c-${st.color} js-funnelmenu" data-r="R1" data-rec="${esc(custId)}">${I.chev}${esc(st.label)}</span>`;
-}
-/** R1: the SAME gate-pill shape as funnelPill, but for the Customers-list quick-add
- *  DRAFT (no customerId exists yet) — opens the single-select funnel menu, which writes
- *  a FUNNEL KEY to state.custQuickAdd.funnel (funnel redesign 2026-07-17) instead of a
- *  real record. Unset / N/A reads as a short "Lead?" placeholder; a real pick shows the
- *  funnel name (blue = the Lead entry the new customer will land at). */
-function custQuickAddFunnelPill(funnel) {
-  const real = FUNNELS[funnel] ? funnel : null;
-  return `<span class="pill gate c-${real ? 'blue' : 'gray'} js-custqa-funnel" data-r="R1">${I.chev}${esc(real ? FUNNELS[real].label : 'Lead?')}</span>`;
+  return `<span class="pill gate c-${st.color} js-funnel" data-r="R1" data-rec="${esc(custId)}" data-which="${which}">${I.chev}${esc(st.label)}</span>`;
 }
 /** R4: a DERIVED pill — rides another pill in the same section; no bg/border,
  *  destination icon + ink color only; sits directly RIGHT of its parent. */
@@ -6163,12 +5981,7 @@ function openCtxMenuAt(target, x, y) {
   }
   // While the rental-window picker is open, keep right-click → BACK working; just suppress
   // the element context menu (it gets in the way of picking). (Jac B5, 2026-06-15)
-  // The Back/Forward jog is navigation CHROME, not a data leaf — its arms are <button>s,
-  // so a bare `button` in the leaf list below scooped them up and opened the element menu
-  // instead of going Back ("opens the menu even though I'm not clicking an element", Jac
-  // 2026-07-17). Treat the jog like card dead-space: fall through to the card-Back path.
-  const onJog = !!target.closest('.card-jog');
-  const leaf = (onJog || (state.winEdit && state.winEdit.anchor)) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
+  const leaf = (state.winEdit && state.winEdit.anchor) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
   const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
   if (hit) return openCtxMenu({ clientX: x, clientY: y }, hit);
   if (!card) return;
@@ -6303,7 +6116,7 @@ function popupShell({ icon, title, tag, danger, headRight = '', headRail = '', b
    visual Rulebook overlay. One row per rule: [name, builder, one-liner]. ── */
 const RULE_META = {
   R0:  ['Flash-lint', 'body.rw-lint (CSS)', 'un-stamped UI pulses red — it bypassed the builders'],
-  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill / custQuickAddFunnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
+  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
   R2:  ['Linked pill', 'refPill / unitPill', 'orange outline + DESTINATION-card icon — opens a record; optional ✕'],
   R3:  ['Status badge', 'statusPill', 'informational STATUS: registry color, parent-card icon, hover underline — never an action'],
   R3b: ['Data chip', 'badge', 'a plain FACT (480 HRS, No GPS): gray, no icon, no hover — independent of R3'],
@@ -6342,7 +6155,6 @@ const RULE_META = {
   R32: ['Nav jog', 'cardJog / .card-jog · .mfoot-jog', 'the two-way Back/Forward view-history stepper. On desktop + in-card it is a neutral steel pill (chevron arms split by a saddle-stitch seam, orange only on hover/press) that shows only when the card has history. On phone it lives ALWAYS-ON as a snug chip pinned to the bottom-RIGHT of the footer tool bar (matching the .iconbtn tool buttons), Chrome-style: bright chevrons that grey when their stack is empty — reflecting the snapped column’s card (repainted on swipe).'],
   R33: ['Global toggle', 'globeToggle', 'the icon-only globe pinned right in a grid card’s search bar — flips that bar, and every grid-card bar in lockstep, between per-card and whole-yard “global” search (dim steel off, safety-orange on). A scope-MODE toggle like R31 but icon-only + it drives the shared query; replaces the old giant #globalsearch bar. Behind FEATURES.cardGlobalSearch.'],
   R34: ['Wash cycle button', 'washBtn', 'one pressable status pill that advances a unit’s wash on each click — neutral “Wash?” → caution “Wash It!” (yellow, requested) → ready “✓ Washed” (green, logged) → click again un-marks today’s wash. Registry STATUS tones (green/yellow/gray), NOT action colors; a press-to-advance control like R1 but it cycles in place instead of opening a dropdown. Replaces the old Wash / Don’t Wash / Washed R14 toggle; wash no longer gates inspection Pass.'],
-  R35: ['Funnel ladder', 'funnelLadder / .fladder', 'a customer’s funnel journey as a row of rungs (chevrons between), the current rung lit in its registry color and auto rungs (Reserved/Rented/Signed/Paid) locked with a padlock. The whole ladder is one press target that opens the ONE adaptive funnel menu (funnelMenuHtml — N/A · Leads chips · applicable Stages). Bespoke — the rungs are NOT .pill (kept out of the R0 lint family), the container carries the stamp. Track A = combined Rental→Member; Track B = Equipment.'],
 };
 /* ════════════ APP-12 · DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
    The Rulebook grew from "stamped element rules" (R0–R24 above) into the WHOLE
@@ -6471,7 +6283,7 @@ const RB_TABS = [
   { id: 'upload', label: 'Upload & Capture', intro: 'Add-file zones and photo/site captures.',
     items: [{ r: 'R21' }, { f: 'upload-capture' }] },
   { id: 'data', label: 'Data & Behaviors', intro: 'Visualizations, plus the app’s behaviors — it flashes instead of erroring, right-clicks, tooltips, and self-lints.',
-    items: [{ r: 'R16' }, { r: 'R15' }, { r: 'R35' }, { r: 'R13' }, { f: 'data-kpi' }, { f: 'data-gauge' }, { r: 'R19' }, { r: 'R25' }, { r: 'R20' }, { r: 'R23' }, { f: 'behavior-preview' }, { r: 'R0' }] },
+    items: [{ r: 'R16' }, { r: 'R15' }, { r: 'R13' }, { f: 'data-kpi' }, { f: 'data-gauge' }, { r: 'R19' }, { r: 'R25' }, { r: 'R20' }, { r: 'R23' }, { f: 'behavior-preview' }, { r: 'R0' }] },
 
   { id: 'windows', label: 'Windows', intro: 'Every pop-up window in the app, by kind. Expand one for a live preview, its fields, and a copy-paste edit reference — your map to wrangle any screen.', items: [] },
 ];
@@ -6479,7 +6291,7 @@ const RB_TABS = [
 const CLASS_RULE = [
   ['.c-titlecard', 'R10'], ['.nsec', 'R12'], ['.hvals', 'R13'], ['.history', 'R13'],
   ['.timeline', 'R16'], ['.jnode', 'R15'], ['.jseg', 'R15'], ['.journey', 'R15'],
-  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.file-drop', 'R21'], ['.datefield', 'R22'], ['.fladder', 'R35'], ['.section', 'R11'],
+  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.file-drop', 'R21'], ['.datefield', 'R22'], ['.section', 'R11'],
 ];
 function ruleOf(target) {
   if (!target || !target.closest) return null;
@@ -7459,28 +7271,24 @@ function yardToolHtml(u) {
   const C = euT || r;   // §20 this unit's OWN captures (mirrors r.* for the primary)
   const st = getStatus('rentalStatus', euT ? unitStatus(r, euT) : rentalDisplayStatus(r));
   const isDel = !!(euT && euT.transportType && euT.transportType !== 'Self');   // §20 per-unit (was rental-level — diverged on multi-unit)
-  // A QR-decal scan is ADOPTED into the record as a first-class capture (adoptScanCaptures,
-  // marked scan:true), so the journey reads it straight off C.* like any manual capture — the
-  // `• Filed by QR scan` marker below just keys off that flag. No display-time join needed.
-  const startCap = C.startCapture, endCap = C.endCapture;
-  const startLbl = startCap ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
-  const endLbl = endCap ? 'Returned' : isDel ? '+Log Recovery' : '+End';
+  const startLbl = C.startCapture ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
+  const endLbl = C.endCapture ? 'Returned' : isDel ? '+Log Recovery' : '+End';
   const kindLbl = isDel ? getStatus('transportType', euT.transportType).label : '';
   const du = `data-unit="${esc(u.unitId)}"`;
   return `<div class="jtool"><div class="journey">
     <div class="jnode pre" style="cursor:default"><span class="jbox" style="color:var(--${st.color})">${CARD_ICON.rentals}</span><span class="jlbl" style="color:var(--${st.color})">${esc(st.label)}</span><span class="jts">${fmtShortDate(r.startDate)}${r.startTime ? ' · ' + esc(r.startTime) : ''}</span></div>
     <div class="jseg">
       <span class="jover"><span class="pill dvd c-orange" data-r="R4" data-pill-card="rentals" data-pill-rec="${esc(r.rentalId)}">${CARD_ICON.rentals}<span class="t">${esc(cust?.name || r.rentalName || 'Rental')}</span></span></span>
-      <span class="jline2 ${startCap ? 'on' : ''}"></span>
+      <span class="jline2 ${C.startCapture ? 'on' : ''}"></span>
       <span class="junder">${fmtShortDate(r.startDate)} – ${fmtShortDate(r.endDate)}</span>
       ${(() => { const addr = (euT && euT.deliveryAddress) || (isPrimaryUnit(r, euT) ? r.deliveryAddress : ''); return addr ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}" ${du}>${esc(addr)}</span>` : (isDel ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}" ${du}>+Address</span>` : ''); })()}
       ${kindLbl ? `<span class="jkind">${esc(kindLbl)}</span>` : ''}
     </div>
-    <div class="jnode ${startCap ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}" ${du}${startCap?.scan ? ' data-tip="Filed by QR scan"' : ''}><span class="jbox">${startCap ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(startCap?.clock || '')}${startCap?.scan ? ' <span class="jscan">•</span>' : ''}</span></div>
-    <div class="jseg"><span class="jover"></span><span class="jline2 ${endCap || C.fcCapture ? 'on' : ''}"></span></div>
+    <div class="jnode ${C.startCapture ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${C.startCapture ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(C.startCapture?.clock || '')}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${C.endCapture || C.fcCapture ? 'on' : ''}"></span></div>
     <div class="jnode fc ${C.fcCapture || r.fieldCall ? 'done' : ''} js-yard" data-cap="fc" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${I.video}</span><span class="jlbl">+FC</span><span class="jts">${esc(C.fcCapture?.clock || '')}</span></div>
-    <div class="jseg"><span class="jover"></span><span class="jline2 ${endCap ? 'on' : ''}"></span></div>
-    <div class="jnode ${endCap ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}" ${du}${endCap?.scan ? ' data-tip="Filed by QR scan"' : ''}><span class="jbox">${endCap ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(endCap?.clock || '')}${endCap?.scan ? ' <span class="jscan">•</span>' : ''}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${C.endCapture ? 'on' : ''}"></span></div>
+    <div class="jnode ${C.endCapture ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${C.endCapture ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(C.endCapture?.clock || '')}</span></div>
   </div></div>`;
 }
 /* one open-WO section on the Units card: WO name = the title, type+date flags right,
@@ -7639,7 +7447,12 @@ function caScrub(e) {
    as a static colored marker. Its color is the most-urgent UNREAD note (red>yellow>green),
    resting on the latest note's color once everything is read. ── */
 const COMMENT_SEV = { red: 3, yellow: 2, green: 1 };
-const commentUserKey = () => currentUser || currentRole || 'me';
+// §userSync (spec §4.2): under phone-identity + FEATURES.userSync, attribute chat/comment activity
+// to the stable personId (fixes the shared-role commingling where everyone on a role shared one
+// key); legacy/shared-password login keeps the free-text name/role key. Chat OWNERSHIP stays
+// back-compatible via chatIsAdmin (it also matches the legacy keys), so a flag flip never orphans
+// a chat. seen/ack/mute maps keyed by the old value simply re-seed once at cutover (soft, self-heals).
+const commentUserKey = () => (syncActive() ? 'pid:' + currentPersonId : (currentUser || currentRole || 'me'));
 const recComments = (rec) => (rec && rec.comments) || [];
 function commentMarker(rec) {
   const all = recComments(rec); if (!all.length) return null;
@@ -9109,6 +8922,7 @@ function toggleGroupCollapsed(card, key) {
   const k = card + ':' + key;
   COLLAPSED_GROUPS[k] = !groupCollapsed(card, key);
   try { localStorage.setItem('jactec.collapsedGroups', JSON.stringify(COLLAPSED_GROUPS)); } catch (e) {}
+  flushUserPrefsSoon();   // §userSync
 }
 /* Custom GROUP ORDER — drag-to-reorder a card's group headers (Jac 2026-07-04),
    remembered PER ROLE (Admin/Mechanic/Sales/... each keep their own order), synced
@@ -9508,32 +9322,6 @@ function listView(cardDef, session) {
   wrap.appendChild(cardListEl(cardDef, session));
   return wrap;
 }
-/* ADDITIVE inline single-line quick-add (Jac, 2026-07-17) — leads the Customers list,
-   mirroring the Rentals list's +New Rental .newrow/.bigbtn trigger; the EXISTING
-   search-bar quick-add (quickAddCustomerFromSearch) and the fruitless-search
-   js-new-cust-search prompt both stay untouched. Collapsed = the plain unstamped
-   .bigbtn (same as +New Rental — R5b language, not a lint-family element). Open =
-   ONE inline flex row: First · Last · Phone · the R1 funnel picker (draft-scoped,
-   defaults N/A) · a quiet Cancel (R18 ghostPill) · the "Wrangle" R17 ignition create
-   button, enabled only once First/Last/Phone are all filled and the phone looks real
-   (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
-function custQuickAddRowHtml() {
-  const d = state.custQuickAdd;
-  if (!d.open) return `<button class="bigbtn js-custqa-open">${I.plus} New Customer</button>`;
-  // No Cancel/Wrangle buttons, no stamped field captions (Jac 2026-07-17): the placeholders
-  // label the text fields and the funnel pill labels itself. First + Last + a ≥7-digit Phone,
-  // then a funnel PICK (any value incl N/A — the pick IS the 4th selection) auto-creates the
-  // customer and opens its detail view. A created customer — or navigating away — resets to the
-  // collapsed +New Customer button.
-  return `<div class="qa-cust">`
-    + `<div class="qa-cust-row">`
-    + `<div class="qa-field qa-first"><input type="text" class="qa-in js-custqa-first" placeholder="First name" value="${esc(d.first)}"></div>`
-    + `<div class="qa-field qa-last"><input type="text" class="qa-in js-custqa-last" placeholder="Last name" value="${esc(d.last)}"></div>`
-    + `<div class="qa-field qa-phone"><input type="tel" class="qa-in js-custqa-phone" placeholder="Phone" value="${esc(d.phone)}"></div>`
-    + `<div class="qa-field qa-funnel">${custQuickAddFunnelPill(d.funnel)}</div>`
-    + `</div>`
-    + `</div>`;
-}
 /* The rows-only `.list` element of a card's list view — factored out of listView so a
    mini-search keystroke can rebuild ONLY the rows (renderCardList) without touching the
    .listbar / its focused input. Owns the filter → visibility → sort → window/group pipeline
@@ -9575,14 +9363,6 @@ function cardListEl(cardDef, session) {
   if (card === 'rentals') {
     const nr = el('div', 'newrow');
     nr.innerHTML = `<button class="bigbtn js-newitem" data-new="rental">${I.plus} New Rental</button>`;
-    list.appendChild(nr);
-  }
-  // ADDITIVE inline quick-add (Jac 2026-07-17) — Customers always leads with its own
-  // +New Customer row, mirroring the Rentals block above; the search-bar quick-add and
-  // the fruitless-search prompt below are untouched, separate affordances.
-  if (card === 'customers') {
-    const nr = el('div', 'newrow');
-    nr.innerHTML = custQuickAddRowHtml();
     list.appendChild(nr);
   }
   if (!rows.length) {
@@ -9997,15 +9777,11 @@ function headerEl() {
  *  Receipt (the most-used action) stays a bare icon. Requests/Transport
  *  alerts/Notifications moved off this bar entirely, onto the Comms bell (they
  *  don't need an {opts} passthrough here — the bell reads its own {noInbox}). */
-function bottomBarInner(opts = {}) {
+function bottomBarInner() {
   // rules 5/6: LEFT = labeled actions (icon LEADS label, no "+"), Wash joins them;
   // RIGHT (after divider) = icon-only utilities. The +New collapse button is dropped (Jac).
-  // chips:false — the desktop footer now clusters ALL comms on the RIGHT (Jac 2026-07-17), so it
-  // omits the comms chips here and re-adds them in the right cluster (bottomBarEl). The phone
-  // top-toolbar + the tools-tray keep the chips inline (default true).
-  const chips = opts.chips !== false;
   return `
-    ${chips ? commsChipsHtml() : ''}
+    ${commsChipsHtml()}
     <button class="iconbtn js-newitem" data-new="receipt">${CARD_ICON.expenses}Receipt</button>
     <span class="bb-sep"></span>
     ${toolsBtn()}`;
@@ -10073,11 +9849,8 @@ function commsBellBtn(opts = {}) {
 // far right (Jac 2026-07-10).
 function bottomBarEl() {
   const bar = el('div', 'bottombar');
-  // ALL comms live on the RIGHT now (Jac 2026-07-17): tools stay left, the conversation rail
-  // right-aligns its tabs (see .comms-rail justify-content), then the comms chips, then the bell.
-  bar.innerHTML = `<div class="bb-tools">${bottomBarInner({ chips: false })}</div>`
+  bar.innerHTML = `<div class="bb-tools">${bottomBarInner()}</div>`
     + `<div class="comms-rail" role="tablist" aria-label="Conversations">${commsRailEl()}</div>`
-    + `<div class="bb-comms">${commsChipsHtml()}</div>`
     + `<div class="bb-utils">${commsUtilsEl()}</div>`;
   return bar;
 }
@@ -10157,7 +9930,6 @@ function mainCardOfMember(m) {
 // §M1 — jump straight to a card (flattens the 3-column model on phones): set the column +
 // member, flip the visible column, and show that card's LIST.
 function goToCard(member) {
-  if (member !== 'customers' && columnOfMember(member) === columnOfMember('customers')) resetCustQuickAdd();   // discard the +New Customer draft ONLY when the customers column is switched away (e.g. to Invoices) — never when returning to it, or switching a different column (Jac 2026-07-17; scoped per review)
   const s = activeSession(); const col = COLUMN_OF[member];
   if (s.cols && col) s.cols[col] = member;
   const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx;
@@ -10247,13 +10019,17 @@ function newChat(opts) {
 // Settings → Team Roster entry (the pragmatic login↔roster bind). null = not on the
 // roster (a demo / un-rostered login) → treated as an unbound viewer below.
 function myRosterId() {
+  if (syncActive() && currentPersonId) return String(currentPersonId);   // §userSync — the stable roster/person id (phone identity), not a fragile login-name match
   const me = (currentUser || '').trim().toLowerCase(); if (!me) return null;
   const hit = ((state.settings && state.settings.employees) || []).find((e) => (e.name || '').trim().toLowerCase() === me);
   return hit ? String(hit.id) : null;
 }
 // The chat's creator owns it: only they add/remove members or rename. Legacy chats with
 // no recorded creator stay openly editable (back-compat — they predate the model).
-function chatIsAdmin(c) { return !c || !c.by || c.by === commentUserKey(); }
+// A chat's creator owns it (add/remove members, rename). Match the current identity key AND — for
+// chats created BEFORE the §userSync personId re-key — the legacy free-text name/role keys, so
+// flipping the flag can never lock anyone out of a chat they made. No `by` (legacy) → openly editable.
+function chatIsAdmin(c) { return !c || !c.by || c.by === commentUserKey() || c.by === currentUser || c.by === currentRole || (!!currentPersonId && c.by === 'pid:' + currentPersonId); }
 const chatAmMember = (c) => { const m = myRosterId(); return !!m && (c.members || []).map(String).includes(String(m)); };
 // Visibility: the admin and members see a chat; a bound non-member does not (Leave hides
 // it). An unbound login (not on the roster) sees all — so demo / un-rostered use isn't empty.
@@ -10979,7 +10755,7 @@ function dispatchEvents() {
    (localStorage) until Phase 3/4 materialize a Trip + sync it. */
 const dispatchStopId = (ev) => `${ev.rentalId}|${ev.unitId || ''}|${ev.task}`;
 const _lsJSON = (k) => { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } };
-const _lsSave = (k, o) => { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) {} };
+const _lsSave = (k, o) => { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) {} if (k.indexOf('jactec.dispatch') === 0) flushUserPrefsSoon(); };   // §userSync — dispatch route state follows the person (not trips: ephemeral, spec §3)
 const dispatchOrderLS = () => _lsJSON('jactec.dispatchOrder');
 const dispatchTimesLS = () => _lsJSON('jactec.dispatchTimes');
 /* §2.3 D6 (spec rentals-dispatch) — the per-driver schedule slice:
@@ -11087,82 +10863,6 @@ async function loadTripsFromBackend() {
       render();
     }
   } catch (e) { /* offline → keep local cache */ }
-}
-/* Scan-sourced capture videos (QR-decal scans, SCAN-TO-LOG above) are filed server-side via
-   captureByScan into an append-only ScanLog (NOT onto the rental record, so a client sync can't
-   clobber the server write). SCAN_CAPS is the boot-pulled feed (getScanCaptures), keyed
-   "<unitId>|<rentalId>|<cap>" → { video, ts }. adoptScanCaptures() then folds each one INTO the
-   rental it belongs to — client-side, synced via the normal diff-sync — so downstream everything
-   reads it as an ordinary capture. Mirrors loadTripsFromBackend: same offline/local guard. */
-let SCAN_CAPS = {};
-async function loadScanCapturesFromBackend() {
-  if (typeof backendPassword === 'undefined' || !backendPassword) return;
-  try {
-    const r = await backendCall('getScanCaptures');
-    if (r && r.ok && r.captures && typeof r.captures === 'object') {
-      SCAN_CAPS = r.captures || {};
-      const changed = adoptScanCaptures();     // fold new scan videos into their rentals (stamp capture + advance status)
-      if (!booting && changed) render();
-    }
-  } catch (e) { /* offline → keep whatever SCAN_CAPS already holds (possibly empty) */ }
-}
-/* Fold each scan-filed video into its rental as a FIRST-CLASS capture: stamp the unit's
-   start/end capture (marked scan:true) and advance that unit's status the way a manual Log
-   Delivery/Recovery would — so the journey, the status pill, availability, billing and every
-   status-driven surface agree, with ZERO display/gate special-casing (they read cur.* like any
-   manual capture). Client-side + persisted through the normal diff-sync (reindex → saveSoon),
-   so it never clobbers a server write. Status is set DIRECTLY, bypassing the §9 booking gates —
-   the unit physically moved, so a scan records that fact; a missing invoice is FLAGGED in the
-   activity log, not blocked (Jac: don't stop a truck that already left). Idempotent: a slot that
-   already carries a video (a manual capture, or an earlier adoption) is left untouched, so this
-   re-runs harmlessly on every load and never fights a manual edit. §scan-reconcile. */
-function adoptScanCaptures() {
-  // Parse the flat SCAN_CAPS map, then process in CHRONOLOGICAL order (ts, with a start-before-
-  // end tiebreak) — never key order. A unit's START must be adopted before its END, or a full
-  // backlog (both scans landed before anyone opened the app) would advance Reserved → On Rent on
-  // the start AFTER the end already skipped its own status move, stranding the unit at On Rent
-  // forever (the endCapture is stamped, so idempotency then blocks the Returned move). §bug-1.
-  const entries = [];
-  for (const k in SCAN_CAPS) {
-    const cap = SCAN_CAPS[k]; if (!cap || !cap.video) continue;
-    const b1 = k.indexOf('|'); if (b1 < 0) continue;
-    const b2 = k.indexOf('|', b1 + 1); if (b2 < 0) continue;
-    const slot = k.slice(b2 + 1); if (slot !== 'start' && slot !== 'end') continue;
-    entries.push({ unitId: k.slice(0, b1), rentalId: k.slice(b1 + 1, b2), slot, video: cap.video, ts: cap.ts });
-  }
-  entries.sort((a, b) => (Number(new Date(a.ts)) - Number(new Date(b.ts))) || ((a.slot === 'end') - (b.slot === 'end')));
-  let changed = false;
-  for (const e of entries) {
-    const r = IDX.rental.get(e.rentalId); if (!r) continue;
-    const eu = unitEntry(r, e.unitId);
-    if (Array.isArray(r.units) ? !eu : String(r.unitId) !== String(e.unitId)) continue;   // must match the scanned unit
-    const tgt = eu || r, key = e.slot === 'start' ? 'startCapture' : 'endCapture';
-    if (tgt[key]) continue;   // ANY capture already on this slot wins — a manual stamp (even mid-upload, video:'' before Drive resolves), or an earlier adoption. Never overwrite it. §bug-2
-    // Adopt ONLY when the resulting (capture + status) stays self-consistent — else leave the scan
-    // in ScanLog rather than paint a contradictory card (a green "delivered" node over a "No Show"/
-    // "Reserved" pill). Read the STORED status, not the derived one, so a backlog delivery on a
-    // derived-No-Show unit (stored 'Reserved', start date passed) still advances to On Rent. §bug-3
-    const storedSt = (eu && eu.status) || r.status || 'Reserved';
-    if (e.slot === 'start') { if (['Returned', 'Cancelled', 'No Show'].includes(storedSt)) continue; }   // terminal → don't un-terminal
-    else { if (!OUT_RENTAL_STATUSES.has(storedSt) && storedSt !== 'Returned') continue; }             // recovery with no delivery on file → skip
-    let clock = '', date = TODAY_ISO;
-    // Derive date + clock in LOCAL time (isoOf, like the manual capture path's TODAY_ISO) — NOT
-    // toISOString(), whose UTC day would stamp tomorrow's date on an evening scan in a negative-
-    // offset yard (America/Chicago), diverging from the local `clock` on the same stamp. §bug-4
-    try { const d = new Date(e.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = isoOf(d); } } catch (err) {}
-    const drvId = eu ? (e.slot === 'end' ? (eu.recoveryDriverId || eu.deliveryDriverId) : eu.deliveryDriverId) : null;
-    setUnitCapture(r, eu, key, { date, clock, video: e.video, driver: drvId ? driverName(drvId) : '', scan: true });
-    if (e.slot === 'start' && !OUT_RENTAL_STATUSES.has(storedSt)) {   // pre-delivery → this scan delivered it
-      if (eu) { eu.status = 'On Rent'; syncRentalPrimary(r); } else { r.status = 'On Rent'; }
-      if (!r.invoiceId) logAction(r, '⚠ Delivered by QR scan — no invoice linked yet');
-    } else if (e.slot === 'end' && OUT_RENTAL_STATUSES.has(storedSt)) {   // out → this scan recovered it
-      if (eu) { eu.status = 'Returned'; syncRentalPrimary(r); } else { r.status = 'Returned'; }
-    }
-    logAction(r, `${IDX.unit.get(e.unitId)?.name || e.unitId} — ${e.slot === 'start' ? 'Delivery' : 'Recovery'} video filed by QR scan`);
-    reindex('rentals', r);   // → saveSoon() diff-syncs this client-side write (no clobber)
-    changed = true;
-  }
-  return changed;
 }
 /* §2.3 Phase 4 — the Trips card footer's live sync state (replaces the Phase 1 static
    placeholder). 'Synced · rev N' (N = the highest rev among TODAY's materialized trips) only
@@ -11986,7 +11686,7 @@ function ruResolve() {
   if (p.k === 'today') return { k: 'today', a: TODAY_ISO, b: tomorrow, label: 'Today' };
   return { k: p.k, a: uCutoff(p.k), b: tomorrow, label: p.label };
 }
-function ruSave(r) { _ruRange = r; try { localStorage.setItem('jactec.ruRange', JSON.stringify(r)); } catch (e) {} }
+function ruSave(r) { _ruRange = r; try { localStorage.setItem('jactec.ruRange', JSON.stringify(r)); } catch (e) {} flushUserPrefsSoon(); }   // §userSync
 function ruApplyCustom(o) {
   if (!o) return;
   const a = o.ruFrom, b = o.ruTo;
@@ -15365,8 +15065,7 @@ function wrPlanSummary(plan) {
 }
 function wrCreateCustomer(f) {
   const id = nextCustomerId();
-  const usedSalesStage = f.usedSalesStage || 'N/A', membershipStage = f.membershipStage || 'N/A';   // funnel redesign: 'N/A' default (the retired 'Inbound Lead'-for-everyone default is gone)
-  const c = { customerId: id, firstName: f.firstName || '', lastName: f.lastName || '', name: `${f.firstName || ''} ${f.lastName || ''}`.trim() || (f.company || 'New lead'), company: f.company || '', phone: f.phone || '', email: f.email || '', address: f.address || '', industry: f.industry || '', accountType: f.accountType || 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: f.accountNotes || '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage, membershipStage, funnels: { rental: false, member: membershipStage !== 'N/A', equipment: usedSalesStage !== 'N/A' }, _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName: f.firstName || '', lastName: f.lastName || '', name: `${f.firstName || ''} ${f.lastName || ''}`.trim() || (f.company || 'New lead'), company: f.company || '', phone: f.phone || '', email: f.email || '', address: f.address || '', industry: f.industry || '', accountType: f.accountType || 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: f.accountNotes || '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: f.usedSalesStage || 'Inbound Lead', membershipStage: f.membershipStage || 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c); logAction(c, 'Added by Mr. Wrangler');
   return c;
 }
@@ -16458,90 +16157,27 @@ function setExpenseReconcile(expenseId, val) {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render(); renderOverlay();
 }
-/* ── Funnel redesign 2026-07-17 (spec: customer-funnel-redesign) — the ONE adaptive
-   menu, shared by the detail funnel section and the quick-add "Lead?" pill. It REPLACES
-   the old per-funnel gate-timeline dropdowns (openFunnelDropdown / setFunnelStage) with an
-   explicit-membership model:
-     • Leads  — three chips toggle funnels.* (multi-select in the detail view).
-     • Stages — only the rungs applicable to the customer's memberships + live rental
-                activity (funnelTrackA / funnelTrackEquip). Auto rungs (Reserved/Rented
-                derived, Signed on agreement-sign) render LOCKED — never a manual pick. ── */
-function funnelMenuChip(c, key) {
-  const on = inFunnel(c, key);
-  const actLock = key === 'rental' && hasRentalActivity(c);   // Rental is auto-joined by live rentals — can't be turned off
-  return `<button class="fm-chip${on ? ' on' : ''}${actLock ? ' lock' : ''} js-funnel-join" data-rec="${esc(c.customerId)}" data-funnel="${key}" aria-pressed="${on}"${actLock ? ' data-tip="In the Rental funnel from live rentals — can’t remove"' : ''}><span class="fm-dot"></span>${esc(FUNNELS[key].label)}</button>`;
+// F3: the membership funnel ends in 'Signed' (auto-set by signing the agreement) instead
+// of 'Paid'; 'Signed' is shown in the timeline but locked — never a manual choice.
+const MEMBERSHIP_FUNNEL_ORDER = ['N/A', 'Inbound Lead', 'Outbound Lead', "Don't Contact", 'Contacted', 'Not A No!', 'Payment Discussed', 'Signed'];
+function openFunnelDropdown(custId, which, anchorEl) {
+  const cust = IDX.customer.get(custId);
+  const cur = which === 'membership' ? cust?.membershipStage : cust?.usedSalesStage;
+  const title = which === 'membership' ? 'Membership funnel' : 'Used sales funnel';
+  const mk = (v, inner, sc) => `<button class="gt-row ${sc} js-setfunnel" data-rec="${esc(custId)}" data-which="${which}" data-val="${esc(v)}">${inner}</button>`;
+  const opts = which === 'membership' ? { order: MEMBERSHIP_FUNNEL_ORDER, lock: new Set(['Signed']) } : {};
+  const html = gateTimeline('funnelStage', cur || 'N/A', title, mk, opts);
+  openDropdown(anchorEl, html, { cls: 'gt' });
 }
-function funnelMenuStageRow(c, r) {
-  const st = getStatus('funnelStage', r.stage);
-  const bothA = r.funnel !== 'equipment' && inRental(c) && inFunnel(c, 'member');   // Track A carries two sub-funnels → tag which one
-  const tag = r.funnel === 'equipment' ? '' : (bothA ? (r.funnel === 'rental' ? 'Rental' : 'Member') : '');
-  const inner = `<span class="fm-sdot c-${st.color}"></span><span class="fm-snm">${esc(st.label)}</span>${r.auto ? `<span class="fm-lock">${I.lock}auto</span>` : ''}${tag ? `<span class="fm-tag">${esc(tag)}</span>` : ''}`;
-  if (r.auto) return `<div class="fm-stage auto${r.current ? ' current' : ''}">${inner}</div>`;
-  return `<button class="fm-stage pickable${r.current ? ' current' : ''} js-funnel-setstage" data-rec="${esc(c.customerId)}" data-funnel="${r.funnel}" data-val="${esc(r.stage)}">${inner}</button>`;
-}
-function funnelMenuHtml(c) {
-  const aRows = funnelTrackA(c).map((r) => funnelMenuStageRow(c, r)).join('');
-  const equip = funnelTrackEquip(c);
-  const eRows = equip.length ? `<div class="fm-sub">Equipment</div>${equip.map((r) => funnelMenuStageRow(c, r)).join('')}` : '';
-  const stages = (aRows || eRows) ? aRows + eRows : `<div class="fm-empty">Pick a funnel above to see its stages.</div>`;
-  const naOn = !inRental(c) && !inFunnel(c, 'member') && !inFunnel(c, 'equipment');
-  return `<span class="gt-haz"></span><div class="fm-cap">Funnel</div>`
-    + `<div class="fm-na${naOn ? ' on' : ''}">N/A — not in a funnel</div>`
-    + `<div class="fm-sec">Leads</div><div class="fm-leads">${FUNNEL_KEYS.map((k) => funnelMenuChip(c, k)).join('')}</div>`
-    + `<div class="fm-sec">Stages</div><div class="fm-stages">${stages}</div>`;
-}
-function openFunnelMenu(custId, anchorEl) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  openDropdown(anchorEl, funnelMenuHtml(c), { cls: 'funnelmenu' });
-}
-// A chip toggle keeps the menu OPEN (multi-select). The menu lives on document.body and
-// SURVIVES render() (which only rebuilds #app), so rebuild its innerHTML IN PLACE instead of
-// re-anchoring — that keeps its screen position steady (no jump) and works no matter which of
-// several same-customer triggers opened it (the detail ladders, the two empty-state join
-// buttons, or the pipeline board's two funnel pills — all share one data-rec).
-function refreshFunnelMenuInPlace(custId) {
+function setFunnelStage(custId, which, val) {
   const c = IDX.customer.get(custId);
-  const menu = document.querySelector('.dropdown-menu.funnelmenu');
-  if (menu && c) menu.innerHTML = funnelMenuHtml(c);
-}
-function toggleFunnelMembership(custId, funnel) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  if (funnel === 'rental' && hasRentalActivity(c)) { toast('Rental is set by live rentals — it can’t be removed.'); return; }
-  const f = ensureFunnels(c);
-  const field = funnelStageField(funnel);   // Member/Equipment seed 'Lead' on join, reset to 'N/A' on leave; Rental's stage is derived
-  // Guard a completed terminal: leaving would silently wipe a real Signed (agreement) / Paid
-  // (sale) record back to N/A on a single misclick. Block it (mirrors the Rental activity lock).
-  if (f[funnel] && field) {
-    const terminal = FUNNELS[funnel].stages[FUNNELS[funnel].stages.length - 1];
-    if (c[field] === terminal) { toast(`${getStatus('funnelStage', terminal).label} is a completed ${FUNNELS[funnel].label} record — it can’t be removed from the funnel.`); return; }
-  }
-  const now = !f[funnel]; f[funnel] = now;
-  if (field) { if (!now) c[field] = 'N/A'; else if (!c[field] || c[field] === 'N/A') c[field] = 'Lead'; }
-  logAction(c, `${now ? 'Joined' : 'Left'} ${FUNNELS[funnel].label} funnel`);
-  reindex('customers', c);
-  render();
-  refreshFunnelMenuInPlace(custId);
-}
-function pickFunnelStage(custId, funnel, stage) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  if (isAutoStage(funnel, stage)) return;              // auto stages are derived, never a manual pick
-  const field = funnelStageField(funnel); if (!field) return;   // Rental has no manual stage
-  ensureFunnels(c)[funnel] = true;                     // picking a stage implies membership in that funnel
-  if (c[field] !== stage) { c[field] = stage; logAction(c, `${FUNNELS[funnel].label} stage → ${getStatus('funnelStage', stage).label}`); }
+  if (!c) return;
+  if (which === 'membership' && (val === 'Signed' || val === 'Paid')) return;   // F3: membership terminal is auto-set by signing the agreement, never manual
+  const field = which === 'membership' ? 'membershipStage' : 'usedSalesStage';
+  if (c[field] !== val) { c[field] = val; logAction(c, `${which === 'membership' ? 'Membership' : 'Sales'} stage → ${getStatus('funnelStage', val).label}`); }   // audit: funnel moves were unlogged (Jac, Phase 7)
   reindex('customers', c);
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render();
-}
-/* Quick-add "Lead?" pill (Customers-list inline add) — SINGLE-select: pick one funnel
- * (or N/A) and the new customer is created at that funnel's 'Lead'. No record exists yet,
- * so it writes state.custQuickAdd.funnel (a FUNNEL KEY now, not a stage) and — once
- * first/last/phone are valid — the pick is the 4th field that fires custQuickAddCreate. */
-function openCustQuickAddFunnelMenu(anchorEl) {
-  const cur = state.custQuickAdd.funnel || '';
-  const chip = (key, label) => `<button class="fm-chip${cur === key ? ' on' : ''} js-custqa-funnel-pick" data-val="${esc(key)}"><span class="fm-dot"></span>${esc(label)}</button>`;
-  const html = `<span class="gt-haz"></span><div class="fm-cap">Add to funnel</div>`
-    + `<div class="fm-leads qa">${chip('rental', 'Rental')}${chip('member', 'Member')}${chip('equipment', 'Equipment')}${chip('N/A', 'N/A')}</div>`;
-  openDropdown(anchorEl, html, { cls: 'funnelmenu qa' });
 }
 /* §12.1 interested categories — pick mode died (Wave 2): a plain dropdown now
    attaches a category to the customer (same pattern as the funnel dropdown). */
@@ -16604,8 +16240,9 @@ function loadViews(card) { return _viewsMap()[card] || []; }
 function saveViews(card, views) {
   const m = _viewsMap(); m[card] = views; GLOBAL_VIEWS = m;
   try { localStorage.setItem(VIEWS_LS_ALL, JSON.stringify(m)); } catch (e) {}
-  // No backend push — views are personal/per-device (D2). The getViews/setViews GAS
-  // actions stay deployed but unused (additive backend: nothing breaks by not calling them).
+  // §userSync (spec §3/§7 reversal): Views now follow the person via the userPrefs blob
+  // (not the idle getViews/setViews GAS store). No-op unless FEATURES.userSync + a personId.
+  flushUserPrefsSoon();
 }
 // A view captures the WHOLE filter state — the live search text AND the pinned
 // filter chips (cs.filterTerms) — so ANY filter you build is saveable (Jac 2026-06-13).
@@ -16678,8 +16315,6 @@ const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list
 // just re-homes four nodes. The card-toggle-bar swipe zone follows the toggles (see boot()).
 function render() {
   if (scanActive) return;   // the scan-to-log capture screen owns #app in its own tab — never let a background loader / 18s poll render clobber it mid-flow
-  RENDER_MEMO = {};   // open the render-scoped derivation cache (rmemo) — lives for exactly this render (Jac 2026-07-17). After the early-return so a bailed render never opens a cache it won't close.
-  try {   // ALWAYS close the cache below (finally), even if the render body throws — else a crashed render would leave stale money math for out-of-render callers (invoiceTotals etc.) until the next clean render (fix per review)
   const t0 = performance.now();
   refreshToday();   // roll "today" over before painting — an all-day-open tab must never stamp/read yesterday
   hideTip(); hideHoverPreview();
@@ -16755,7 +16390,6 @@ function render() {
   renderCount++;
   perfRecordRender(dt);   // histogram (P0) — arithmetic only, no DOM work
   if (dt > CFG.PERF_BUDGET_MS) console.warn(`[perf] render ${renderCount} took ${dt.toFixed(1)}ms (budget ${CFG.PERF_BUDGET_MS}ms)`);
-  } finally { RENDER_MEMO = null; }   // close the cache — any derivation called OUTSIDE a render must always recompute fresh, even if the render body threw
 }
 /* Lean re-render used ONLY while typing in the GLOBAL search bar. Rebuilds just the
    results grid (+ the phone dock's listbar / desktop footer counts) and deliberately
@@ -17853,7 +17487,7 @@ function onClick(e) {
   if (closest('.js-settings-reset')) { e.stopPropagation(); const o = state.overlay; if (!o) return; if (o.resetArm) return resetAllSettings(); o.resetArm = true; reSettings(); return; }   // armed two-click confirm
   if (closest('.js-settings-undo')) { e.stopPropagation(); return undoLastSettings(); }
   if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); reSettings(); return; }
-  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); reSettings(); return; }   // §M-touch — toggle + a sample buzz when turning ON
+  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} flushUserPrefsSoon(); if (on) haptic([12, 30, 12]); reSettings(); return; }   // §M-touch — toggle + a sample buzz when turning ON
   // Settings Board — tab rail + Statuses & Icons editing
   if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); captureTeamEdits(o); captureNotificationEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; reSettings(); } return; }
   if (closest('.js-set-pick')) { e.stopPropagation(); const o = state.overlay; if (o) { o.setSel = closest('.js-set-pick').dataset.set; o.iconFor = null; reSettings(); } return; }
@@ -18201,7 +17835,7 @@ function onClick(e) {
   if (closest('.js-roadmap')) return openOverlay({ kind: 'roadmap' });
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-qr')) { closeMenus(); return shareSession(); }
-  if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); closeMenus(); return render(); }
+  if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} flushUserPrefsSoon(); toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); closeMenus(); return render(); }
   if (closest('.js-hotkeys')) { closeMenus(); return openOverlay({ kind: 'hotkeys' }); }
   if (closest('.js-app-update')) { closeMenus(); return checkForUpdate(); }   // manual "Update" — force the newest build past a stale mobile cache
   if (closest('.js-lint')) {   // R0 flash-lint toggle — persists per device
@@ -18281,6 +17915,7 @@ function onClick(e) {
     const grid = document.querySelector('#app > .grid'); const c = grid && grid.children[i];
     if (c) grid.scrollTo({ left: c.offsetLeft, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     else { state.mobileCol = i; render(); }
+    flushUserPrefsSoon();   // §userSync — session resume (spec §5): remember the switched-to column
     return;
   }
   if (closest('.js-mtools')) { e.stopPropagation(); return openOverlay({ kind: 'tools' }); }   // §M1 phone footer → the global tool tray as a sheet
@@ -18412,11 +18047,6 @@ function onClick(e) {
   if (closest('.js-bv-customize')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.customize = !o.customize; renderOverlay(); } return; }
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
-  // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched):
-  // open/collapse + submit here; the funnel-pick option itself lives with the other dropdown
-  // handlers below (js-custqa-funnel-pick, next to the funnel-menu handlers).
-  if (closest('.js-custqa-open')) { e.stopPropagation(); state.custQuickAdd.open = true; return render(); }
-  if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelMenu(closest('.js-custqa-funnel')); }
   if (closest('.js-new-unit-search')) { e.stopPropagation(); return quickAddUnitFromSearch(activeSession().cards.units.search); }
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
   if (closest('.js-coltab')) {
@@ -18464,13 +18094,9 @@ function onClick(e) {
   // status dropdown set
   if (closest('.js-setstatus')) { const b = closest('.js-setstatus'); setRentalStatus(b.dataset.rec, b.dataset.val); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return; }
   if (closest('.js-setunitstatus')) { const b = closest('.js-setunitstatus'); setUnitStatus(b.dataset.rec, b.dataset.unit, b.dataset.val); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return; }
-  // funnel — the ONE adaptive menu (redesign 2026-07-17): open it, toggle a Leads chip, pick a manual stage
-  if (closest('.js-funnelmenu')) { const b = closest('.js-funnelmenu'); e.stopPropagation(); return openFunnelMenu(b.dataset.rec, b); }
-  if (closest('.js-funnel-join')) { const b = closest('.js-funnel-join'); return toggleFunnelMembership(b.dataset.rec, b.dataset.funnel); }
-  if (closest('.js-funnel-setstage')) { const b = closest('.js-funnel-setstage'); return pickFunnelStage(b.dataset.rec, b.dataset.funnel, b.dataset.val); }
-  // Customers-list quick-add draft's funnel pick — writes state.custQuickAdd.funnel a FUNNEL KEY
-  // (no customer record exists yet, so it can't ride js-funnel-setstage/pickFunnelStage above).
-  if (closest('.js-custqa-funnel-pick')) { const b = closest('.js-custqa-funnel-pick'); state.custQuickAdd.funnel = b.dataset.val; document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (custQuickAddValid()) return custQuickAddCreate(); return render(); }   // the funnel PICK is the 4th selection (any value incl N/A) — with first/last/phone valid → create + open detail; else show the picked funnel
+  // funnel stage pill → stage dropdown; set; +Add Category / Record / Schedule
+  if (closest('.js-setfunnel')) { const b = closest('.js-setfunnel'); return setFunnelStage(b.dataset.rec, b.dataset.which, b.dataset.val); }
+  if (closest('.js-funnel')) { const b = closest('.js-funnel'); e.stopPropagation(); return openFunnelDropdown(b.dataset.rec, b.dataset.which, b); }
   if (closest('.js-fleet-filter')) {
     const b = closest('.js-fleet-filter'); e.stopPropagation();
     // A1 — the fleet-bar segment routes through the search bar as a removable pill (one
@@ -18485,6 +18111,8 @@ function onClick(e) {
   if (closest('.js-addmakecat')) { const b = closest('.js-addmakecat'); e.stopPropagation(); return openInterestDropdown(b.dataset.rec, b); }
   if (closest('.js-setintcat')) { const b = closest('.js-setintcat'); e.stopPropagation(); return addInterestedCategory(b.dataset.rec, b.dataset.val); }
   if (closest('.js-setintmake')) { const b = closest('.js-setintmake'); e.stopPropagation(); return addInterestedMake(b.dataset.rec, b.dataset.val); }
+  // §3.5 funnel toggle — view-local active tab, in-memory, keyed by customer (never persisted)
+  if (closest('.js-funnel-tab')) { const b = closest('.js-funnel-tab'); e.stopPropagation(); state.funnelTab = state.funnelTab || {}; state.funnelTab[b.dataset.rec] = b.dataset.tab; render(); return; }
   // §3.8 per-funnel Action Log — expandable, one open-state per (customer, scope)
   if (closest('.js-actlog-toggle')) { const b = closest('.js-actlog-toggle'); e.stopPropagation(); state.actLogOpen = state.actLogOpen || {}; const k = b.dataset.rec + '|' + b.dataset.scope; state.actLogOpen[k] = !state.actLogOpen[k]; render(); return; }
   // §3.6 Next Actions — ✓ Done / ✕ Cancel MUST be checked before the row's edit hit (they sit inside it)
@@ -19649,8 +19277,6 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
   // A video already on file → this tap RE-RECORDS it (Jac: "delete that video in trade
   // for a new one by doing the same process again"). A re-record only swaps the video —
   // it must NOT move status again, re-run the §9 delivery gates, or re-raise a field call.
-  // (A scanned delivery/recovery is ADOPTED onto cur.* by adoptScanCaptures, so cur[key] is
-  // already set here — no scan-specific gate branch needed; it reads as a normal capture.)
   const replace = !!cur[key] || (cap === 'fc' && !!r.fieldCall);
   // §14 a first Start/Delivery moves the unit On Rent — run the §9 gates UP FRONT so a
   // blocked delivery never opens the camera (mirrors setRentalStatus/setUnitStatus so the
@@ -19697,7 +19323,6 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
   const uname = IDX.unit.get(unitId)?.name || '';
   const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
   // Re-record → swap the video only; keep the status where it is and don't re-raise the FC.
-  // (A scanned capture is already adopted onto tgt.* by adoptScanCaptures — a normal capture here.)
   const replace = !!tgt[key] || (cap === 'fc' && !!r.fieldCall);
   // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the stamp
   // persists immediately; the video uploads to Drive and only its URL lands on the
@@ -20219,16 +19844,6 @@ function onInput(e) {
     if (o?.kind === 'gpsRoundup') { o.swapQuery = e.target.value; const sel = e.target.selectionStart; renderOverlay(); const q = document.querySelector('.overlay .js-gpsru-swap-search'); if (q) { q.focus(); q.setSelectionRange(sel, sel); } }
     return;
   }
-  // Customers-list quick-add row — draft fields update state.custQuickAdd WITHOUT a render()
-  // (typing must keep focus). Typing NEVER creates; the funnel PICK is the completion trigger
-  // (js-custqa-funnel-pick), so a partial phone can't auto-fire mid-entry. (Jac 2026-07-17)
-  if (e.target.classList.contains('js-custqa-first') || e.target.classList.contains('js-custqa-last') || e.target.classList.contains('js-custqa-phone')) {
-    const d = state.custQuickAdd;
-    if (e.target.classList.contains('js-custqa-first')) d.first = e.target.value;
-    else if (e.target.classList.contains('js-custqa-last')) d.last = e.target.value;
-    else d.phone = e.target.value;
-    return;
-  }
   if (e.target.classList.contains('chat-input')) { state.chat.draft = e.target.value; return; }
   if (e.target.classList.contains('js-comms-in')) { commsDrafts.set(state.commsRail.cat + '|' + e.target.dataset.cust, e.target.value); return; }   // D8 window composer — draft survives re-renders
   // Company Files live search → re-render the board popup and restore the caret.
@@ -20464,7 +20079,9 @@ function openLogoMenu(anchorEl) {
 // Switch user — clear this session's password/role (name stays remembered) → login.
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
-  backendPassword = ''; currentRole = ''; booting = true;
+  flushUserPrefsNow();   // §userSync — push the last pending pref/comms change while still authed, BEFORE the identity clear + wipe drops it
+  backendPassword = ''; currentRole = ''; currentPersonId = ''; booting = true;
+  wipeSyncMirror();   // §userSync Blocker 1 — this SPA switch does NOT reload the page, so clear the prior person's synced state (localStorage + in-memory) before the next login paints
   sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
 }
@@ -20557,7 +20174,7 @@ function parseQuickCustomer(q) {
 function quickAddCustomerFromSearch(value) {
   const p = parseQuickCustomer(value); if (!p) return false;
   const id = nextCustomerId();
-  const c = { customerId: id, firstName: p.firstName, lastName: p.lastName, name: `${p.firstName} ${p.lastName}`.trim(), company: '', phone: p.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', funnels: blankFunnels(), _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName: p.firstName, lastName: p.lastName, name: `${p.firstName} ${p.lastName}`.trim(), company: '', phone: p.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
   logAction(c, 'Customer quick-added');
   const s = activeSession();
@@ -20566,44 +20183,6 @@ function quickAddCustomerFromSearch(value) {
   render();
   toast(`${c.name || 'Customer'} added — drag it onto a rental or invoice to link.`);
   return true;
-}
-/* Customers-list inline quick-add (Jac 2026-07-17, ADDITIVE — the search-bar quick-add
- * above stays as-is). Enabled once First/Last/Phone are all filled AND the phone looks
- * real — same ≥7-digit check as parseQuickCustomer's phone match, so the two quick-add
- * paths agree on "looks like a phone number". */
-function custQuickAddValid() {
-  const d = state.custQuickAdd;
-  return !!(d.first.trim() && d.last.trim() && d.phone.replace(/\D/g, '').length >= 7);
-}
-// Discard the +New Customer draft (implicit cancel) — clearing it collapses the row back to the
-// +New Customer button. Called on a successful create AND whenever the user navigates AWAY from
-// the customers list without finishing (clicking a record → openStandard, switching cards →
-// goToCard). There is no Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when idle.
-function resetCustQuickAdd() {
-  const d = state.custQuickAdd;
-  if (d && (d.open || d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
-    state.custQuickAdd = { open: false, first: '', last: '', phone: '', funnel: 'N/A' };
-  }
-}
-/* Create + open — mirrors quickAddCustomerFromSearch's field set, and applies the draft's
- * single funnel pick (a FUNNEL KEY now, funnel redesign 2026-07-17): Member/Equipment join
- * that funnel at its 'Lead' stage; Rental just joins (its stage is derived from live rentals);
- * N/A / unset creates in no funnel. Always opens the new customer in Standard view (openStandard),
- * same "unlinked — drag it where it goes" landing as the search-bar path. */
-function custQuickAddCreate() {
-  if (!custQuickAddValid()) return;
-  const d = state.custQuickAdd;
-  const firstName = d.first.trim(), lastName = d.last.trim(), phone = d.phone.trim();
-  const key = FUNNELS[d.funnel] ? d.funnel : null;   // 'rental' | 'member' | 'equipment' — else no funnel
-  const funnels = blankFunnels(); if (key) funnels[key] = true;
-  const membershipStage = key === 'member' ? 'Lead' : 'N/A';
-  const usedSalesStage = key === 'equipment' ? 'Lead' : 'N/A';
-  const id = nextCustomerId();
-  const c = { customerId: id, firstName, lastName, name: `${firstName} ${lastName}`.trim(), company: '', phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage, membershipStage, funnels, _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
-  DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
-  logAction(c, key ? `Customer quick-added → ${FUNNELS[key].label} funnel` : 'Customer quick-added');
-  resetCustQuickAdd();
-  openStandard('customers', id);
 }
 /* QUICK ADD — a fruitless Units/Categories search offers a +New button (the empty state).
    It creates the record with the typed text as its name and drops you into its Standard
@@ -20697,7 +20276,7 @@ function quickSaveCustomer(o) {
     requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
     idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
-    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', funnels: blankFunnels(),
+    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
   };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
@@ -20768,7 +20347,7 @@ function saveNewCustomer() {
     requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
     idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
-    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', funnels: blankFunnels(),
+    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
   };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
@@ -21571,15 +21150,14 @@ function printInvoice(invoiceId) {
 /* Copy the on-screen invoice sheet to the clipboard as a PNG (right-click → Copy as image,
    Jac 2026-07-17). Library-free rasterization: clone the live .pr-doc, inline every element's
    COMPUTED style (so no stylesheet / CSS-var resolution is needed inside the SVG), data-URI the
-   images AND embed the real @font-face typefaces (a foreignObject renders in its own scope with no
-   page fonts — so we inline them), wrap the XHTML in an <svg><foreignObject>, paint it to a canvas,
-   hand the PNG blob to the clipboard. The blob is produced INSIDE a ClipboardItem promise so the
-   write still counts as the user's gesture on Safari. **Firefox** deliberately taints a canvas the
-   moment a foreignObject-bearing SVG is drawn (a security stance, no lib-free bypass) → toBlob
-   throws → we catch and point at Save-as-PDF. Works in Chromium + Safari. */
+   images so the canvas never taints, wrap the XHTML in an <svg><foreignObject>, paint it to a
+   canvas, hand the PNG blob to the clipboard. The blob is produced INSIDE a ClipboardItem promise
+   so the write still counts as the user's gesture on Safari. Fonts loaded via @font-face may fall
+   back to a system face inside the SVG (a known foreignObject limit) — layout/colors are faithful,
+   the typeface may not be; on any failure we fall back to a clear toast pointing at Save-as-PDF. */
 function copyInvoiceImage(invoiceId) {
-  const fail = () => toast('Couldn’t copy the image on this browser (Firefox blocks it) — use 🖨 Save PDF instead.');
-  if (!(navigator.clipboard && window.ClipboardItem)) return fail();   // no clipboard-image support → point at Save-as-PDF, don't waste a render
+  const fail = () => toast('Couldn’t copy the image on this browser — use 🖨 Save PDF instead.');
+  if (!(navigator.clipboard && window.ClipboardItem)) return fail();   // no clipboard-image support (e.g. older Firefox) → point at Save-as-PDF, don't waste a render
   // Render INSIDE the ClipboardItem promise so the write still counts as the user's gesture on Safari.
   navigator.clipboard.write([new ClipboardItem({ 'image/png': renderInvoicePng(invoiceId) })])
     .then(() => toast('🖼 Invoice copied — paste it into a message, chat, or doc.'))
@@ -21593,8 +21171,6 @@ async function renderInvoicePng(invoiceId) {
   const clone = doc.cloneNode(true);
   inlineComputedStyles(doc, clone);   // resolve classes + CSS vars to concrete values
   await inlineDocImages(clone);       // <img src> → data: so drawImage doesn't taint the canvas
-  const fontCss = await invoiceFontFaceCss();   // embed the real Saira/Geist faces — a foreignObject has no page @font-face
-  if (fontCss) { const st = document.createElement('style'); st.textContent = fontCss; clone.insertBefore(st, clone.firstChild); }
   clone.style.boxShadow = 'none'; clone.style.borderRadius = '0'; clone.style.margin = '0'; clone.style.maxWidth = 'none'; clone.style.width = W + 'px';
   clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
   const xhtml = new XMLSerializer().serializeToString(clone);
@@ -21632,62 +21208,6 @@ async function inlineDocImages(root) {
     } catch (e) { im.removeAttribute('src'); }
   }));
 }
-let _invFontCssP = null;   // cached PROMISE of the self-contained @font-face block (real fonts, data-URI'd) for the copied/emailed image
-// The invoice sheet is Saira Condensed (stamps) + Geist (body), loaded from Google Fonts. An
-// <svg><foreignObject> renders in its OWN scope with no access to the page's @font-face, so its text
-// would fall back to a system face. Fetch the two families' LATIN woff2 once, inline them as data
-// URIs, and return a <style>-ready @font-face block for the rasterizer to embed — so the image
-// carries the real typefaces. We cache the in-FLIGHT promise (so a copy + an email fired together
-// share ONE CDN fetch, not two) and keep it only on SUCCESS: an offline/CDN-blocked first attempt
-// resolves to '' and clears the cache, so a later copy/email retries once the network returns
-// (instead of poisoning the whole session with an empty face block). The render silently uses the
-// fallback face whenever this returns ''.
-function invoiceFontFaceCss() {
-  if (_invFontCssP) return _invFontCssP;
-  const p = (async () => {
-    try {
-      const cssUrl = 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Saira+Condensed:wght@600;700;800&display=swap';
-      const css = await (await fetch(cssUrl)).text();
-      const faces = css.match(/\/\*\s*latin\s*\*\/\s*@font-face\s*{[^}]*}/g) || [];   // latin subset only — an invoice is latin text, keeps the SVG small
-      const inlined = await Promise.all(faces.map(async (face) => {
-        const m = face.match(/url\((https:\/\/[^)]+\.woff2)\)/);
-        if (!m) return '';
-        try {
-          const b = await (await fetch(m[1])).blob();
-          const uri = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); });
-          return face.replace(m[1], uri);
-        } catch (e) { return ''; }
-      }));
-      return inlined.filter(Boolean).join('\n');
-    } catch (e) { return ''; }
-  })();
-  _invFontCssP = p;
-  p.then((css) => { if (!css) _invFontCssP = null; }, () => { _invFontCssP = null; });   // cache only a successful, non-empty result; a failed/empty fetch retries next time
-  return p;
-}
-// Raw base64 (no data: prefix) of a blob — for handing an image to the backend email send.
-function blobToBase64(blob) {
-  return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = rej; fr.readAsDataURL(blob); });
-}
-// Render the invoice sheet to a PNG blob for an email attachment. Reuses the open .pr-doc if it's
-// on screen; otherwise builds it OFF-SCREEN, renders, and cleans up. Returns null on ANY failure
-// (e.g. Firefox taints a foreignObject canvas) — so the email still sends WITHOUT an attachment and
-// the render never blocks the send.
-async function invoiceSheetPng(invoiceId) {
-  const inv = IDX.invoice.get(invoiceId); if (!inv) return null;
-  let temp = null;
-  try {
-    const onScreen = [...document.querySelectorAll('.pr-doc[data-inv]')].some((d) => d.dataset.inv === invoiceId);
-    if (!onScreen) {
-      temp = document.createElement('div');
-      temp.style.cssText = 'position:absolute;left:-99999px;top:0;width:760px;pointer-events:none';   // match .pr-doc's 760px max-width so the emailed PNG scales like the on-screen sheet / copy-as-image
-      temp.innerHTML = invoiceDocHtml(inv, { interactive: true });
-      document.body.appendChild(temp);
-    }
-    return await renderInvoicePng(invoiceId);
-  } catch (e) { return null; }
-  finally { if (temp) temp.remove(); }
-}
 // Plain-text quote summary for an emailed quote — mailto can't carry a PDF attachment,
 // so we inline the same figures the print doc shows (§12.5 line items + totals).
 function invoiceQuoteSummary(inv) {
@@ -21716,12 +21236,7 @@ async function commsAliasList() {
 async function emailQuoteSend(invoiceId, from) {
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
   toast('Sending email…');
-  // Attach the invoice sheet as a PNG (Jac 2026-07-17). Best-effort: a failed render (e.g. Firefox)
-  // just sends the email WITHOUT the image — never blocks the send. The backend re-resolves the
-  // recipient from the invoice's own customer, so the attachment can only reach that customer.
-  let attachment = null;
-  try { const png = await invoiceSheetPng(invoiceId); if (png) attachment = { name: `${invoiceShort(inv.invoiceId)}.png`, mimeType: 'image/png', dataB64: await blobToBase64(png) }; } catch (e) {}
-  let r; try { r = await backendCall('sendCustomerMessage', { channel: 'email', entity: 'invoice', recId: inv.invoiceId, customerId: inv.customerId, template: 'quote', from: from || '', attachment }); }
+  let r; try { r = await backendCall('sendCustomerMessage', { channel: 'email', entity: 'invoice', recId: inv.invoiceId, customerId: inv.customerId, template: 'quote', from: from || '' }); }
   catch (e) { r = { ok: false, reason: 'network' }; }
   if (r && r.ok) {
     logAction(inv, `Emailed quote to ${r.maskedTo || 'customer'}${r.fromUsed ? ` (from ${r.fromUsed})` : ''}`);
@@ -21966,6 +21481,12 @@ let actionSeq = 0;
 // logAction stamps the user + clock time so the record History reads "what · when · who".
 let currentUser = (() => { try { return localStorage.getItem('jactec.user') || ''; } catch { return ''; } })();
 let currentRole = (() => { try { return sessionStorage.getItem('jactec.role') || ''; } catch { return ''; } })();
+// §userSync — the stable per-person key (spec 2026-07-17). Set at pidAdopt() from the
+// authenticated phone-identity response; '' under legacy/shared-password login (no
+// verifiable person → the sync layer no-ops to device-local). NEVER sent as authority:
+// backendCall already carries the session token and the backend resolves personId from
+// it server-side — this global only gates whether THIS client attempts a sync at all.
+let currentPersonId = '';
 function nowClock() { const d = new Date(); let h = d.getHours(); const ap = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12; return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`; }
 function logAction(rec, text) { if (!rec) return; rec.actions = rec.actions || []; rec.actions.push({ when: TODAY_ISO, clock: nowClock(), text, by: currentUser || '', seq: actionSeq++ }); saveSoon(); }
 // Humanize a field key + format a value for an audit line ("Phone: (337)… → (337)…").
@@ -24188,7 +23709,7 @@ async function refreshFromBackend() {
   } catch (e) { /* offline / blip → retry next tick */ }
   finally { refreshing = false; }
 }
-function startRefreshPoll() { clearInterval(refreshTimer); refreshTimer = setInterval(() => { refreshToday(); refreshFromBackend(); }, 18000); }
+function startRefreshPoll() { clearInterval(refreshTimer); refreshTimer = setInterval(() => { refreshToday(); refreshFromBackend(); if (syncActive() && !userPrefsHydrated) loadUserPrefs(); }, 18000); }   // §userSync — re-drive loadUserPrefs until it reconciles, so a slow-at-login backend can't disable sync for the session
 
 // ── Team-chat sync (Jac 2026-06-15) ────────────────────────────────────────
 // Chat threads were browser-local, so one user's chat never reached another (a
@@ -24325,6 +23846,217 @@ async function loadWranglerRail() {
     if (localAhead) pushWranglerRailSoon(); else lastRailJson = JSON.stringify(state.wranglerRail);
   } catch (e) { /* offline → the refresh poll retries */ }
 }
+/* ══════════════ §userSync — CROSS-DEVICE USER SYNC (spec 2026-07-17) ══════════════
+   A logged-in person's LIGHT prefs/session/comms follow their personId across devices via a
+   per-user backend blob (getUserPrefs/setUserPrefs). Keyed SERVER-SIDE off the session token
+   backendCall already sends — the client NEVER sends personId as authority (currentPersonId
+   is a client-side gate only). Gated behind FEATURES.userSync AND a resolved personId: with
+   the flag OFF (production default until the backend deploys) or under legacy/shared-password
+   login, EVERY entry point no-ops to today's device-local localStorage — zero behavior change.
+
+   Offline-safe: a failed/absent getUserPrefs (e.g. backend not yet deployed) falls back to the
+   device-local mirror; a failed setUserPrefs retries on the next change. localStorage stays the
+   authoritative WRITE path everywhere (each synced write still hits it) — this layer mirrors it
+   up and hydrates it down, so the app works unchanged with no backend. Doc shape: spec §4.1. */
+let USERPREFS = null, userPrefsTimer = null, lastUserPrefsJson = null;
+// Flush GATE — never push local up before loadUserPrefs has reconciled with the server this session,
+// else a wiped-empty or stale local doc clobbers the server copy (verified-fixed 2026-07-17). Reset
+// to false on every adopt; opened by loadUserPrefs once it has read the server (or confirmed local is
+// safe to push). `userPrefsMirrorWiped` records whether THIS adopt wiped the mirror (so an offline
+// read after a wipe keeps the gate SHUT — pushing empty local would clobber).
+let userPrefsHydrated = false, userPrefsMirrorWiped = false, userPrefsPendingPreHydrate = false, userPrefsLoadTries = 0, userPrefsRetryTimer = null;
+// Content buckets this device KNOWS this session (had non-empty, or applied non-empty from the server).
+// Only a known bucket may push an EMPTY up (a deliberate clear); an unknown-empty is omitted so it can't
+// clobber another device's copy. Cleared on each adopt. (spec §14 omit-empty fix, 2026-07-17)
+const userPrefsAuthoritative = new Set();
+// Sync only fires for a verified person with the flag on. backendPassword (the token) gates the
+// online path exactly as flushSave/pushChats do; currentPersonId proves we have a real person.
+function syncActive() { return flagOn('userSync') && !!currentPersonId && !!backendPassword; }
+// Flush is allowed only for a verified person AND after loadUserPrefs SUCCESSFULLY reconciled with the
+// server this session — so a stale/empty local doc can never be pushed before the server was read.
+function userPrefsGateOpen() { return syncActive() && userPrefsHydrated; }
+// The device-local keys that follow the person (Blocker 1 wipe set + the buildDoc/applyDoc
+// surface). Per-card sort keys share the 'jactec.sort.' prefix (swept separately). `overbook`
+// is deliberately absent — a yard policy, not a personal pref (spec §3).
+const SYNC_MIRROR_KEYS = ['jactec.previewsOff', 'jactec.hapticsOff', 'jactec.loginMuted',
+  'jactec.collapsedGroups', 'jactec.groupOrder', 'jactec.ruRange', 'jactec.views.all',
+  'jactec.commsRail', 'jactec.commsEnded', 'jactec.dispatchOrder', 'jactec.dispatchTimes',
+  'jactec.dispatchSchedule', 'jactec.dispatchLanes'];
+// The per-device ownership marker (a non-reversible tag of the current owner's personId) — lets
+// wipeSyncMirror tell a SAME-person reopen (keep their prefs) from a DIFFERENT person taking over a
+// shared device (wipe). NOT a synced key and NOT in SYNC_MIRROR_KEYS — it's the wipe's own bookkeeping.
+const SYNC_OWNER_KEY = 'jactec.syncOwner';
+function syncOwnerTag(personId) { return personId ? cacheTokenTag(String(personId)) : ''; }
+/* Blocker 1 — keep one operator from painting another's synced state on a SHARED device, WITHOUT
+   resetting the common case (your own device) on every reopen. Wipe ONLY when ownership does not
+   provably match:
+     • same person re-adopting (owner marker matches) → KEEP their mirror (no reset, no flash);
+     • ANY other case — a DIFFERENT person, a first-ever adopt (no marker), a shared device, or
+       logout → WIPE. We never keep a mirror we can't PROVE belongs to the incoming person.
+   (An earlier build kept the mirror whenever a localStorage token was present ["personal device"];
+   that leaked a prior operator's open conversations/views to a different person, because the token
+   at wipe-time is the PRIOR person's — removed 2026-07-17 after an adversarial isolation pass.)
+   The cost is a one-time reset on the very first login after the flag flips (then the owner marker
+   sticks and reopens keep prefs) — correctness over convenience; a per-owner namespace could later
+   preserve even that. `incomingTag` = syncOwnerTag(incoming personId); omit it (logout) to force a
+   wipe + clear the owner. Hard no-op while FEATURES.userSync is OFF. */
+function wipeSyncMirror(incomingTag) {
+  if (!flagOn('userSync')) { userPrefsMirrorWiped = false; return; }
+  let prev = ''; try { prev = localStorage.getItem(SYNC_OWNER_KEY) || ''; } catch (e) {}
+  const incoming = incomingTag || '';
+  if (incoming && incoming === prev) { userPrefsMirrorWiped = false; return; }  // same operator reopening → keep their prefs
+  try {
+    SYNC_MIRROR_KEYS.forEach((k) => localStorage.removeItem(k));
+    for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.indexOf('jactec.sort.') === 0) localStorage.removeItem(k); }
+  } catch (e) {}
+  try {
+    Object.keys(COLLAPSED_GROUPS).forEach((k) => delete COLLAPSED_GROUPS[k]);   // const object — mutate, don't reassign
+    Object.keys(GROUP_ORDER).forEach((k) => delete GROUP_ORDER[k]);
+    _ruRange = null; GLOBAL_VIEWS = null;                                       // let-caches → re-read from the (now empty) localStorage on next use
+    state.commsRail = loadCommsRail();                                          // localStorage wiped → a fresh empty rail
+    state.previewsOn = true; state.hapticsOff = false; state.loginMuted = false;
+  } catch (e) {}
+  try { if (incoming) localStorage.setItem(SYNC_OWNER_KEY, incoming); else localStorage.removeItem(SYNC_OWNER_KEY); } catch (e) {}
+  userPrefsMirrorWiped = true;
+}
+// A content bucket carries real data unless it's null or an empty plain object.
+function userPrefsNonEmpty(v) { return v != null && !(typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0); }
+// A comms rail is "empty" (quiet start) when no category holds any tab / last-open / hidden id.
+function commsRailHasContent(rail) { return !!(rail && rail.sessions && COMMS_CATS.some((k) => { const s = rail.sessions[k]; return s && ((s.tabs && s.tabs.length) || s.lastOpen || (s.hidden && s.hidden.length)); })); }
+/* Gather the current device-local state into a FLAT per-user doc — each synced thing is its OWN
+   top-level key, so §A's top-level server merge becomes true per-field last-write-wins (spec §4.1).
+   OMIT-EMPTY (verified-fixed 2026-07-17): a content bucket is sent only if it has content OR this
+   device knew it non-empty earlier this session (userPrefsAuthoritative) — so a device that never
+   had a bucket can't clobber another device's copy with an empty, while a deliberate CLEAR still
+   propagates. Scalars are always sent when set (a toggle back to default writes '0', not null). */
+function buildUserPrefsDoc() {
+  const g = (k) => { try { const v = localStorage.getItem(k); return v == null ? null : v; } catch (e) { return null; } };
+  const gj = (k) => { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? null : v; } catch (e) { return null; } };
+  const doc = { v: 2 };
+  [['previewsOff', 'jactec.previewsOff'], ['hapticsOff', 'jactec.hapticsOff'], ['loginMuted', 'jactec.loginMuted']].forEach(([k, ls]) => { const v = g(ls); if (v != null) doc[k] = v; });
+  { const rr = gj('jactec.ruRange'); if (rr != null) doc.ruRange = rr; }
+  const sort = {}; try { Object.keys(SORT_FIELDS).forEach((c) => { const raw = localStorage.getItem('jactec.sort.' + c); if (raw) { try { sort[c] = JSON.parse(raw); } catch (e) {} } }); } catch (e) {}
+  const rail = gj('jactec.commsRail');
+  const buckets = {
+    collapsedGroups: gj('jactec.collapsedGroups'), sort: Object.keys(sort).length ? sort : null,
+    views: gj('jactec.views.all'), dispatchOrder: gj('jactec.dispatchOrder'), dispatchTimes: gj('jactec.dispatchTimes'),
+    dispatchSchedule: gj('jactec.dispatchSchedule'), dispatchLanes: gj('jactec.dispatchLanes'),
+    commsEnded: gj('jactec.commsEnded'), commsRail: commsRailHasContent(rail) ? rail : null,
+  };
+  Object.keys(buckets).forEach((k) => {
+    const v = buckets[k];
+    if (userPrefsNonEmpty(v)) { userPrefsAuthoritative.add(k); doc[k] = v; }               // has content → send + remember we own it
+    else if (userPrefsAuthoritative.has(k)) { doc[k] = (k === 'commsRail') ? null : (v || {}); }   // we owned it and it's now CLEARED → propagate the empty
+  });
+  // groupOrder is NOT in this blob (it's the §4.2 re-keyed store); only in SYNC_MIRROR_KEYS for the wipe.
+  doc.sessionCol = (COLUMNS[state.mobileCol] && COLUMNS[state.mobileCol].id) || null;   // resume (spec §5): top-level column + phone index only, never a recId
+  doc.sessionMobileCol = state.mobileCol;
+  return doc;
+}
+// A leftover v:1 nested doc (a pre-2026-07-17 staging write) → the flat v:2 shape, so hydrate still works.
+function flattenLegacyUserPrefsDoc(d) {
+  const p = d.prefs || {}, dis = d.dispatch || {}, c = d.comms || {}, s = d.session || {}, out = { v: 2 };
+  ['previewsOff', 'hapticsOff', 'loginMuted', 'ruRange', 'collapsedGroups', 'sort'].forEach((k) => { if (k in p) out[k] = p[k]; });
+  if ('views' in d) out.views = d.views;
+  if ('order' in dis) out.dispatchOrder = dis.order; if ('times' in dis) out.dispatchTimes = dis.times;
+  if ('schedule' in dis) out.dispatchSchedule = dis.schedule; if ('lanes' in dis) out.dispatchLanes = dis.lanes;
+  if ('ended' in c) out.commsEnded = c.ended; if ('rail' in c) out.commsRail = c.rail;
+  out.sessionCol = s.col != null ? s.col : null; out.sessionMobileCol = s.mobileCol;
+  return out;
+}
+/* Hydrate the device from a server doc: a PRESENT key wins over local; an ABSENT key leaves local
+   untouched (that's how omit-empty avoids clobber). Writes BOTH the localStorage mirror AND the
+   in-memory caches, and remembers each applied non-empty bucket as authoritative for this device. */
+function applyUserPrefsDoc(doc) {
+  if (!doc || typeof doc !== 'object') return false;
+  if (doc.prefs || doc.dispatch || doc.comms) doc = flattenLegacyUserPrefsDoc(doc);   // v:1 nested → flat
+  const setLS = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
+  const setJSON = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+  const mark = (k, v) => { if (userPrefsNonEmpty(v)) userPrefsAuthoritative.add(k); };
+  if ('previewsOff' in doc) { setLS('jactec.previewsOff', doc.previewsOff); state.previewsOn = doc.previewsOff !== '1'; }
+  if ('hapticsOff' in doc) { setLS('jactec.hapticsOff', doc.hapticsOff); state.hapticsOff = doc.hapticsOff === '1'; }
+  if ('loginMuted' in doc) { setLS('jactec.loginMuted', doc.loginMuted); state.loginMuted = doc.loginMuted === '1'; }
+  if ('ruRange' in doc) { setJSON('jactec.ruRange', doc.ruRange); _ruRange = doc.ruRange || null; }
+  if ('collapsedGroups' in doc && doc.collapsedGroups && typeof doc.collapsedGroups === 'object') { setJSON('jactec.collapsedGroups', doc.collapsedGroups); Object.keys(COLLAPSED_GROUPS).forEach((k) => delete COLLAPSED_GROUPS[k]); Object.assign(COLLAPSED_GROUPS, doc.collapsedGroups); mark('collapsedGroups', doc.collapsedGroups); }
+  if ('sort' in doc && doc.sort && typeof doc.sort === 'object') { Object.keys(doc.sort).forEach((c) => setJSON('jactec.sort.' + c, doc.sort[c])); mark('sort', doc.sort); }
+  if ('views' in doc && doc.views && typeof doc.views === 'object') { setJSON('jactec.views.all', doc.views); GLOBAL_VIEWS = null; mark('views', doc.views); }
+  ['dispatchOrder', 'dispatchTimes', 'dispatchSchedule', 'dispatchLanes', 'commsEnded'].forEach((k) => { if (k in doc) { setJSON('jactec.' + k, doc[k]); mark(k, doc[k]); } });
+  if ('commsRail' in doc) { setJSON('jactec.commsRail', doc.commsRail); state.commsRail = loadCommsRail(); mark('commsRail', doc.commsRail); }
+  // session (sessionCol/sessionMobileCol) is applied by applySessionResume in loadUserPrefs.
+  return true;
+}
+/* Resume the top-level column the person last worked from (spec §5). Overrides applyRoleLanding's
+   role default when a saved column is present. Reveals only the column's DEFAULT member — never a
+   specific record — so no customer screen is ever restored. Runs once, post-hydrate, in loadUserPrefs. */
+function applySessionResume(doc) {
+  const col = doc && (doc.sessionCol !== undefined ? doc.sessionCol : (doc.session && doc.session.col));       // flat v:2, else legacy nested
+  const mCol = doc && (doc.sessionMobileCol !== undefined ? doc.sessionMobileCol : (doc.session && doc.session.mobileCol));
+  if (!col) return;
+  const idx = COLUMNS.findIndex((c) => c.id === col); if (idx < 0) return;
+  const s = activeSession();
+  if (s && s.cols) { const member = COLUMNS[idx].default; s.cols[col] = member; const mc = s.cards[member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
+  state.mobileCol = (typeof mCol === 'number' && mCol >= 0 && mCol < COLUMNS.length) ? mCol : idx;
+}
+/* Boot (finishLoad, once personId is known): pull this person's doc and hydrate. The flush gate opens
+   ONLY on a SUCCESSFUL read (reconciled) — so a stale/empty local doc can never be pushed before we
+   know the server state (spec §14). A transient failure RETRIES a few times (so one cold-GAS hiccup
+   doesn't disable sync for the whole session); an empty/absent doc keeps the local mirror and lets the
+   first change seed the backend. Fire-and-forget, never blocks boot. */
+async function loadUserPrefs() {
+  if (!syncActive()) return;                     // legacy login or flag OFF → device-local, no-op
+  let reconciled = false;
+  try {
+    const r = await backendCall('getUserPrefs');  // personId resolved SERVER-SIDE from the token
+    reconciled = !!(r && r.ok);                    // ok (a doc OR an empty row) means we now KNOW the server state
+    if (r && r.ok && r.doc && typeof r.doc === 'object' && Object.keys(r.doc).length) {
+      USERPREFS = r.doc;
+      // If the user actively edited a synced pref DURING this load window, their LOCAL wins for this
+      // session — do NOT overwrite it with the server doc (which would silently discard the edit, then
+      // push the server value back). The catch-up flush below sends local up; omit-empty still protects
+      // other devices; they pick up any other-device changes on the next reload. (§14 finding: catch-up)
+      if (!userPrefsPendingPreHydrate) {
+        applyUserPrefsDoc(r.doc);
+        applySessionResume(r.doc);                               // resume the last top-level column (overrides the role landing that already ran)
+        render();
+      }
+    }
+    // else: empty/absent doc → keep the device-local mirror as-is; the first change seeds the backend.
+  } catch (e) { reconciled = false; }
+  if (!reconciled) {
+    // Read failed (offline / cold-GAS timeout): keep the gate SHUT (never flush a doc we couldn't
+    // reconcile) and retry a few times fast; the 18s refresh poll re-drives loadUserPrefs after that
+    // (§14 finding: gate stuck shut) so a slow-at-login backend can't disable sync for the whole session.
+    if (syncActive() && userPrefsLoadTries < 4) { userPrefsLoadTries++; clearTimeout(userPrefsRetryTimer); userPrefsRetryTimer = setTimeout(loadUserPrefs, 8000); }
+    return;
+  }
+  // Reconciled → open the gate. If the user changed a synced pref DURING the load window (gate was
+  // shut so it didn't flush), force one catch-up push; otherwise baseline = the reconciled local state.
+  userPrefsHydrated = true;
+  if (userPrefsPendingPreHydrate) { userPrefsPendingPreHydrate = false; lastUserPrefsJson = null; flushUserPrefsSoon(); }
+  else lastUserPrefsJson = JSON.stringify(buildUserPrefsDoc());
+  // Announce the cutover ONCE per device (spec §14, finding 3): existing local prefs/saved-views were
+  // reset when sync turned on (no server copy yet to restore), so nudge the user to re-save a missing view.
+  try { if (!localStorage.getItem('jactec.syncWelcomed')) { localStorage.setItem('jactec.syncWelcomed', '1'); toast('Cross-device sync is on — your settings now follow you across your devices. If a saved view is missing, just re-save it.'); } } catch (e) {}
+}
+/* Debounced push of the whole current doc (mirrors flushSave/pushChatsSoon — imperative, render-
+   independent). Server field-merges last-write-wins (spec §5). GATED on userPrefsGateOpen() — a
+   verified person AND a completed server reconcile — so a wiped/stale local doc can never clobber the
+   server before we've pulled it (verified-fixed 2026-07-17); a diff-guard skips an unchanged doc. */
+async function flushUserPrefs() {
+  if (!userPrefsGateOpen()) return;
+  const doc = buildUserPrefsDoc(), js = JSON.stringify(doc);
+  if (js === lastUserPrefsJson) return;          // nothing changed since the last successful push
+  try { const r = await backendCall('setUserPrefs', { doc }); if (r && r.ok) { lastUserPrefsJson = js; USERPREFS = doc; } } catch (e) { /* offline → retries on the next change */ }
+}
+function flushUserPrefsSoon() {
+  if (booting || !syncActive()) return;
+  if (!userPrefsHydrated) { userPrefsPendingPreHydrate = true; return; }   // changed during the load window → loadUserPrefs pushes the catch-up once the gate opens
+  clearTimeout(userPrefsTimer); userPrefsTimer = setTimeout(flushUserPrefs, 1200);
+}
+// Best-effort synchronous flush of any pending change before a logout/switch wipes the mirror — the
+// doc is captured (buildUserPrefsDoc) before the wipe, so the last <=1.2s of edits still reach the
+// backend instead of being dropped by the debounce (finding: pending flush lost on switchUser).
+function flushUserPrefsNow() { try { clearTimeout(userPrefsTimer); } catch (e) {} if (userPrefsGateOpen()) flushUserPrefs(); }
 /* ── §18h Wrangler Ops — the developer live-chat bridge (from-spec re-implementation,
    2026-07-09, of the stale claude/mirror-wrangler-chats-l8pjfd branch). A Developer-tier
    operator (roleTier(currentRole) >= tierRank('developer') — the SAME gate as Design
@@ -24707,8 +24439,8 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault(); e.returnValue = '';
 });
 function renderLogin(msg) {
-  resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
   if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
+  if (state.commsRail) { state.commsRail.cat = null; state.commsRail.sessions && Object.values(state.commsRail.sessions).forEach((s) => { s.menuOpen = false; }); }   // D8 — clock-in = an EMPTY rail (sessions persist per device, nothing summons itself)
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
@@ -24741,6 +24473,7 @@ function renderLogin(msg) {
   if (muteBtn) muteBtn.addEventListener('click', () => {
     state.loginMuted = !state.loginMuted;
     try { localStorage.setItem('jactec.loginMuted', state.loginMuted ? '1' : '0'); } catch (e) {}
+    flushUserPrefsSoon();   // §userSync
     muteBtn.classList.toggle('is-muted', state.loginMuted);
     muteBtn.setAttribute('aria-pressed', String(state.loginMuted));
     muteBtn.setAttribute('data-tip', state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute');
@@ -24762,15 +24495,14 @@ function renderLogin(msg) {
 }
 function finishLoad() {
   snapshotSaved();                                              // baseline = what the backend currently holds
-  resetCommsRailForLogin();                                    // the visible fix for "old chats on login": empty the rail on EVERY login mode, before the first main render (Jac 2026-07-17)
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
   cacheRefreshing(false);                                       // §instant-cache: fresh backend data is in — drop the "refreshing" cue
   cachePersistSnapshot();                                       // §instant-cache: photograph this confirmed backend state (personal device + flag only)
   if (flagOn('phoneIdentity')) { try { const emp = ((state.settings || {}).employees) || []; localStorage.setItem('jactec.pidRoster', JSON.stringify(emp.map((e) => ({ id: e.id, name: e.name })))); } catch (e) {} }   // cache non-secret roster names for the shared-device name-pick
   // (views no longer pull from the backend — personal per-device "my views", spec search-views D2)
+  loadUserPrefs();                                             // §userSync — pull THIS person's cross-device prefs/comms doc (no-op unless FEATURES.userSync + a resolved personId)
   loadGroupOrderFromBackend();                                  // pull THIS role's saved card-group order
   loadTripsFromBackend();                                       // §2.3 Phase 4 — pull the trips store (getTrips), server wins at boot
-  loadScanCapturesFromBackend();                                // pull QR-decal scan captures (getScanCaptures) to join into the yard journey
   salePricingAutoApply();                                       // used-sale price engine, auto mode (manager+ sessions only)
   loadChats();                                                  // pull the shared team-chat threads (§ team-chat sync)
   wranglerRailLoad();                                           // load the Mr. Wrangler rail from IndexedDB (+ one-time localStorage migration)
@@ -24901,13 +24633,17 @@ async function attemptLogin() {
 const pidUI = { step: 'identify', personId: '', name: '', masked: '', kind: '', err: '', _phone: '', _tok: '', _role: '' };
 function pidTokenGet() { try { return localStorage.getItem('jactec.pidToken') || sessionStorage.getItem('jactec.pidToken') || ''; } catch (e) { return ''; } }
 function pidTokenSet(tok, personal) { try { if (personal) { localStorage.setItem('jactec.pidToken', tok); sessionStorage.removeItem('jactec.pidToken'); } else { sessionStorage.setItem('jactec.pidToken', tok); localStorage.removeItem('jactec.pidToken'); } } catch (e) {} }
-function pidTokenClear() { try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} try { dataCache.wipe(); } catch (e) {} }   // §instant-cache: logout clears the on-device snapshot
+function pidTokenClear() { flushUserPrefsNow(); try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} try { dataCache.wipe(); } catch (e) {} currentPersonId = ''; wipeSyncMirror(); }   // §userSync: flush the last pending change BEFORE clearing identity/wiping; §instant-cache: clear the on-device snapshot; then wipe the synced mirror so the next person on a shared device starts clean
 function pidRosterCache() { try { return JSON.parse(localStorage.getItem('jactec.pidRoster') || '[]'); } catch (e) { return []; } }
 // The verified token becomes the per-call credential: a truthy backendPassword keeps every
 // existing online-guard working, and backendCall sends it as sessionToken (backend prefers it).
 function pidAdopt(r, tok, personal) {
   try { dataCache.wipe(); } catch (e) {}   // §instant-cache: a new login never paints the prior person's snapshot (belt-and-suspenders to the tokenTag guard); finishLoad rewrites it for this person
+  const inPid = (r && (r.personId || r.id)) || pidUI.personId || '';       // §userSync — resolve the incoming person BEFORE the wipe so it can tell a same-person reopen from a takeover
+  userPrefsHydrated = false; userPrefsPendingPreHydrate = false; userPrefsLoadTries = 0; userPrefsAuthoritative.clear(); try { clearTimeout(userPrefsRetryTimer); } catch (e) {}   // §userSync — new session: shut the flush gate, reset per-session bucket-ownership, cancel any prior session's pending load-retry, until loadUserPrefs reconciles
+  wipeSyncMirror(syncOwnerTag(inPid));     // §userSync Blocker 1: wipe ONLY on an ownership change (a DIFFERENT person / shared device); a same-person reopen keeps their prefs (no-op while FEATURES.userSync is OFF)
   backendPassword = tok; currentRole = (r && r.role) || pidUI._role || ''; currentUser = (r && r.name) || pidUI.name || '';
+  currentPersonId = inPid;   // the sync key for this person (server still re-derives it from the token; this is the client-side gate only)
   pidTokenSet(tok, personal);
   if (r && r.scanDeviceToken) scanTokenSet(r.scanDeviceToken);   // remember this device for decal scans (write-only token)
   try { sessionStorage.setItem('jactec.role', currentRole); localStorage.setItem('jactec.user', currentUser); } catch (e) {}
@@ -24987,7 +24723,6 @@ async function pidCall(btnId, fn) {
   catch (e) { if (btn) { btn.disabled = false; btn.textContent = prev; } pidErr("Couldn't reach the database. Try again."); return null; }
 }
 function renderPhoneLogin(msg) {
-  resetCommsRailForLogin();   // clock-in = an EMPTY rail (covers a direct phone-login render, e.g. phoneBoot) — Jac 2026-07-17
   if (msg != null) pidUI.err = msg;
   const P = PHONE_IDENTITY, step = pidUI.step, roster = pidRosterCache();
   let inner = '';
@@ -25059,6 +24794,7 @@ function pidWire() {
   if (muteEl) muteEl.addEventListener('click', () => {
     state.loginMuted = !state.loginMuted;
     try { localStorage.setItem('jactec.loginMuted', state.loginMuted ? '1' : '0'); } catch (e) {}
+    flushUserPrefsSoon();   // §userSync
     muteEl.classList.toggle('is-muted', state.loginMuted);
     muteEl.setAttribute('aria-pressed', String(state.loginMuted));
     muteEl.setAttribute('data-tip', state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute');
@@ -25131,66 +24867,16 @@ function applyViewportClass() {
 const APP_ENV = location.hostname === 'app.jacrentals.com' ? 'production'
   : /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? 'local'
   : 'staging';
-// The staging review pool is THREE slots — each its own GitHub Pages repo/URL serving the SAME
-// bytes, told apart only by path (/rental-wrangler-staging[-2|-3]/). Read the slot off the path
-// so every non-prod surface (badge, edge, tab title, favicon) can label WHICH slot this is.
-const APP_SLOT = (() => {
-  if (APP_ENV !== 'staging') return 0;
-  const m = location.pathname.match(/rental-wrangler-staging(?:-(\d+))?(?:\/|$)/);
-  if (!m) return 0;                  // a non-slot staging host — labeled plain "STAGING"
-  return m[1] ? Number(m[1]) : 1;    // bare "…-staging" = slot 1
-})();
-// Distinct browser-tab title on any non-prod build → the tab AND a saved desktop shortcut name
-// themselves per slot ("Staging 2 · Rental Wrangler"). Production keeps its clean title. Set at
-// module load (earliest possible) so a shortcut saved before first render still captures it.
-if (APP_ENV !== 'production') {
-  document.title = (APP_SLOT ? 'Staging ' + APP_SLOT
-    : APP_ENV === 'local' ? 'Local' : 'Staging') + ' · Rental Wrangler';
-}
-// The slot's identity color (theme-invariant --slot-N / --tan), read from the stylesheet so the
-// tokens stay the single source of truth for the runtime-drawn favicon.
-function slotColor() {
-  const name = APP_ENV === 'local' ? '--tan' : '--slot-' + (APP_SLOT || 1);
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v || '#ffe000';
-}
-// A tinted favicon so the browser TAB (and the saved desktop-shortcut icon) is unmistakable per
-// slot: a steel plate carrying the slot color + its number ("1/2/3", "L" local, "S" slotless
-// staging). SVG data-URI — no asset build, tints straight from the token.
-function mountEnvFavicon() {
-  if (APP_ENV === 'production') return;
-  const glyph = APP_SLOT ? String(APP_SLOT) : (APP_ENV === 'local' ? 'L' : 'S');
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    + '<rect width="32" height="32" rx="7" fill="#0b0c0f"/>'
-    + '<rect x="3.5" y="3.5" width="25" height="25" rx="5.5" fill="' + slotColor() + '"/>'
-    + '<text x="16" y="24" text-anchor="middle" fill="#0b0c0f" '
-    + 'font-family="Saira Condensed,Arial Narrow,sans-serif" font-weight="800" font-size="22">'
-    + glyph + '</text></svg>';
-  const href = 'data:image/svg+xml,' + encodeURIComponent(svg);
-  let link = document.querySelector('link[rel="icon"]');
-  if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
-  link.setAttribute('type', 'image/svg+xml');
-  link.setAttribute('href', href);
-}
-// A caution stamp + a top edge bar on any non-prod build (fixed, never interactive) so you always
-// know which app — and WHICH staging slot — you're testing. The staging pool serves the SAME
-// files, so the slot number + color is the only tell.
+// A caution stamp on any non-prod build (fixed corner, never interactive) so you always know
+// which app you're testing — the staging mirror serves the SAME files as production.
 function mountEnvBadge() {
   if (APP_ENV === 'production' || document.getElementById('env-badge')) return;
-  const slotCls = ' env-' + APP_ENV + (APP_SLOT ? ' env-slot-' + APP_SLOT : '');
   const b = document.createElement('div');
   b.id = 'env-badge';
-  b.className = 'env-badge' + slotCls;
-  b.innerHTML = '<span>' + (APP_ENV === 'local' ? 'LOCAL' : 'STAGING') + '</span>'
-    + (APP_SLOT ? '<span class="env-badge-num">' + APP_SLOT + '</span>' : '');
+  b.className = 'env-badge env-' + APP_ENV;
+  b.textContent = APP_ENV === 'local' ? 'LOCAL' : 'STAGING';
   b.setAttribute('aria-hidden', 'true');
   document.body.appendChild(b);
-  const edge = document.createElement('div');
-  edge.id = 'env-edge';
-  edge.className = 'env-edge' + slotCls;
-  edge.setAttribute('aria-hidden', 'true');
-  document.body.appendChild(edge);
-  mountEnvFavicon();
 }
 // Warm the (cold-starting ~1-5s) Apps Script container while the login screen is up, so the
 // post-Saddle-Up 'load' hits a warm backend. `no-cors` → the response is OPAQUE and UNUSED
@@ -25445,12 +25131,19 @@ function boot() {
     // (R32), though, is a GLOBAL bar reflecting the ACTIVE card, so repaint it on column change.
     const fj = document.querySelector('.mobile-toolbar .mfoot-jog');
     if (fj) fj.innerHTML = footerJogInner();
+    flushUserPrefsSoon();   // §userSync — remember the column the person settled on (session resume, spec §5)
   }
   document.addEventListener('scroll', (e) => {
     if (!(e.target && e.target.classList && e.target.classList.contains('grid'))) return;
     if (mcolRaf) return;
     mcolRaf = requestAnimationFrame(() => { mcolRaf = 0; syncMobileColFromScroll(); });
   }, true);
+  // §userSync — push any pending pref/comms change when the tab is backgrounded or closed, so an edit
+  // made inside the 1.2s debounce before a tab-close isn't dropped (best-effort; no-op unless the gate
+  // is open). visibilitychange→hidden fires on tab-switch/backgrounding (the reliable case); pagehide
+  // catches the hard close. Both no-op while FEATURES.userSync is OFF.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushUserPrefsNow(); });
+  window.addEventListener('pagehide', () => { flushUserPrefsNow(); });
   initDrag();   // §15c drag & drop link engine — #drag-layer singleton + document pointer listeners
   try { loadGoogleMaps(); } catch (e) {}   // §2.3 warm the Maps SDK at boot so the dispatch cockpit + transport editor open instantly (no first-open wait / "load it twice")
   // R0 flash-lint: ON by default — violations self-report by pulsing (SPEC v8)
@@ -25727,13 +25420,7 @@ function boot() {
     // card-to-List never fired. Dismiss it and re-resolve the row beneath the cursor.
     let target = e.target;
     if (target.closest('.hover-preview')) { hideHoverPreview(); target = document.elementFromPoint(e.clientX, e.clientY) || target; }
-    if (!target.closest('.card') && !target.closest('.overlay .popup')) {
-      // The phone footer jog (.card-jog inside .mobile-toolbar) sits OUTSIDE any .card, so
-      // this early-return used to let the NATIVE context menu leak on a long-press of
-      // Back/Forward. Swallow it for the jog specifically (tap still fires) (Jac 2026-07-17).
-      if (target.closest('.card-jog')) e.preventDefault();
-      return;
-    }
+    if (!target.closest('.card') && !target.closest('.overlay .popup')) return;
     e.preventDefault();
     if (performance.now() - lastTouchCtx < 700) return;                        // §M3 — our touch long-press already opened it; swallow the trailing native event
     hideHoverPreview();                                                        // clear any preview still mid-fuse so it can't reappear over the menu
@@ -25864,14 +25551,15 @@ function exposeTestApi() {
       dataCache, cacheValid, cacheDeviceOk, cacheTokenTag, cacheAppVer, cacheSnapshotEnvelope, CACHE_SCHEMA_VER, FEATURES,   // §instant-cache (spec 2026-07-16)
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, pickFunnelStage, toggleFunnelMembership, rentalFunnelStage, funnelStageOf, inFunnel, inRental, hasRentalActivity, funnelTrackA, funnelTrackEquip, ensureFunnels, funnelMenuHtml, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
       tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend
-      adoptScanCaptures, setScanCaps: (m) => { SCAN_CAPS = m || {}; },   // §scan-reconcile — test seam: seed SCAN_CAPS then run adoption (logic-test)
       autoRunRepair, autoRunAnchorsFor, secToClock, AUTORUN_DAY_START_SEC, AUTORUN_EOD_DEADLINE_SEC, AUTORUN_LOAD_BUFFER_SEC, dispatchPinOf,
-      openCustomerForm, renderOverlay, render, printInvoice, invoiceDocHtml, renderInvoicePng, invoiceSheetPng, invoicePrintGroups, invoiceAmendments, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature,
-      wranglerSend, wranglerNewChat, openWranglerDock, wranglerDockPollTick, devUnlocked, openWranglerOps, wrOpsAgo, __state: state };   // UI drivers for headless screenshot/e2e tests
+      openCustomerForm, renderOverlay, render, printInvoice, invoiceDocHtml, renderInvoicePng, invoicePrintGroups, invoiceAmendments, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature,
+      wranglerSend, wranglerNewChat, openWranglerDock, wranglerDockPollTick, devUnlocked, openWranglerOps, wrOpsAgo,
+      buildUserPrefsDoc, applyUserPrefsDoc, applySessionResume, syncActive, wipeSyncMirror, flushUserPrefs, loadUserPrefs, SYNC_MIRROR_KEYS, commentUserKey, chatIsAdmin, myRosterId, userPrefsGateOpen, setPersonId: (id) => { currentPersonId = id || ''; }, setUserPrefsHydrated: (v) => { userPrefsHydrated = !!v; }, resetUserPrefsSession: () => { userPrefsAuthoritative.clear(); userPrefsHydrated = false; userPrefsPendingPreHydrate = false; userPrefsLoadTries = 0; lastUserPrefsJson = null; },   // §userSync (spec 2026-07-17) — test seam for the pure hydrate/mirror path (mocked fetch)
+      __state: state };   // UI drivers for headless screenshot/e2e tests
 
   } catch (e) { /* no window (non-browser) */ }
 }

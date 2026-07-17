@@ -149,10 +149,7 @@ const RAW_STATUS = {
   },
   funnelStage: {
     'N/A':               { label: 'N/A',               color: 'gray'   },
-    'Lead':              { label: 'Lead',              color: 'blue'   },   // funnel redesign 2026-07-17 — the shared entry stage for Rental/Member/Equipment
-    'Reserved':          { label: 'Reserved',          color: 'purple' },   // Rental funnel — AUTO from a future reservation (never a manual pick)
-    'Rented':            { label: 'Rented',            color: 'green'  },   // Rental funnel — AUTO from On Rent
-    'Inbound Lead':      { label: 'Inbound Lead',      color: 'blue'   },   // legacy (pre-redesign) — kept for existing data; migrated → 'Lead'
+    'Inbound Lead':      { label: 'Inbound Lead',      color: 'blue'   },
     'Outbound Lead':     { label: 'Outbound Lead',     color: 'navy'   },
     "Don't Contact":     { label: "Don't Contact",     color: 'red'    },
     'Contacted':         { label: 'Contacted',         color: 'yellow' },
@@ -319,24 +316,6 @@ export const ROLES = [
   { id: 'sales', label: 'Sales', color: 'navy',
     kpis: ['Revenue Goal', 'Active Customer Rate', 'Pipeline'] },
 ];
-
-/* ── Customer funnels (redesign 2026-07-17 — spec: customer-funnel-redesign) ──
- * Three funnels a customer can be in at once (explicit membership on customer.funnels).
- * Each has its own stage LADDER (in order) and its AUTO stages (derived from live rental /
- * agreement / invoice activity — never a manual pick, rendered locked like today's Signed/Paid).
- *   • Rental  = renting equipment. Reserved/Rented are auto from the customer's rentals; a first
- *               reservation/rental AUTO-JOINS the Rental funnel (see the migration + derivations).
- *   • Member  = the membership-signup pipeline (a continuation of Rental in the detail view).
- *   • Equipment = the equipment-SALES pipeline (no rental states). Terminal Paid (Member ends Signed). */
-export const FUNNELS = {
-  rental:    { label: 'Rental',    stages: ['Lead', 'Reserved', 'Rented'],                                          auto: ['Reserved', 'Rented'] },   // Reserved/Rented DERIVED from live rentals
-  member:    { label: 'Member',    stages: ['Lead', 'Contacted', 'Not A No!', 'Payment Discussed', 'Signed'],       auto: ['Signed'] },               // Signed auto-set by signing the membership agreement (markMembershipSigned)
-  // Equipment 'Paid' stays a MANUAL terminal: there is no customer↔sale-invoice link today to auto-lock it on
-  // payment (sellUnit is fleet-level, no buyer; no 'sale' line-kind), so keeping it auto-only would make it
-  // unreachable. Flagged for Jac — wire an auto trigger later and move 'Paid' into `auto`.
-  equipment: { label: 'Equipment', stages: ['Lead', 'Contacted', 'Not A No!', 'Payment Discussed', 'Paid'],         auto: [] },
-};
-export const FUNNEL_KEYS = Object.keys(FUNNELS);   // ['rental','member','equipment']
 
 /* ── Permission tiers (role-system redesign 2026-06-26) ───────────────────────
  * Roles are customizable (add/remove/rename in Settings → Roles & Logins), so
@@ -652,7 +631,7 @@ export const FEATURES = {
   // captureByScan handler is deployed (Jac deploys the backend last); flipped ON only
   // after that deploy. The flag gates EXPERIENCE only — the real auth is the server-side
   // write-only scanDeviceToken check in captureByScan, never this flag.
-  qrScanLog: true,   // PRODUCTION switch — ON (2026-07-17): backend captureByScan + history-derivation deployed; scan-to-log live
+  qrScanLog: false,   // PRODUCTION switch (staging + localhost auto-enable via APP_ENV, so review needs no flip)
   // Staging-review aid for the scan flow: when ON, the client short-circuits captureByScan to
   // CANNED responses (no backend needed) so every state is walkable before the handler is deployed.
   // Test-decal id suffix → state: …1 start · …2 end · …3 blocked · …4 not-found. OFF in production
@@ -664,6 +643,17 @@ export const FEATURES = {
   // a save baseline, so it can't corrupt the Sheet; personal devices only (no PII at
   // rest on shared machines). ON = paint-from-cache path; OFF = today's splash + load.
   instantCache: true,
+  // Cross-device user sync (spec 2026-07-17-cross-device-user-sync-design). ON = a
+  // logged-in person's prefs/session/comms follow their personId across devices via a
+  // per-user backend blob (getUserPrefs/setUserPrefs) + re-keyed group-order/Wrangler
+  // rail; OFF = today's device-local localStorage (nothing synced, no mirror-wipe).
+  // Ships OFF so the frontend can promote before the backend getUserPrefs/setUserPrefs
+  // handlers are deployed (Jac deploys the backend last, via /clasp editor deploy);
+  // flipped ON only after that deploy. Gates EXPERIENCE only — operator isolation is the
+  // server-side personId-from-session-token check in Code.gs, never this flag.
+  userSync: true,   // PRODUCTION switch — ON. Backend §A live; three adversarial passes: operator isolation
+                    // SOUND, omit-empty clobber-guard SOUND, all found data-loss edges fixed (spec §14). Final
+                    // gate before promote is Jac's two-device manual pass (spec §9). Flip back to false = instant rollback.
 };
 
 /* Phone-identity client constants (non-secret — display/UX only; the backend owns the
