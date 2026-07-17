@@ -12,21 +12,14 @@
         "branch": "claude/random-improvements-2c43ou",
         "feature": "random-improvements-2c43ou",
         "acquiredAt": 1784304090282,
-        "renewedAt": 1784305129855,
-        "expiresAt": 1784306929855
+        "renewedAt": 1784305427440,
+        "expiresAt": 1784307227440
       }
     },
     {
       "id": 2,
       "url": "https://operations-jacrentals.github.io/rental-wrangler-staging-2/",
-      "holder": {
-        "session": "bddce4f9-f7c3-5cb5-a9d9-5590ce766243",
-        "branch": "claude/invoice-collapsed-rows-light-4m4gdi",
-        "feature": "invoice-collapsed-rows-light-4m4gdi",
-        "acquiredAt": 1784302379176,
-        "renewedAt": 1784303469093,
-        "expiresAt": 1784305269093
-      }
+      "holder": null
     },
     {
       "id": 3,
