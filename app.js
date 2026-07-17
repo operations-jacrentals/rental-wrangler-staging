@@ -10886,30 +10886,45 @@ async function loadScanCapturesFromBackend() {
    already carries a video (a manual capture, or an earlier adoption) is left untouched, so this
    re-runs harmlessly on every load and never fights a manual edit. §scan-reconcile. */
 function adoptScanCaptures() {
-  let changed = false;
+  // Parse the flat SCAN_CAPS map, then process in CHRONOLOGICAL order (ts, with a start-before-
+  // end tiebreak) — never key order. A unit's START must be adopted before its END, or a full
+  // backlog (both scans landed before anyone opened the app) would advance Reserved → On Rent on
+  // the start AFTER the end already skipped its own status move, stranding the unit at On Rent
+  // forever (the endCapture is stamped, so idempotency then blocks the Returned move). §bug-1.
+  const entries = [];
   for (const k in SCAN_CAPS) {
     const cap = SCAN_CAPS[k]; if (!cap || !cap.video) continue;
     const b1 = k.indexOf('|'); if (b1 < 0) continue;
     const b2 = k.indexOf('|', b1 + 1); if (b2 < 0) continue;
-    const unitId = k.slice(0, b1), rentalId = k.slice(b1 + 1, b2), slot = k.slice(b2 + 1);
-    if (slot !== 'start' && slot !== 'end') continue;
-    const r = IDX.rental.get(rentalId); if (!r) continue;
-    const eu = unitEntry(r, unitId);
-    if (Array.isArray(r.units) ? !eu : String(r.unitId) !== String(unitId)) continue;   // must match the scanned unit
-    const tgt = eu || r, key = slot === 'start' ? 'startCapture' : 'endCapture';
-    if (tgt[key] && tgt[key].video) continue;   // already logged (a manual capture wins, or already adopted) → leave it
+    const slot = k.slice(b2 + 1); if (slot !== 'start' && slot !== 'end') continue;
+    entries.push({ unitId: k.slice(0, b1), rentalId: k.slice(b1 + 1, b2), slot, video: cap.video, ts: cap.ts });
+  }
+  entries.sort((a, b) => (Number(new Date(a.ts)) - Number(new Date(b.ts))) || ((a.slot === 'end') - (b.slot === 'end')));
+  let changed = false;
+  for (const e of entries) {
+    const r = IDX.rental.get(e.rentalId); if (!r) continue;
+    const eu = unitEntry(r, e.unitId);
+    if (Array.isArray(r.units) ? !eu : String(r.unitId) !== String(e.unitId)) continue;   // must match the scanned unit
+    const tgt = eu || r, key = e.slot === 'start' ? 'startCapture' : 'endCapture';
+    if (tgt[key]) continue;   // ANY capture already on this slot wins — a manual stamp (even mid-upload, video:'' before Drive resolves), or an earlier adoption. Never overwrite it. §bug-2
+    // Adopt ONLY when the resulting (capture + status) stays self-consistent — else leave the scan
+    // in ScanLog rather than paint a contradictory card (a green "delivered" node over a "No Show"/
+    // "Reserved" pill). Read the STORED status, not the derived one, so a backlog delivery on a
+    // derived-No-Show unit (stored 'Reserved', start date passed) still advances to On Rent. §bug-3
+    const storedSt = (eu && eu.status) || r.status || 'Reserved';
+    if (e.slot === 'start') { if (['Returned', 'Cancelled', 'No Show'].includes(storedSt)) continue; }   // terminal → don't un-terminal
+    else { if (!OUT_RENTAL_STATUSES.has(storedSt) && storedSt !== 'Returned') continue; }             // recovery with no delivery on file → skip
     let clock = '', date = TODAY_ISO;
-    try { const d = new Date(cap.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = d.toISOString().slice(0, 10); } } catch (e) {}
-    const drvId = eu ? (slot === 'end' ? (eu.recoveryDriverId || eu.deliveryDriverId) : eu.deliveryDriverId) : null;
-    setUnitCapture(r, eu, key, { date, clock, video: cap.video, driver: drvId ? driverName(drvId) : '', scan: true });
-    const st = unitStatus(r, eu);
-    if (slot === 'start' && !OUT_RENTAL_STATUSES.has(st) && !['Returned', 'Cancelled', 'No Show'].includes(st)) {
+    try { const d = new Date(e.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = d.toISOString().slice(0, 10); } } catch (err) {}
+    const drvId = eu ? (e.slot === 'end' ? (eu.recoveryDriverId || eu.deliveryDriverId) : eu.deliveryDriverId) : null;
+    setUnitCapture(r, eu, key, { date, clock, video: e.video, driver: drvId ? driverName(drvId) : '', scan: true });
+    if (e.slot === 'start' && !OUT_RENTAL_STATUSES.has(storedSt)) {   // pre-delivery → this scan delivered it
       if (eu) { eu.status = 'On Rent'; syncRentalPrimary(r); } else { r.status = 'On Rent'; }
       if (!r.invoiceId) logAction(r, '⚠ Delivered by QR scan — no invoice linked yet');
-    } else if (slot === 'end' && OUT_RENTAL_STATUSES.has(st)) {
+    } else if (e.slot === 'end' && OUT_RENTAL_STATUSES.has(storedSt)) {   // out → this scan recovered it
       if (eu) { eu.status = 'Returned'; syncRentalPrimary(r); } else { r.status = 'Returned'; }
     }
-    logAction(r, `${IDX.unit.get(unitId)?.name || unitId} — ${slot === 'start' ? 'Delivery' : 'Recovery'} video filed by QR scan`);
+    logAction(r, `${IDX.unit.get(e.unitId)?.name || e.unitId} — ${e.slot === 'start' ? 'Delivery' : 'Recovery'} video filed by QR scan`);
     reindex('rentals', r);   // → saveSoon() diff-syncs this client-side write (no clobber)
     changed = true;
   }
