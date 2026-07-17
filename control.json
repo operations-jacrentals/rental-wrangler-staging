@@ -41,5 +41,13 @@
       }
     }
   ],
-  "queue": []
+  "queue": [
+    {
+      "session": "735c1743-5b83-578e-82da-93ecd48b05d6-slotrefresh-3",
+      "branch": "claude/staging-slot-refresh",
+      "feature": "staging-slot-refresh",
+      "since": 1784290250047,
+      "expiresAt": 1784290340047
+    }
+  ]
 }
