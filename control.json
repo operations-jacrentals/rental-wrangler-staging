@@ -7,14 +7,7 @@
     {
       "id": 1,
       "url": "https://operations-jacrentals.github.io/rental-wrangler-staging/",
-      "holder": {
-        "session": "9ca71225-e4af-5667-afb1-cea5948d9cc1",
-        "branch": "claude/customer-list-card-button-ghxyb0",
-        "feature": "customer-list-card-button-ghxyb0",
-        "acquiredAt": 1784302798911,
-        "renewedAt": 1784303719035,
-        "expiresAt": 1784305519035
-      }
+      "holder": null
     },
     {
       "id": 2,
