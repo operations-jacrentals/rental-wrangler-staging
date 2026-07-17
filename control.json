@@ -36,8 +36,8 @@
         "branch": "claude/staging-slot-refresh",
         "feature": "staging-slot-refresh",
         "acquiredAt": 1784290215700,
-        "renewedAt": 1784290215700,
-        "expiresAt": 1784292015700
+        "renewedAt": 1784290247367,
+        "expiresAt": 1784292047367
       }
     }
   ],
