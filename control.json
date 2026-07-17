@@ -48,6 +48,13 @@
       "feature": "staging-slot-refresh",
       "since": 1784290250047,
       "expiresAt": 1784290472606
+    },
+    {
+      "session": "83e7a933-bf08-596f-82fa-801fdde4f218",
+      "branch": "claude/qr-decal-video-logging-6fj6fh",
+      "feature": "qr-decal-video-logging-6fj6fh",
+      "since": 1784290388784,
+      "expiresAt": 1784290478784
     }
   ]
 }
