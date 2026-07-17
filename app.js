@@ -7259,6 +7259,18 @@ function newInspectionForUnit(u) {
   DATA.inspections.push(n); IDX.insp.set(id, n); reindex('inspections', n);
   return n;
 }
+/* A QR-decal scan files its video straight to the backend (SCAN_CAPS, loaded at boot by
+   loadScanCapturesFromBackend) — it never lands on r.units[]/r.startCapture like a manual
+   yard-tool capture does. scanCapFor() looks one up for a given unit+rental+slot and hands
+   back a synthetic capture object in the SAME shape a manual one carries ({ clock, video }),
+   plus a `scan: true` marker so the render layer can tell the two apart. */
+function scanCapFor(unitId, rentalId, cap) {
+  const e = SCAN_CAPS[unitId + '|' + rentalId + '|' + cap];
+  if (!e || !e.video) return null;
+  let clock = '';
+  try { clock = new Date(e.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); } catch (err) {}
+  return { video: e.video, clock, scan: true };
+}
 /* YARD JOURNEY — boxless tool at the top of the Units card; the unit's QR code
    lands mechanics here. Node 0 = the reservation; +Start/+End relabel to
    +Log Delivery/+Log Recovery on transport rentals; FC = red optional. */
@@ -7270,24 +7282,29 @@ function yardToolHtml(u) {
   const C = euT || r;   // §20 this unit's OWN captures (mirrors r.* for the primary)
   const st = getStatus('rentalStatus', euT ? unitStatus(r, euT) : rentalDisplayStatus(r));
   const isDel = !!(euT && euT.transportType && euT.transportType !== 'Self');   // §20 per-unit (was rental-level — diverged on multi-unit)
-  const startLbl = C.startCapture ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
-  const endLbl = C.endCapture ? 'Returned' : isDel ? '+Log Recovery' : '+End';
+  // Join in a scanned QR-decal video ONLY when this unit's own capture is missing or has no
+  // video yet — a manual capture always wins, and the join goes invisible the moment a real
+  // one lands (never overwrites C.*/r.* — display-only, same as every other derived field).
+  const startCap = (C.startCapture && C.startCapture.video) ? C.startCapture : (scanCapFor(u.unitId, r.rentalId, 'start') || C.startCapture);
+  const endCap = (C.endCapture && C.endCapture.video) ? C.endCapture : (scanCapFor(u.unitId, r.rentalId, 'end') || C.endCapture);
+  const startLbl = startCap ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
+  const endLbl = endCap ? 'Returned' : isDel ? '+Log Recovery' : '+End';
   const kindLbl = isDel ? getStatus('transportType', euT.transportType).label : '';
   const du = `data-unit="${esc(u.unitId)}"`;
   return `<div class="jtool"><div class="journey">
     <div class="jnode pre" style="cursor:default"><span class="jbox" style="color:var(--${st.color})">${CARD_ICON.rentals}</span><span class="jlbl" style="color:var(--${st.color})">${esc(st.label)}</span><span class="jts">${fmtShortDate(r.startDate)}${r.startTime ? ' · ' + esc(r.startTime) : ''}</span></div>
     <div class="jseg">
       <span class="jover"><span class="pill dvd c-orange" data-r="R4" data-pill-card="rentals" data-pill-rec="${esc(r.rentalId)}">${CARD_ICON.rentals}<span class="t">${esc(cust?.name || r.rentalName || 'Rental')}</span></span></span>
-      <span class="jline2 ${C.startCapture ? 'on' : ''}"></span>
+      <span class="jline2 ${startCap ? 'on' : ''}"></span>
       <span class="junder">${fmtShortDate(r.startDate)} – ${fmtShortDate(r.endDate)}</span>
       ${(() => { const addr = (euT && euT.deliveryAddress) || (isPrimaryUnit(r, euT) ? r.deliveryAddress : ''); return addr ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}" ${du}>${esc(addr)}</span>` : (isDel ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}" ${du}>+Address</span>` : ''); })()}
       ${kindLbl ? `<span class="jkind">${esc(kindLbl)}</span>` : ''}
     </div>
-    <div class="jnode ${C.startCapture ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${C.startCapture ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(C.startCapture?.clock || '')}</span></div>
-    <div class="jseg"><span class="jover"></span><span class="jline2 ${C.endCapture || C.fcCapture ? 'on' : ''}"></span></div>
+    <div class="jnode ${startCap ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}" ${du}${startCap?.scan ? ' data-tip="Filed by QR scan"' : ''}><span class="jbox">${startCap ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(startCap?.clock || '')}${startCap?.scan ? ' <span class="jscan">•</span>' : ''}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${endCap || C.fcCapture ? 'on' : ''}"></span></div>
     <div class="jnode fc ${C.fcCapture || r.fieldCall ? 'done' : ''} js-yard" data-cap="fc" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${I.video}</span><span class="jlbl">+FC</span><span class="jts">${esc(C.fcCapture?.clock || '')}</span></div>
-    <div class="jseg"><span class="jover"></span><span class="jline2 ${C.endCapture ? 'on' : ''}"></span></div>
-    <div class="jnode ${C.endCapture ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${C.endCapture ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(C.endCapture?.clock || '')}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${endCap ? 'on' : ''}"></span></div>
+    <div class="jnode ${endCap ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}" ${du}${endCap?.scan ? ' data-tip="Filed by QR scan"' : ''}><span class="jbox">${endCap ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(endCap?.clock || '')}${endCap?.scan ? ' <span class="jscan">•</span>' : ''}</span></div>
   </div></div>`;
 }
 /* one open-WO section on the Units card: WO name = the title, type+date flags right,
@@ -10852,6 +10869,22 @@ async function loadTripsFromBackend() {
       render();
     }
   } catch (e) { /* offline → keep local cache */ }
+}
+/* Scan-sourced capture videos (QR-decal scans, SCAN-TO-LOG above) are filed server-side via
+   captureByScan — NOT onto the rental record — so the yard journey can't read them off r.units[]
+   like a manual capture. SCAN_CAPS is the boot-pulled feed (getScanCaptures), keyed
+   "<unitId>|<rentalId>|<cap>" → { video, ts }; scanCapFor() below joins it in at render time.
+   Mirrors loadTripsFromBackend exactly: same offline/local guard, server wins. */
+let SCAN_CAPS = {};
+async function loadScanCapturesFromBackend() {
+  if (typeof backendPassword === 'undefined' || !backendPassword) return;
+  try {
+    const r = await backendCall('getScanCaptures');
+    if (r && r.ok && r.captures && typeof r.captures === 'object') {
+      SCAN_CAPS = r.captures || {};
+      if (!booting) render();
+    }
+  } catch (e) { /* offline → keep whatever SCAN_CAPS already holds (possibly empty) */ }
 }
 /* §2.3 Phase 4 — the Trips card footer's live sync state (replaces the Phase 1 static
    placeholder). 'Synced · rev N' (N = the highest rev among TODAY's materialized trips) only
@@ -24269,6 +24302,7 @@ function finishLoad() {
   // (views no longer pull from the backend — personal per-device "my views", spec search-views D2)
   loadGroupOrderFromBackend();                                  // pull THIS role's saved card-group order
   loadTripsFromBackend();                                       // §2.3 Phase 4 — pull the trips store (getTrips), server wins at boot
+  loadScanCapturesFromBackend();                                // pull QR-decal scan captures (getScanCaptures) to join into the yard journey
   salePricingAutoApply();                                       // used-sale price engine, auto mode (manager+ sessions only)
   loadChats();                                                  // pull the shared team-chat threads (§ team-chat sync)
   wranglerRailLoad();                                           // load the Mr. Wrangler rail from IndexedDB (+ one-time localStorage migration)
