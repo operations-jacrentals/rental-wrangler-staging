@@ -1759,21 +1759,7 @@ const invoiceCollectionsActive = (inv) => !!(inv && inv.collections && inv.colle
 /** Does ANOTHER invoice for this invoice's customer still sit in active Collections? Gates the
  *  recall-lifts-blacklist decision so one recall can't un-blacklist while a 2nd is live (#552-r3). */
 function collectionsHasOtherActive(inv) { return !!inv && (DATA.invoices || []).some((i2) => i2 !== inv && i2.customerId === inv.customerId && invoiceCollectionsActive(i2)); }
-// Render-scoped memo — reset at the top of render() and cleared to null at its end, so a call
-// OUTSIDE a render always recomputes fresh (zero staleness risk). These pure per-record derivations
-// (invoiceTotals · activeRentalForUnit · unitRepairCost · unitTotalRevenue) get called many times in
-// ONE render — group-bucketing over the full set, then the windowed row build, then flag/color — so
-// caching for the life of a single render kills the redundant recompute. The cache is thrown away and
-// rebuilt every render, so it can never serve stale data. (Jac 2026-07-17 snappiness)
-let RENDER_MEMO = null;
-function rmemo(bucket, key, compute) {
-  if (!RENDER_MEMO) return compute();
-  let m = RENDER_MEMO[bucket]; if (!m) m = RENDER_MEMO[bucket] = new Map();
-  if (m.has(key)) return m.get(key);
-  const v = compute(); m.set(key, v); return v;
-}
 function invoiceTotals(inv) {
-  return rmemo('invTotals', inv, () => {
   const subtotal = (inv.lineItems || []).reduce((a, li) => a + (Number(li.amount) || 0), 0);
   const cust = inv.customerId ? IDX.customer.get(inv.customerId) : null;
   const exempt = !!(inv.taxExempt || cust?.salesTaxExempt);
@@ -1805,7 +1791,6 @@ function invoiceTotals(inv) {
     }
   }
   return { subtotal, tax, total, exempt, paid, balance, status };
-  });
 }
 
 /** The active rental driving a unit's mirrored Rental Status (excludes
@@ -1833,11 +1818,11 @@ function rentalRevStatus(r) {
 function activeRentalForUnit(unitId) {
   // §20 judge by the UNIT's OWN status, not the rental roll-up — a No-Show /
   // Returned unit on an otherwise-active rental is NOT actively renting.
-  return rmemo('activeRental', unitId, () => DATA.rentals.filter((r) => {
+  return DATA.rentals.filter((r) => {
     if (!rentalHasUnit(r, unitId) || r.status === 'Quote') return false;
     const eu = unitEntry(r, unitId);
     return ACTIVE_RENTAL.has(eu ? unitStatus(r, eu) : r.status);
-  }).sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null);
+  }).sort((a, b) => (parseISO(a.startDate) || 0) - (parseISO(b.startDate) || 0))[0] || null;
 }
 
 /* ── §10 Availability Tool (derived, never stored) ──────────────────────────
@@ -2051,8 +2036,8 @@ function topServiceForUnit(unit) {
 }
 /** Total repair cost for a unit = Σ its WO line-item costs (SPEC §12.4). */
 function unitRepairCost(unitId) {
-  return rmemo('unitRepair', unitId, () => DATA.workOrders.filter((w) => w.unitId === unitId)
-    .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0));
+  return DATA.workOrders.filter((w) => w.unitId === unitId)
+    .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0);
 }
 /** §7.6 WO "Price if billed": tiered parts markup (by each part's cost) + $150/hr labor.
  *  Tiers (Jac 2026-06-07): ≤$50 ×2.0 · ≤$200 ×1.5 · ≤$1000 ×1.3 · >$1000 ×1.2. */
@@ -2066,8 +2051,8 @@ function woBillable(w) {
 }
 /** Total revenue a unit has earned = Σ its rentals' derived prices (SPEC §12.4). */
 function unitTotalRevenue(unitId) {
-  return rmemo('unitRev', unitId, () => DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
-    .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0));   // §20 this unit's own line
+  return DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
+    .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0);   // §20 this unit's own line
 }
 
 /** Inspection result (handles the pending state: no checklist yet = Not Ready). */
@@ -2226,6 +2211,7 @@ function loadSort(card) {
 }
 function saveSort(card, sort) {
   try { localStorage.setItem(SORT_LS_KEY(card), JSON.stringify({ field: sort.field, dir: sort.dir })); } catch {}
+  flushUserPrefsSoon();   // §userSync
 }
 // the entity-card a record belongs to (Shop holds 3 entity types via recType)
 const entityCardOf = (card, recType) => (card === 'shop' ? recType : card);
@@ -2262,25 +2248,7 @@ function loadCommsRail() {
   } catch (e) {}
   return rail;
 }
-function saveCommsRail() { try { localStorage.setItem(COMMS_LS_KEY, JSON.stringify({ sessions: state.commsRail.sessions })); } catch (e) {} }
-/* Clock-in = an EMPTY comms rail. Resets every in-memory flag that decides whether a chat
-   window or tab strip is summoned on screen — cat, each session's menuOpen + lastOpen, the
-   Mr. Wrangler dock (open/min) and the Team dock (open) — then persists the emptied rail so a
-   dismissed conversation can't resurrect from localStorage either. MUST run on EVERY path back
-   to login: the old one-liner lived BELOW renderLogin()'s `phoneIdentity` early-return, so under
-   the live phoneIdentity:true default it was dead code (never ran), and even on the flag-OFF path
-   it only cleared cat/menuOpen — never the dock or lastOpen flags that ride an in-memory Switch
-   User straight into the next operator's session. Exactly the "wired to the old login only" shape
-   as the GPS-token bug (MEMORY 2026-07-17). Called from both login screens + finishLoad. (Jac 2026-07-17) */
-function resetCommsRailForLogin() {
-  if (state.commsRail) {
-    state.commsRail.cat = null;
-    Object.values(state.commsRail.sessions || {}).forEach((s) => { s.menuOpen = false; s.lastOpen = null; });
-    saveCommsRail();
-  }
-  if (state.wrangler) { state.wrangler.open = false; state.wrangler.min = false; }
-  if (state.chat) state.chat.open = false;
-}
+function saveCommsRail() { try { localStorage.setItem(COMMS_LS_KEY, JSON.stringify({ sessions: state.commsRail.sessions })); } catch (e) {} flushUserPrefsSoon(); }   // §userSync — the open rail follows the person (spec §3)
 /* 'Ended' conversations (spec D8: End ≠ delete — the full history persists forever;
    the conversation just leaves the All list + rail). A CLIENT-side per-device map of
    `id|channel` → ended-at epoch (D9: the timestamp lets Team/Wrangler chats RESURRECT
@@ -2301,8 +2269,8 @@ function commsIsEnded(id, channel, lastAt) {
   if (ts === undefined) return false;
   return !(typeof ts === 'number' && (lastAt || 0) > ts);
 }
-function commsEnd(customerId, channel) { const m = commsEndedMap(); m[String(customerId) + '|' + channel] = Date.now(); try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} }
-function commsUnend(customerId, channel) { const m = commsEndedMap(); const k = String(customerId) + '|' + channel; if (k in m) { delete m[k]; try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} } }
+function commsEnd(customerId, channel) { const m = commsEndedMap(); m[String(customerId) + '|' + channel] = Date.now(); try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} flushUserPrefsSoon(); }   // §userSync
+function commsUnend(customerId, channel) { const m = commsEndedMap(); const k = String(customerId) + '|' + channel; if (k in m) { delete m[k]; try { localStorage.setItem(COMMS_ENDED_KEY, JSON.stringify(m)); } catch (e) {} flushUserPrefsSoon(); } }   // §userSync
 
 const state = {
   data: DATA,
@@ -2333,7 +2301,6 @@ const state = {
   custAcctOpen: {},           // Phase 1 (2026-07-10 account/agreements redesign, D19) — is the top-of-card Account section expanded? { [customerId]: true }; collapsed by default, view-local
   custAgOpen: {},             // Phase 1 — which Agreements row is expanded inside the Account section — { [customerId]: cardId | '__new__' | null } (one open at a time, mirrors custInvOpen); '__new__' = the +Agreement/Card creation panel
   custAgDraft: {},            // Phase 2b — the in-progress NEW-agreement draft — { [customerId]: {accountType, startDate, selfie, signature} }; view-local, cleared on sign/cancel
-  custQuickAdd: { open: false, first: '', last: '', phone: '', funnel: 'N/A' },   // the Customers-list "+ New Customer" inline quick-add row (leads the list, mirrors +New Rental's .newrow) — collapsed/open + the single in-progress draft; view-local, reset on cancel/create
   svcSecOpen: {},             // Unit detail — is the Services (service-order) section expanded? { [unitId]: true }; collapsed by default (mirrors custAcctOpen), view-local, reset on a fresh unit open
   unitSecOpen: {},            // Unit detail — which generic collapsible sections are expanded per unit: { [unitId]: { workorders|specs|gps|investment: true } }; all collapsed by default, view-local, reset on a fresh unit open (mirrors svcSecOpen). Coverage is folded into Investment (Jac 2026-07-16) — no separate 'coverage' key.
   woRowOpen: {},              // Unit detail — which Work Order row is expanded (accordion, one per unit, mirrors custInvOpen) — { [unitId]: woId | null }; collapsed by default, view-local, reset on a fresh unit open
@@ -2556,7 +2523,6 @@ function sweepEmptyDrafts(keepId) {
   }
 }
 function openStandard(card, recId, recType) {
-  if (columnOfMember(card) === columnOfMember('customers')) resetCustQuickAdd();   // discard the +New Customer draft ONLY when the customers column is displaced (a customer/invoice detail) — not on a cross-column reference click that leaves the list visible (Jac 2026-07-17; scoped per review)
   const cs = activeSession().cards[card];
   if (cs && cs.mode === 'standard' && cs.recId != null) {
     if (String(cs.recId) === String(recId)) { render(); return; }            // already showing it — no-op
@@ -2769,9 +2735,8 @@ function cardFwd(card) {
 }
 // A Back/Forward jog RE-opens a view you already visited — so return to where you were
 // reading it, not the top. render() zeroes a record view on the assumption it's a fresh open
-// (§0.6, app.js:16297); the per-view scrollMemo still holds the offset (keyed card|<view>, the
-// view portion being recType:recId — stable per record), so re-apply it AFTER render paints. A
-// never-scrolled view has no entry
+// (§0.6, app.js:16297); the per-view scrollMemo still holds the offset (keyed recType:recId,
+// stable per record), so re-apply it AFTER render paints. A never-scrolled view has no entry
 // → stays at 0. (Fresh opens don't call this, so they still start at the top.)
 function restoreJogScroll(card) {
   const c = document.querySelector(`.card[data-card="${card}"]`);
@@ -4400,6 +4365,7 @@ function customerAccountSection(c) {
     : '<i>No contact info yet</i>';
   return `<div class="acct${open ? ' open' : ''}">`
     + `<div class="acct-bar js-acct-toggle" data-rec="${esc(c.customerId)}">`
+    + `<span class="acct-lbl">Account</span>`
     + `<span class="acct-sum">${summary}</span>`
     + `<span class="type-chip ${chip.tone}">${esc(chip.text)}</span>`
     + `<span class="acct-chev">${I.chev}</span>`
@@ -5698,16 +5664,6 @@ function funnelPill(custId, which, stage) {
   const st = getStatus('funnelStage', stage);
   return `<span class="pill gate c-${st.color} js-funnel" data-r="R1" data-rec="${esc(custId)}" data-which="${which}">${I.chev}${esc(st.label)}</span>`;
 }
-/** R1: the SAME gate-pill shape as funnelPill, but for the Customers-list quick-add
- *  DRAFT (no customerId exists yet) — opens openCustQuickAddFunnelDropdown, which
- *  writes straight to state.custQuickAdd.funnel instead of a real record. */
-function custQuickAddFunnelPill(stage) {
-  const set = !!(stage && stage !== 'N/A');
-  const st = getStatus('funnelStage', stage || 'N/A');
-  // Unset reads as a short placeholder ("Lead?", gray) — its own inline label now that the
-  // stamped caps are gone; a real pick shows the stage in its registry color. (Jac 2026-07-17)
-  return `<span class="pill gate c-${set ? st.color : 'gray'} js-custqa-funnel" data-r="R1">${I.chev}${esc(set ? st.label : 'Lead?')}</span>`;
-}
 /** R4: a DERIVED pill — rides another pill in the same section; no bg/border,
  *  destination icon + ink color only; sits directly RIGHT of its parent. */
 function dPill(label, color, { card, recId, icon, title, alert } = {}) {
@@ -6025,12 +5981,7 @@ function openCtxMenuAt(target, x, y) {
   }
   // While the rental-window picker is open, keep right-click → BACK working; just suppress
   // the element context menu (it gets in the way of picking). (Jac B5, 2026-06-15)
-  // The Back/Forward jog is navigation CHROME, not a data leaf — its arms are <button>s,
-  // so a bare `button` in the leaf list below scooped them up and opened the element menu
-  // instead of going Back ("opens the menu even though I'm not clicking an element", Jac
-  // 2026-07-17). Treat the jog like card dead-space: fall through to the card-Back path.
-  const onJog = !!target.closest('.card-jog');
-  const leaf = (onJog || (state.winEdit && state.winEdit.anchor)) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
+  const leaf = (state.winEdit && state.winEdit.anchor) ? null : target.closest('.pill, .add-field, .flag, .linkname, .inv-line-link, .req, .seg, button, .inline-edit, .jnode, .x, a, .d-title, .r-title, .derived');
   const hit = leaf ? (ruleOf(leaf) || { r: null, el: leaf }) : null;
   if (hit) return openCtxMenu({ clientX: x, clientY: y }, hit);
   if (!card) return;
@@ -6165,7 +6116,7 @@ function popupShell({ icon, title, tag, danger, headRight = '', headRail = '', b
    visual Rulebook overlay. One row per rule: [name, builder, one-liner]. ── */
 const RULE_META = {
   R0:  ['Flash-lint', 'body.rw-lint (CSS)', 'un-stamped UI pulses red — it bypassed the builders'],
-  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill / custQuickAddFunnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
+  R1:  ['Gate pill', 'gatePill / gatePillRaw / funnelPill', 'a status DROPDOWN that moves the record forward — big shape + chevron'],
   R2:  ['Linked pill', 'refPill / unitPill', 'orange outline + DESTINATION-card icon — opens a record; optional ✕'],
   R3:  ['Status badge', 'statusPill', 'informational STATUS: registry color, parent-card icon, hover underline — never an action'],
   R3b: ['Data chip', 'badge', 'a plain FACT (480 HRS, No GPS): gray, no icon, no hover — independent of R3'],
@@ -7320,28 +7271,24 @@ function yardToolHtml(u) {
   const C = euT || r;   // §20 this unit's OWN captures (mirrors r.* for the primary)
   const st = getStatus('rentalStatus', euT ? unitStatus(r, euT) : rentalDisplayStatus(r));
   const isDel = !!(euT && euT.transportType && euT.transportType !== 'Self');   // §20 per-unit (was rental-level — diverged on multi-unit)
-  // A QR-decal scan is ADOPTED into the record as a first-class capture (adoptScanCaptures,
-  // marked scan:true), so the journey reads it straight off C.* like any manual capture — the
-  // `• Filed by QR scan` marker below just keys off that flag. No display-time join needed.
-  const startCap = C.startCapture, endCap = C.endCapture;
-  const startLbl = startCap ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
-  const endLbl = endCap ? 'Returned' : isDel ? '+Log Recovery' : '+End';
+  const startLbl = C.startCapture ? 'On Rent' : isDel ? '+Log Delivery' : '+Start';
+  const endLbl = C.endCapture ? 'Returned' : isDel ? '+Log Recovery' : '+End';
   const kindLbl = isDel ? getStatus('transportType', euT.transportType).label : '';
   const du = `data-unit="${esc(u.unitId)}"`;
   return `<div class="jtool"><div class="journey">
     <div class="jnode pre" style="cursor:default"><span class="jbox" style="color:var(--${st.color})">${CARD_ICON.rentals}</span><span class="jlbl" style="color:var(--${st.color})">${esc(st.label)}</span><span class="jts">${fmtShortDate(r.startDate)}${r.startTime ? ' · ' + esc(r.startTime) : ''}</span></div>
     <div class="jseg">
       <span class="jover"><span class="pill dvd c-orange" data-r="R4" data-pill-card="rentals" data-pill-rec="${esc(r.rentalId)}">${CARD_ICON.rentals}<span class="t">${esc(cust?.name || r.rentalName || 'Rental')}</span></span></span>
-      <span class="jline2 ${startCap ? 'on' : ''}"></span>
+      <span class="jline2 ${C.startCapture ? 'on' : ''}"></span>
       <span class="junder">${fmtShortDate(r.startDate)} – ${fmtShortDate(r.endDate)}</span>
       ${(() => { const addr = (euT && euT.deliveryAddress) || (isPrimaryUnit(r, euT) ? r.deliveryAddress : ''); return addr ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}" ${du}>${esc(addr)}</span>` : (isDel ? `<span class="jaddr js-site-go" data-rec="${esc(r.rentalId)}" ${du}>+Address</span>` : ''); })()}
       ${kindLbl ? `<span class="jkind">${esc(kindLbl)}</span>` : ''}
     </div>
-    <div class="jnode ${startCap ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}" ${du}${startCap?.scan ? ' data-tip="Filed by QR scan"' : ''}><span class="jbox">${startCap ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(startCap?.clock || '')}${startCap?.scan ? ' <span class="jscan">•</span>' : ''}</span></div>
-    <div class="jseg"><span class="jover"></span><span class="jline2 ${endCap || C.fcCapture ? 'on' : ''}"></span></div>
+    <div class="jnode ${C.startCapture ? 'done green' : ''} js-yard" data-cap="start" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${C.startCapture ? '✓' : I.video}</span><span class="jlbl">${esc(startLbl)}</span><span class="jts">${esc(C.startCapture?.clock || '')}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${C.endCapture || C.fcCapture ? 'on' : ''}"></span></div>
     <div class="jnode fc ${C.fcCapture || r.fieldCall ? 'done' : ''} js-yard" data-cap="fc" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${I.video}</span><span class="jlbl">+FC</span><span class="jts">${esc(C.fcCapture?.clock || '')}</span></div>
-    <div class="jseg"><span class="jover"></span><span class="jline2 ${endCap ? 'on' : ''}"></span></div>
-    <div class="jnode ${endCap ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}" ${du}${endCap?.scan ? ' data-tip="Filed by QR scan"' : ''}><span class="jbox">${endCap ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(endCap?.clock || '')}${endCap?.scan ? ' <span class="jscan">•</span>' : ''}</span></div>
+    <div class="jseg"><span class="jover"></span><span class="jline2 ${C.endCapture ? 'on' : ''}"></span></div>
+    <div class="jnode ${C.endCapture ? 'done yellow' : ''} js-yard" data-cap="end" data-rec="${esc(r.rentalId)}" ${du}><span class="jbox">${C.endCapture ? '✓' : I.video}</span><span class="jlbl">${esc(endLbl)}</span><span class="jts">${esc(C.endCapture?.clock || '')}</span></div>
   </div></div>`;
 }
 /* one open-WO section on the Units card: WO name = the title, type+date flags right,
@@ -7500,7 +7447,12 @@ function caScrub(e) {
    as a static colored marker. Its color is the most-urgent UNREAD note (red>yellow>green),
    resting on the latest note's color once everything is read. ── */
 const COMMENT_SEV = { red: 3, yellow: 2, green: 1 };
-const commentUserKey = () => currentUser || currentRole || 'me';
+// §userSync (spec §4.2): under phone-identity + FEATURES.userSync, attribute chat/comment activity
+// to the stable personId (fixes the shared-role commingling where everyone on a role shared one
+// key); legacy/shared-password login keeps the free-text name/role key. Chat OWNERSHIP stays
+// back-compatible via chatIsAdmin (it also matches the legacy keys), so a flag flip never orphans
+// a chat. seen/ack/mute maps keyed by the old value simply re-seed once at cutover (soft, self-heals).
+const commentUserKey = () => (syncActive() ? 'pid:' + currentPersonId : (currentUser || currentRole || 'me'));
 const recComments = (rec) => (rec && rec.comments) || [];
 function commentMarker(rec) {
   const all = recComments(rec); if (!all.length) return null;
@@ -8970,6 +8922,7 @@ function toggleGroupCollapsed(card, key) {
   const k = card + ':' + key;
   COLLAPSED_GROUPS[k] = !groupCollapsed(card, key);
   try { localStorage.setItem('jactec.collapsedGroups', JSON.stringify(COLLAPSED_GROUPS)); } catch (e) {}
+  flushUserPrefsSoon();   // §userSync
 }
 /* Custom GROUP ORDER — drag-to-reorder a card's group headers (Jac 2026-07-04),
    remembered PER ROLE (Admin/Mechanic/Sales/... each keep their own order), synced
@@ -9369,32 +9322,6 @@ function listView(cardDef, session) {
   wrap.appendChild(cardListEl(cardDef, session));
   return wrap;
 }
-/* ADDITIVE inline single-line quick-add (Jac, 2026-07-17) — leads the Customers list,
-   mirroring the Rentals list's +New Rental .newrow/.bigbtn trigger; the EXISTING
-   search-bar quick-add (quickAddCustomerFromSearch) and the fruitless-search
-   js-new-cust-search prompt both stay untouched. Collapsed = the plain unstamped
-   .bigbtn (same as +New Rental — R5b language, not a lint-family element). Open =
-   ONE inline flex row: First · Last · Phone · the R1 funnel picker (draft-scoped,
-   defaults N/A) · a quiet Cancel (R18 ghostPill) · the "Wrangle" R17 ignition create
-   button, enabled only once First/Last/Phone are all filled and the phone looks real
-   (mirrors parseQuickCustomer's ≥7-digit check via custQuickAddValid). */
-function custQuickAddRowHtml() {
-  const d = state.custQuickAdd;
-  if (!d.open) return `<button class="bigbtn js-custqa-open">${I.plus} New Customer</button>`;
-  // No Cancel/Wrangle buttons, no stamped field captions (Jac 2026-07-17): the placeholders
-  // label the text fields and the funnel pill labels itself. First + Last + a ≥7-digit Phone,
-  // then a funnel PICK (any value incl N/A — the pick IS the 4th selection) auto-creates the
-  // customer and opens its detail view. A created customer — or navigating away — resets to the
-  // collapsed +New Customer button.
-  return `<div class="qa-cust">`
-    + `<div class="qa-cust-row">`
-    + `<div class="qa-field qa-first"><input type="text" class="qa-in js-custqa-first" placeholder="First name" value="${esc(d.first)}"></div>`
-    + `<div class="qa-field qa-last"><input type="text" class="qa-in js-custqa-last" placeholder="Last name" value="${esc(d.last)}"></div>`
-    + `<div class="qa-field qa-phone"><input type="tel" class="qa-in js-custqa-phone" placeholder="Phone" value="${esc(d.phone)}"></div>`
-    + `<div class="qa-field qa-funnel">${custQuickAddFunnelPill(d.funnel)}</div>`
-    + `</div>`
-    + `</div>`;
-}
 /* The rows-only `.list` element of a card's list view — factored out of listView so a
    mini-search keystroke can rebuild ONLY the rows (renderCardList) without touching the
    .listbar / its focused input. Owns the filter → visibility → sort → window/group pipeline
@@ -9436,14 +9363,6 @@ function cardListEl(cardDef, session) {
   if (card === 'rentals') {
     const nr = el('div', 'newrow');
     nr.innerHTML = `<button class="bigbtn js-newitem" data-new="rental">${I.plus} New Rental</button>`;
-    list.appendChild(nr);
-  }
-  // ADDITIVE inline quick-add (Jac 2026-07-17) — Customers always leads with its own
-  // +New Customer row, mirroring the Rentals block above; the search-bar quick-add and
-  // the fruitless-search prompt below are untouched, separate affordances.
-  if (card === 'customers') {
-    const nr = el('div', 'newrow');
-    nr.innerHTML = custQuickAddRowHtml();
     list.appendChild(nr);
   }
   if (!rows.length) {
@@ -9858,15 +9777,11 @@ function headerEl() {
  *  Receipt (the most-used action) stays a bare icon. Requests/Transport
  *  alerts/Notifications moved off this bar entirely, onto the Comms bell (they
  *  don't need an {opts} passthrough here — the bell reads its own {noInbox}). */
-function bottomBarInner(opts = {}) {
+function bottomBarInner() {
   // rules 5/6: LEFT = labeled actions (icon LEADS label, no "+"), Wash joins them;
   // RIGHT (after divider) = icon-only utilities. The +New collapse button is dropped (Jac).
-  // chips:false — the desktop footer now clusters ALL comms on the RIGHT (Jac 2026-07-17), so it
-  // omits the comms chips here and re-adds them in the right cluster (bottomBarEl). The phone
-  // top-toolbar + the tools-tray keep the chips inline (default true).
-  const chips = opts.chips !== false;
   return `
-    ${chips ? commsChipsHtml() : ''}
+    ${commsChipsHtml()}
     <button class="iconbtn js-newitem" data-new="receipt">${CARD_ICON.expenses}Receipt</button>
     <span class="bb-sep"></span>
     ${toolsBtn()}`;
@@ -9934,11 +9849,8 @@ function commsBellBtn(opts = {}) {
 // far right (Jac 2026-07-10).
 function bottomBarEl() {
   const bar = el('div', 'bottombar');
-  // ALL comms live on the RIGHT now (Jac 2026-07-17): tools stay left, the conversation rail
-  // right-aligns its tabs (see .comms-rail justify-content), then the comms chips, then the bell.
-  bar.innerHTML = `<div class="bb-tools">${bottomBarInner({ chips: false })}</div>`
+  bar.innerHTML = `<div class="bb-tools">${bottomBarInner()}</div>`
     + `<div class="comms-rail" role="tablist" aria-label="Conversations">${commsRailEl()}</div>`
-    + `<div class="bb-comms">${commsChipsHtml()}</div>`
     + `<div class="bb-utils">${commsUtilsEl()}</div>`;
   return bar;
 }
@@ -10018,7 +9930,6 @@ function mainCardOfMember(m) {
 // §M1 — jump straight to a card (flattens the 3-column model on phones): set the column +
 // member, flip the visible column, and show that card's LIST.
 function goToCard(member) {
-  if (member !== 'customers' && columnOfMember(member) === columnOfMember('customers')) resetCustQuickAdd();   // discard the +New Customer draft ONLY when the customers column is switched away (e.g. to Invoices) — never when returning to it, or switching a different column (Jac 2026-07-17; scoped per review)
   const s = activeSession(); const col = COLUMN_OF[member];
   if (s.cols && col) s.cols[col] = member;
   const idx = COLUMNS.findIndex((c) => c.id === col); if (idx >= 0) state.mobileCol = idx;
@@ -10108,13 +10019,17 @@ function newChat(opts) {
 // Settings → Team Roster entry (the pragmatic login↔roster bind). null = not on the
 // roster (a demo / un-rostered login) → treated as an unbound viewer below.
 function myRosterId() {
+  if (syncActive() && currentPersonId) return String(currentPersonId);   // §userSync — the stable roster/person id (phone identity), not a fragile login-name match
   const me = (currentUser || '').trim().toLowerCase(); if (!me) return null;
   const hit = ((state.settings && state.settings.employees) || []).find((e) => (e.name || '').trim().toLowerCase() === me);
   return hit ? String(hit.id) : null;
 }
 // The chat's creator owns it: only they add/remove members or rename. Legacy chats with
 // no recorded creator stay openly editable (back-compat — they predate the model).
-function chatIsAdmin(c) { return !c || !c.by || c.by === commentUserKey(); }
+// A chat's creator owns it (add/remove members, rename). Match the current identity key AND — for
+// chats created BEFORE the §userSync personId re-key — the legacy free-text name/role keys, so
+// flipping the flag can never lock anyone out of a chat they made. No `by` (legacy) → openly editable.
+function chatIsAdmin(c) { return !c || !c.by || c.by === commentUserKey() || c.by === currentUser || c.by === currentRole || (!!currentPersonId && c.by === 'pid:' + currentPersonId); }
 const chatAmMember = (c) => { const m = myRosterId(); return !!m && (c.members || []).map(String).includes(String(m)); };
 // Visibility: the admin and members see a chat; a bound non-member does not (Leave hides
 // it). An unbound login (not on the roster) sees all — so demo / un-rostered use isn't empty.
@@ -10840,7 +10755,7 @@ function dispatchEvents() {
    (localStorage) until Phase 3/4 materialize a Trip + sync it. */
 const dispatchStopId = (ev) => `${ev.rentalId}|${ev.unitId || ''}|${ev.task}`;
 const _lsJSON = (k) => { try { return JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { return {}; } };
-const _lsSave = (k, o) => { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) {} };
+const _lsSave = (k, o) => { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) {} if (k.indexOf('jactec.dispatch') === 0) flushUserPrefsSoon(); };   // §userSync — dispatch route state follows the person (not trips: ephemeral, spec §3)
 const dispatchOrderLS = () => _lsJSON('jactec.dispatchOrder');
 const dispatchTimesLS = () => _lsJSON('jactec.dispatchTimes');
 /* §2.3 D6 (spec rentals-dispatch) — the per-driver schedule slice:
@@ -10948,82 +10863,6 @@ async function loadTripsFromBackend() {
       render();
     }
   } catch (e) { /* offline → keep local cache */ }
-}
-/* Scan-sourced capture videos (QR-decal scans, SCAN-TO-LOG above) are filed server-side via
-   captureByScan into an append-only ScanLog (NOT onto the rental record, so a client sync can't
-   clobber the server write). SCAN_CAPS is the boot-pulled feed (getScanCaptures), keyed
-   "<unitId>|<rentalId>|<cap>" → { video, ts }. adoptScanCaptures() then folds each one INTO the
-   rental it belongs to — client-side, synced via the normal diff-sync — so downstream everything
-   reads it as an ordinary capture. Mirrors loadTripsFromBackend: same offline/local guard. */
-let SCAN_CAPS = {};
-async function loadScanCapturesFromBackend() {
-  if (typeof backendPassword === 'undefined' || !backendPassword) return;
-  try {
-    const r = await backendCall('getScanCaptures');
-    if (r && r.ok && r.captures && typeof r.captures === 'object') {
-      SCAN_CAPS = r.captures || {};
-      const changed = adoptScanCaptures();     // fold new scan videos into their rentals (stamp capture + advance status)
-      if (!booting && changed) render();
-    }
-  } catch (e) { /* offline → keep whatever SCAN_CAPS already holds (possibly empty) */ }
-}
-/* Fold each scan-filed video into its rental as a FIRST-CLASS capture: stamp the unit's
-   start/end capture (marked scan:true) and advance that unit's status the way a manual Log
-   Delivery/Recovery would — so the journey, the status pill, availability, billing and every
-   status-driven surface agree, with ZERO display/gate special-casing (they read cur.* like any
-   manual capture). Client-side + persisted through the normal diff-sync (reindex → saveSoon),
-   so it never clobbers a server write. Status is set DIRECTLY, bypassing the §9 booking gates —
-   the unit physically moved, so a scan records that fact; a missing invoice is FLAGGED in the
-   activity log, not blocked (Jac: don't stop a truck that already left). Idempotent: a slot that
-   already carries a video (a manual capture, or an earlier adoption) is left untouched, so this
-   re-runs harmlessly on every load and never fights a manual edit. §scan-reconcile. */
-function adoptScanCaptures() {
-  // Parse the flat SCAN_CAPS map, then process in CHRONOLOGICAL order (ts, with a start-before-
-  // end tiebreak) — never key order. A unit's START must be adopted before its END, or a full
-  // backlog (both scans landed before anyone opened the app) would advance Reserved → On Rent on
-  // the start AFTER the end already skipped its own status move, stranding the unit at On Rent
-  // forever (the endCapture is stamped, so idempotency then blocks the Returned move). §bug-1.
-  const entries = [];
-  for (const k in SCAN_CAPS) {
-    const cap = SCAN_CAPS[k]; if (!cap || !cap.video) continue;
-    const b1 = k.indexOf('|'); if (b1 < 0) continue;
-    const b2 = k.indexOf('|', b1 + 1); if (b2 < 0) continue;
-    const slot = k.slice(b2 + 1); if (slot !== 'start' && slot !== 'end') continue;
-    entries.push({ unitId: k.slice(0, b1), rentalId: k.slice(b1 + 1, b2), slot, video: cap.video, ts: cap.ts });
-  }
-  entries.sort((a, b) => (Number(new Date(a.ts)) - Number(new Date(b.ts))) || ((a.slot === 'end') - (b.slot === 'end')));
-  let changed = false;
-  for (const e of entries) {
-    const r = IDX.rental.get(e.rentalId); if (!r) continue;
-    const eu = unitEntry(r, e.unitId);
-    if (Array.isArray(r.units) ? !eu : String(r.unitId) !== String(e.unitId)) continue;   // must match the scanned unit
-    const tgt = eu || r, key = e.slot === 'start' ? 'startCapture' : 'endCapture';
-    if (tgt[key]) continue;   // ANY capture already on this slot wins — a manual stamp (even mid-upload, video:'' before Drive resolves), or an earlier adoption. Never overwrite it. §bug-2
-    // Adopt ONLY when the resulting (capture + status) stays self-consistent — else leave the scan
-    // in ScanLog rather than paint a contradictory card (a green "delivered" node over a "No Show"/
-    // "Reserved" pill). Read the STORED status, not the derived one, so a backlog delivery on a
-    // derived-No-Show unit (stored 'Reserved', start date passed) still advances to On Rent. §bug-3
-    const storedSt = (eu && eu.status) || r.status || 'Reserved';
-    if (e.slot === 'start') { if (['Returned', 'Cancelled', 'No Show'].includes(storedSt)) continue; }   // terminal → don't un-terminal
-    else { if (!OUT_RENTAL_STATUSES.has(storedSt) && storedSt !== 'Returned') continue; }             // recovery with no delivery on file → skip
-    let clock = '', date = TODAY_ISO;
-    // Derive date + clock in LOCAL time (isoOf, like the manual capture path's TODAY_ISO) — NOT
-    // toISOString(), whose UTC day would stamp tomorrow's date on an evening scan in a negative-
-    // offset yard (America/Chicago), diverging from the local `clock` on the same stamp. §bug-4
-    try { const d = new Date(e.ts); if (!isNaN(d.getTime())) { clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); date = isoOf(d); } } catch (err) {}
-    const drvId = eu ? (e.slot === 'end' ? (eu.recoveryDriverId || eu.deliveryDriverId) : eu.deliveryDriverId) : null;
-    setUnitCapture(r, eu, key, { date, clock, video: e.video, driver: drvId ? driverName(drvId) : '', scan: true });
-    if (e.slot === 'start' && !OUT_RENTAL_STATUSES.has(storedSt)) {   // pre-delivery → this scan delivered it
-      if (eu) { eu.status = 'On Rent'; syncRentalPrimary(r); } else { r.status = 'On Rent'; }
-      if (!r.invoiceId) logAction(r, '⚠ Delivered by QR scan — no invoice linked yet');
-    } else if (e.slot === 'end' && OUT_RENTAL_STATUSES.has(storedSt)) {   // out → this scan recovered it
-      if (eu) { eu.status = 'Returned'; syncRentalPrimary(r); } else { r.status = 'Returned'; }
-    }
-    logAction(r, `${IDX.unit.get(e.unitId)?.name || e.unitId} — ${e.slot === 'start' ? 'Delivery' : 'Recovery'} video filed by QR scan`);
-    reindex('rentals', r);   // → saveSoon() diff-syncs this client-side write (no clobber)
-    changed = true;
-  }
-  return changed;
 }
 /* §2.3 Phase 4 — the Trips card footer's live sync state (replaces the Phase 1 static
    placeholder). 'Synced · rev N' (N = the highest rev among TODAY's materialized trips) only
@@ -11847,7 +11686,7 @@ function ruResolve() {
   if (p.k === 'today') return { k: 'today', a: TODAY_ISO, b: tomorrow, label: 'Today' };
   return { k: p.k, a: uCutoff(p.k), b: tomorrow, label: p.label };
 }
-function ruSave(r) { _ruRange = r; try { localStorage.setItem('jactec.ruRange', JSON.stringify(r)); } catch (e) {} }
+function ruSave(r) { _ruRange = r; try { localStorage.setItem('jactec.ruRange', JSON.stringify(r)); } catch (e) {} flushUserPrefsSoon(); }   // §userSync
 function ruApplyCustom(o) {
   if (!o) return;
   const a = o.ruFrom, b = o.ruTo;
@@ -16340,17 +16179,6 @@ function setFunnelStage(custId, which, val) {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render();
 }
-/* The Customers-list quick-add funnel picker — SAME gate-timeline body as
- * openFunnelDropdown's membership branch (locks 'Signed', F3 — never a manual pick,
- * new customer or not), but the pick writes to the in-progress state.custQuickAdd
- * draft instead of a real customer record (openFunnelDropdown/setFunnelStage require
- * one to already exist). */
-function openCustQuickAddFunnelDropdown(anchorEl) {
-  const cur = state.custQuickAdd.funnel || 'N/A';
-  const mk = (v, inner, sc) => `<button class="gt-row ${sc} js-custqa-funnel-pick" data-val="${esc(v)}">${inner}</button>`;
-  const html = gateTimeline('funnelStage', cur, 'Rental funnel', mk, { order: MEMBERSHIP_FUNNEL_ORDER, lock: new Set(['Signed']) });
-  openDropdown(anchorEl, html, { cls: 'gt' });
-}
 /* §12.1 interested categories — pick mode died (Wave 2): a plain dropdown now
    attaches a category to the customer (same pattern as the funnel dropdown). */
 function openIntCatDropdown(custId, anchorEl) {
@@ -16412,8 +16240,9 @@ function loadViews(card) { return _viewsMap()[card] || []; }
 function saveViews(card, views) {
   const m = _viewsMap(); m[card] = views; GLOBAL_VIEWS = m;
   try { localStorage.setItem(VIEWS_LS_ALL, JSON.stringify(m)); } catch (e) {}
-  // No backend push — views are personal/per-device (D2). The getViews/setViews GAS
-  // actions stay deployed but unused (additive backend: nothing breaks by not calling them).
+  // §userSync (spec §3/§7 reversal): Views now follow the person via the userPrefs blob
+  // (not the idle getViews/setViews GAS store). No-op unless FEATURES.userSync + a personId.
+  flushUserPrefsSoon();
 }
 // A view captures the WHOLE filter state — the live search text AND the pinned
 // filter chips (cs.filterTerms) — so ANY filter you build is saveable (Jac 2026-06-13).
@@ -16486,8 +16315,6 @@ const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list
 // just re-homes four nodes. The card-toggle-bar swipe zone follows the toggles (see boot()).
 function render() {
   if (scanActive) return;   // the scan-to-log capture screen owns #app in its own tab — never let a background loader / 18s poll render clobber it mid-flow
-  RENDER_MEMO = {};   // open the render-scoped derivation cache (rmemo) — lives for exactly this render (Jac 2026-07-17). After the early-return so a bailed render never opens a cache it won't close.
-  try {   // ALWAYS close the cache below (finally), even if the render body throws — else a crashed render would leave stale money math for out-of-render callers (invoiceTotals etc.) until the next clean render (fix per review)
   const t0 = performance.now();
   refreshToday();   // roll "today" over before painting — an all-day-open tab must never stamp/read yesterday
   hideTip(); hideHoverPreview();
@@ -16563,7 +16390,6 @@ function render() {
   renderCount++;
   perfRecordRender(dt);   // histogram (P0) — arithmetic only, no DOM work
   if (dt > CFG.PERF_BUDGET_MS) console.warn(`[perf] render ${renderCount} took ${dt.toFixed(1)}ms (budget ${CFG.PERF_BUDGET_MS}ms)`);
-  } finally { RENDER_MEMO = null; }   // close the cache — any derivation called OUTSIDE a render must always recompute fresh, even if the render body threw
 }
 /* Lean re-render used ONLY while typing in the GLOBAL search bar. Rebuilds just the
    results grid (+ the phone dock's listbar / desktop footer counts) and deliberately
@@ -17661,7 +17487,7 @@ function onClick(e) {
   if (closest('.js-settings-reset')) { e.stopPropagation(); const o = state.overlay; if (!o) return; if (o.resetArm) return resetAllSettings(); o.resetArm = true; reSettings(); return; }   // armed two-click confirm
   if (closest('.js-settings-undo')) { e.stopPropagation(); return undoLastSettings(); }
   if (closest('.js-overbook')) { e.stopPropagation(); const on = closest('.js-overbook').dataset.val === '1'; state.overbookOn = on; try { localStorage.setItem('jactec.overbook', on ? '1' : '0'); } catch (err) {} toast(on ? 'Overbooking allowed — conflicting links get a pulsing red Overbooked flag.' : 'Overbooking blocked — a conflicting unit drop is refused.'); reSettings(); return; }
-  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} if (on) haptic([12, 30, 12]); reSettings(); return; }   // §M-touch — toggle + a sample buzz when turning ON
+  if (closest('.js-haptics')) { e.stopPropagation(); const on = closest('.js-haptics').dataset.val === '1'; state.hapticsOff = !on; try { localStorage.setItem('jactec.hapticsOff', on ? '0' : '1'); } catch (err) {} flushUserPrefsSoon(); if (on) haptic([12, 30, 12]); reSettings(); return; }   // §M-touch — toggle + a sample buzz when turning ON
   // Settings Board — tab rail + Statuses & Icons editing
   if (closest('.js-set-tab')) { e.stopPropagation(); const o = state.overlay; if (o) { captureLoginEdits(o); captureTeamEdits(o); captureNotificationEdits(o); o.tab = closest('.js-set-tab').dataset.tab; o.iconFor = null; o.error = null; o.resetArm = false; reSettings(); } return; }
   if (closest('.js-set-pick')) { e.stopPropagation(); const o = state.overlay; if (o) { o.setSel = closest('.js-set-pick').dataset.set; o.iconFor = null; reSettings(); } return; }
@@ -18009,7 +17835,7 @@ function onClick(e) {
   if (closest('.js-roadmap')) return openOverlay({ kind: 'roadmap' });
   if (closest('.js-close')) return closeOverlay();
   if (closest('.js-qr')) { closeMenus(); return shareSession(); }
-  if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); closeMenus(); return render(); }
+  if (closest('.js-previews') || closest('.js-roweye')) { e.stopPropagation(); state.previewsOn = !state.previewsOn; if (!state.previewsOn) hideHoverPreview(); try { localStorage.setItem('jactec.previewsOff', state.previewsOn ? '0' : '1'); } catch (e) {} flushUserPrefsSoon(); toast(state.previewsOn ? 'Hover previews on.' : 'Hover previews off — every eye runs red.'); closeMenus(); return render(); }
   if (closest('.js-hotkeys')) { closeMenus(); return openOverlay({ kind: 'hotkeys' }); }
   if (closest('.js-app-update')) { closeMenus(); return checkForUpdate(); }   // manual "Update" — force the newest build past a stale mobile cache
   if (closest('.js-lint')) {   // R0 flash-lint toggle — persists per device
@@ -18089,6 +17915,7 @@ function onClick(e) {
     const grid = document.querySelector('#app > .grid'); const c = grid && grid.children[i];
     if (c) grid.scrollTo({ left: c.offsetLeft, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     else { state.mobileCol = i; render(); }
+    flushUserPrefsSoon();   // §userSync — session resume (spec §5): remember the switched-to column
     return;
   }
   if (closest('.js-mtools')) { e.stopPropagation(); return openOverlay({ kind: 'tools' }); }   // §M1 phone footer → the global tool tray as a sheet
@@ -18220,11 +18047,6 @@ function onClick(e) {
   if (closest('.js-bv-customize')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.customize = !o.customize; renderOverlay(); } return; }
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
-  // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched):
-  // open/collapse + submit here; the funnel-pick option itself lives with the other dropdown
-  // handlers below (js-custqa-funnel-pick, next to js-setfunnel).
-  if (closest('.js-custqa-open')) { e.stopPropagation(); state.custQuickAdd.open = true; return render(); }
-  if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelDropdown(closest('.js-custqa-funnel')); }
   if (closest('.js-new-unit-search')) { e.stopPropagation(); return quickAddUnitFromSearch(activeSession().cards.units.search); }
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
   if (closest('.js-coltab')) {
@@ -18275,9 +18097,6 @@ function onClick(e) {
   // funnel stage pill → stage dropdown; set; +Add Category / Record / Schedule
   if (closest('.js-setfunnel')) { const b = closest('.js-setfunnel'); return setFunnelStage(b.dataset.rec, b.dataset.which, b.dataset.val); }
   if (closest('.js-funnel')) { const b = closest('.js-funnel'); e.stopPropagation(); return openFunnelDropdown(b.dataset.rec, b.dataset.which, b); }
-  // Customers-list quick-add draft's funnel pick — writes state.custQuickAdd.funnel (no
-  // customer record exists yet, so this can't ride js-setfunnel/setFunnelStage above).
-  if (closest('.js-custqa-funnel-pick')) { const b = closest('.js-custqa-funnel-pick'); state.custQuickAdd.funnel = b.dataset.val; document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (custQuickAddValid()) return custQuickAddCreate(); return render(); }   // the funnel PICK is the 4th selection (any value incl N/A) — with first/last/phone valid → create + open detail; else show the picked funnel
   if (closest('.js-fleet-filter')) {
     const b = closest('.js-fleet-filter'); e.stopPropagation();
     // A1 — the fleet-bar segment routes through the search bar as a removable pill (one
@@ -19458,8 +19277,6 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
   // A video already on file → this tap RE-RECORDS it (Jac: "delete that video in trade
   // for a new one by doing the same process again"). A re-record only swaps the video —
   // it must NOT move status again, re-run the §9 delivery gates, or re-raise a field call.
-  // (A scanned delivery/recovery is ADOPTED onto cur.* by adoptScanCaptures, so cur[key] is
-  // already set here — no scan-specific gate branch needed; it reads as a normal capture.)
   const replace = !!cur[key] || (cap === 'fc' && !!r.fieldCall);
   // §14 a first Start/Delivery moves the unit On Rent — run the §9 gates UP FRONT so a
   // blocked delivery never opens the camera (mirrors setRentalStatus/setUnitStatus so the
@@ -19506,7 +19323,6 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
   const uname = IDX.unit.get(unitId)?.name || '';
   const key = cap === 'start' ? 'startCapture' : cap === 'end' ? 'endCapture' : 'fcCapture';
   // Re-record → swap the video only; keep the status where it is and don't re-raise the FC.
-  // (A scanned capture is already adopted onto tgt.* by adoptScanCaptures — a normal capture here.)
   const replace = !!tgt[key] || (cap === 'fc' && !!r.fieldCall);
   // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the stamp
   // persists immediately; the video uploads to Drive and only its URL lands on the
@@ -20028,16 +19844,6 @@ function onInput(e) {
     if (o?.kind === 'gpsRoundup') { o.swapQuery = e.target.value; const sel = e.target.selectionStart; renderOverlay(); const q = document.querySelector('.overlay .js-gpsru-swap-search'); if (q) { q.focus(); q.setSelectionRange(sel, sel); } }
     return;
   }
-  // Customers-list quick-add row — draft fields update state.custQuickAdd WITHOUT a render()
-  // (typing must keep focus). Typing NEVER creates; the funnel PICK is the completion trigger
-  // (js-custqa-funnel-pick), so a partial phone can't auto-fire mid-entry. (Jac 2026-07-17)
-  if (e.target.classList.contains('js-custqa-first') || e.target.classList.contains('js-custqa-last') || e.target.classList.contains('js-custqa-phone')) {
-    const d = state.custQuickAdd;
-    if (e.target.classList.contains('js-custqa-first')) d.first = e.target.value;
-    else if (e.target.classList.contains('js-custqa-last')) d.last = e.target.value;
-    else d.phone = e.target.value;
-    return;
-  }
   if (e.target.classList.contains('chat-input')) { state.chat.draft = e.target.value; return; }
   if (e.target.classList.contains('js-comms-in')) { commsDrafts.set(state.commsRail.cat + '|' + e.target.dataset.cust, e.target.value); return; }   // D8 window composer — draft survives re-renders
   // Company Files live search → re-render the board popup and restore the caret.
@@ -20273,7 +20079,8 @@ function openLogoMenu(anchorEl) {
 // Switch user — clear this session's password/role (name stays remembered) → login.
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
-  backendPassword = ''; currentRole = ''; booting = true;
+  backendPassword = ''; currentRole = ''; currentPersonId = ''; booting = true;
+  wipeSyncMirror();   // §userSync Blocker 1 — this SPA switch does NOT reload the page, so clear the prior person's synced state (localStorage + in-memory) before the next login paints
   sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
 }
@@ -20375,41 +20182,6 @@ function quickAddCustomerFromSearch(value) {
   render();
   toast(`${c.name || 'Customer'} added — drag it onto a rental or invoice to link.`);
   return true;
-}
-/* Customers-list inline quick-add (Jac 2026-07-17, ADDITIVE — the search-bar quick-add
- * above stays as-is). Enabled once First/Last/Phone are all filled AND the phone looks
- * real — same ≥7-digit check as parseQuickCustomer's phone match, so the two quick-add
- * paths agree on "looks like a phone number". */
-function custQuickAddValid() {
-  const d = state.custQuickAdd;
-  return !!(d.first.trim() && d.last.trim() && d.phone.replace(/\D/g, '').length >= 7);
-}
-// Discard the +New Customer draft (implicit cancel) — clearing it collapses the row back to the
-// +New Customer button. Called on a successful create AND whenever the user navigates AWAY from
-// the customers list without finishing (clicking a record → openStandard, switching cards →
-// goToCard). There is no Cancel button by design (Jac 2026-07-17). Guarded so it's a no-op when idle.
-function resetCustQuickAdd() {
-  const d = state.custQuickAdd;
-  if (d && (d.open || d.first || d.last || d.phone || (d.funnel && d.funnel !== 'N/A'))) {
-    state.custQuickAdd = { open: false, first: '', last: '', phone: '', funnel: 'N/A' };
-  }
-}
-/* Create + open — mirrors quickAddCustomerFromSearch's create-object field set verbatim,
- * except membershipStage comes from the draft's own funnel picker (set DIRECTLY, never
- * via setFunnelStage — it hard-rejects a manual 'Signed'/'Paid', and the funnel picker
- * itself already locks 'Signed' the same way openFunnelDropdown does, F3) and usedSalesStage
- * stays its ordinary 'N/A' default. Always opens the new customer in Standard view
- * (openStandard), same "unlinked — drag it where it goes" landing as the search-bar path. */
-function custQuickAddCreate() {
-  if (!custQuickAddValid()) return;
-  const d = state.custQuickAdd;
-  const firstName = d.first.trim(), lastName = d.last.trim(), phone = d.phone.trim();
-  const id = nextCustomerId();
-  const c = { customerId: id, firstName, lastName, name: `${firstName} ${lastName}`.trim(), company: '', phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: d.funnel || 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
-  DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
-  logAction(c, 'Customer quick-added');
-  resetCustQuickAdd();
-  openStandard('customers', id);
 }
 /* QUICK ADD — a fruitless Units/Categories search offers a +New button (the empty state).
    It creates the record with the typed text as its name and drops you into its Standard
@@ -21377,15 +21149,14 @@ function printInvoice(invoiceId) {
 /* Copy the on-screen invoice sheet to the clipboard as a PNG (right-click → Copy as image,
    Jac 2026-07-17). Library-free rasterization: clone the live .pr-doc, inline every element's
    COMPUTED style (so no stylesheet / CSS-var resolution is needed inside the SVG), data-URI the
-   images AND embed the real @font-face typefaces (a foreignObject renders in its own scope with no
-   page fonts — so we inline them), wrap the XHTML in an <svg><foreignObject>, paint it to a canvas,
-   hand the PNG blob to the clipboard. The blob is produced INSIDE a ClipboardItem promise so the
-   write still counts as the user's gesture on Safari. **Firefox** deliberately taints a canvas the
-   moment a foreignObject-bearing SVG is drawn (a security stance, no lib-free bypass) → toBlob
-   throws → we catch and point at Save-as-PDF. Works in Chromium + Safari. */
+   images so the canvas never taints, wrap the XHTML in an <svg><foreignObject>, paint it to a
+   canvas, hand the PNG blob to the clipboard. The blob is produced INSIDE a ClipboardItem promise
+   so the write still counts as the user's gesture on Safari. Fonts loaded via @font-face may fall
+   back to a system face inside the SVG (a known foreignObject limit) — layout/colors are faithful,
+   the typeface may not be; on any failure we fall back to a clear toast pointing at Save-as-PDF. */
 function copyInvoiceImage(invoiceId) {
-  const fail = () => toast('Couldn’t copy the image on this browser (Firefox blocks it) — use 🖨 Save PDF instead.');
-  if (!(navigator.clipboard && window.ClipboardItem)) return fail();   // no clipboard-image support → point at Save-as-PDF, don't waste a render
+  const fail = () => toast('Couldn’t copy the image on this browser — use 🖨 Save PDF instead.');
+  if (!(navigator.clipboard && window.ClipboardItem)) return fail();   // no clipboard-image support (e.g. older Firefox) → point at Save-as-PDF, don't waste a render
   // Render INSIDE the ClipboardItem promise so the write still counts as the user's gesture on Safari.
   navigator.clipboard.write([new ClipboardItem({ 'image/png': renderInvoicePng(invoiceId) })])
     .then(() => toast('🖼 Invoice copied — paste it into a message, chat, or doc.'))
@@ -21399,8 +21170,6 @@ async function renderInvoicePng(invoiceId) {
   const clone = doc.cloneNode(true);
   inlineComputedStyles(doc, clone);   // resolve classes + CSS vars to concrete values
   await inlineDocImages(clone);       // <img src> → data: so drawImage doesn't taint the canvas
-  const fontCss = await invoiceFontFaceCss();   // embed the real Saira/Geist faces — a foreignObject has no page @font-face
-  if (fontCss) { const st = document.createElement('style'); st.textContent = fontCss; clone.insertBefore(st, clone.firstChild); }
   clone.style.boxShadow = 'none'; clone.style.borderRadius = '0'; clone.style.margin = '0'; clone.style.maxWidth = 'none'; clone.style.width = W + 'px';
   clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
   const xhtml = new XMLSerializer().serializeToString(clone);
@@ -21438,62 +21207,6 @@ async function inlineDocImages(root) {
     } catch (e) { im.removeAttribute('src'); }
   }));
 }
-let _invFontCssP = null;   // cached PROMISE of the self-contained @font-face block (real fonts, data-URI'd) for the copied/emailed image
-// The invoice sheet is Saira Condensed (stamps) + Geist (body), loaded from Google Fonts. An
-// <svg><foreignObject> renders in its OWN scope with no access to the page's @font-face, so its text
-// would fall back to a system face. Fetch the two families' LATIN woff2 once, inline them as data
-// URIs, and return a <style>-ready @font-face block for the rasterizer to embed — so the image
-// carries the real typefaces. We cache the in-FLIGHT promise (so a copy + an email fired together
-// share ONE CDN fetch, not two) and keep it only on SUCCESS: an offline/CDN-blocked first attempt
-// resolves to '' and clears the cache, so a later copy/email retries once the network returns
-// (instead of poisoning the whole session with an empty face block). The render silently uses the
-// fallback face whenever this returns ''.
-function invoiceFontFaceCss() {
-  if (_invFontCssP) return _invFontCssP;
-  const p = (async () => {
-    try {
-      const cssUrl = 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Saira+Condensed:wght@600;700;800&display=swap';
-      const css = await (await fetch(cssUrl)).text();
-      const faces = css.match(/\/\*\s*latin\s*\*\/\s*@font-face\s*{[^}]*}/g) || [];   // latin subset only — an invoice is latin text, keeps the SVG small
-      const inlined = await Promise.all(faces.map(async (face) => {
-        const m = face.match(/url\((https:\/\/[^)]+\.woff2)\)/);
-        if (!m) return '';
-        try {
-          const b = await (await fetch(m[1])).blob();
-          const uri = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); });
-          return face.replace(m[1], uri);
-        } catch (e) { return ''; }
-      }));
-      return inlined.filter(Boolean).join('\n');
-    } catch (e) { return ''; }
-  })();
-  _invFontCssP = p;
-  p.then((css) => { if (!css) _invFontCssP = null; }, () => { _invFontCssP = null; });   // cache only a successful, non-empty result; a failed/empty fetch retries next time
-  return p;
-}
-// Raw base64 (no data: prefix) of a blob — for handing an image to the backend email send.
-function blobToBase64(blob) {
-  return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = rej; fr.readAsDataURL(blob); });
-}
-// Render the invoice sheet to a PNG blob for an email attachment. Reuses the open .pr-doc if it's
-// on screen; otherwise builds it OFF-SCREEN, renders, and cleans up. Returns null on ANY failure
-// (e.g. Firefox taints a foreignObject canvas) — so the email still sends WITHOUT an attachment and
-// the render never blocks the send.
-async function invoiceSheetPng(invoiceId) {
-  const inv = IDX.invoice.get(invoiceId); if (!inv) return null;
-  let temp = null;
-  try {
-    const onScreen = [...document.querySelectorAll('.pr-doc[data-inv]')].some((d) => d.dataset.inv === invoiceId);
-    if (!onScreen) {
-      temp = document.createElement('div');
-      temp.style.cssText = 'position:absolute;left:-99999px;top:0;width:760px;pointer-events:none';   // match .pr-doc's 760px max-width so the emailed PNG scales like the on-screen sheet / copy-as-image
-      temp.innerHTML = invoiceDocHtml(inv, { interactive: true });
-      document.body.appendChild(temp);
-    }
-    return await renderInvoicePng(invoiceId);
-  } catch (e) { return null; }
-  finally { if (temp) temp.remove(); }
-}
 // Plain-text quote summary for an emailed quote — mailto can't carry a PDF attachment,
 // so we inline the same figures the print doc shows (§12.5 line items + totals).
 function invoiceQuoteSummary(inv) {
@@ -21522,12 +21235,7 @@ async function commsAliasList() {
 async function emailQuoteSend(invoiceId, from) {
   const inv = IDX.invoice.get(invoiceId); if (!inv) return;
   toast('Sending email…');
-  // Attach the invoice sheet as a PNG (Jac 2026-07-17). Best-effort: a failed render (e.g. Firefox)
-  // just sends the email WITHOUT the image — never blocks the send. The backend re-resolves the
-  // recipient from the invoice's own customer, so the attachment can only reach that customer.
-  let attachment = null;
-  try { const png = await invoiceSheetPng(invoiceId); if (png) attachment = { name: `${invoiceShort(inv.invoiceId)}.png`, mimeType: 'image/png', dataB64: await blobToBase64(png) }; } catch (e) {}
-  let r; try { r = await backendCall('sendCustomerMessage', { channel: 'email', entity: 'invoice', recId: inv.invoiceId, customerId: inv.customerId, template: 'quote', from: from || '', attachment }); }
+  let r; try { r = await backendCall('sendCustomerMessage', { channel: 'email', entity: 'invoice', recId: inv.invoiceId, customerId: inv.customerId, template: 'quote', from: from || '' }); }
   catch (e) { r = { ok: false, reason: 'network' }; }
   if (r && r.ok) {
     logAction(inv, `Emailed quote to ${r.maskedTo || 'customer'}${r.fromUsed ? ` (from ${r.fromUsed})` : ''}`);
@@ -21772,6 +21480,12 @@ let actionSeq = 0;
 // logAction stamps the user + clock time so the record History reads "what · when · who".
 let currentUser = (() => { try { return localStorage.getItem('jactec.user') || ''; } catch { return ''; } })();
 let currentRole = (() => { try { return sessionStorage.getItem('jactec.role') || ''; } catch { return ''; } })();
+// §userSync — the stable per-person key (spec 2026-07-17). Set at pidAdopt() from the
+// authenticated phone-identity response; '' under legacy/shared-password login (no
+// verifiable person → the sync layer no-ops to device-local). NEVER sent as authority:
+// backendCall already carries the session token and the backend resolves personId from
+// it server-side — this global only gates whether THIS client attempts a sync at all.
+let currentPersonId = '';
 function nowClock() { const d = new Date(); let h = d.getHours(); const ap = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12; return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`; }
 function logAction(rec, text) { if (!rec) return; rec.actions = rec.actions || []; rec.actions.push({ when: TODAY_ISO, clock: nowClock(), text, by: currentUser || '', seq: actionSeq++ }); saveSoon(); }
 // Humanize a field key + format a value for an audit line ("Phone: (337)… → (337)…").
@@ -24131,6 +23845,156 @@ async function loadWranglerRail() {
     if (localAhead) pushWranglerRailSoon(); else lastRailJson = JSON.stringify(state.wranglerRail);
   } catch (e) { /* offline → the refresh poll retries */ }
 }
+/* ══════════════ §userSync — CROSS-DEVICE USER SYNC (spec 2026-07-17) ══════════════
+   A logged-in person's LIGHT prefs/session/comms follow their personId across devices via a
+   per-user backend blob (getUserPrefs/setUserPrefs). Keyed SERVER-SIDE off the session token
+   backendCall already sends — the client NEVER sends personId as authority (currentPersonId
+   is a client-side gate only). Gated behind FEATURES.userSync AND a resolved personId: with
+   the flag OFF (production default until the backend deploys) or under legacy/shared-password
+   login, EVERY entry point no-ops to today's device-local localStorage — zero behavior change.
+
+   Offline-safe: a failed/absent getUserPrefs (e.g. backend not yet deployed) falls back to the
+   device-local mirror; a failed setUserPrefs retries on the next change. localStorage stays the
+   authoritative WRITE path everywhere (each synced write still hits it) — this layer mirrors it
+   up and hydrates it down, so the app works unchanged with no backend. Doc shape: spec §4.1. */
+let USERPREFS = null, userPrefsTimer = null, lastUserPrefsJson = null;
+// Sync only fires for a verified person with the flag on. backendPassword (the token) gates the
+// online path exactly as flushSave/pushChats do; currentPersonId proves we have a real person.
+function syncActive() { return flagOn('userSync') && !!currentPersonId && !!backendPassword; }
+// The device-local keys that follow the person (Blocker 1 wipe set + the buildDoc/applyDoc
+// surface). Per-card sort keys share the 'jactec.sort.' prefix (swept separately). `overbook`
+// is deliberately absent — a yard policy, not a personal pref (spec §3).
+const SYNC_MIRROR_KEYS = ['jactec.previewsOff', 'jactec.hapticsOff', 'jactec.loginMuted',
+  'jactec.collapsedGroups', 'jactec.groupOrder', 'jactec.ruRange', 'jactec.views.all',
+  'jactec.commsRail', 'jactec.commsEnded', 'jactec.dispatchOrder', 'jactec.dispatchTimes',
+  'jactec.dispatchSchedule', 'jactec.dispatchLanes'];
+// The per-device ownership marker (a non-reversible tag of the current owner's personId) — lets
+// wipeSyncMirror tell a SAME-person reopen (keep their prefs) from a DIFFERENT person taking over a
+// shared device (wipe). NOT a synced key and NOT in SYNC_MIRROR_KEYS — it's the wipe's own bookkeeping.
+const SYNC_OWNER_KEY = 'jactec.syncOwner';
+function syncOwnerTag(personId) { return personId ? cacheTokenTag(String(personId)) : ''; }
+/* Blocker 1 — keep one operator from painting another's synced state on a SHARED device. But the
+   wipe must NOT punish the common case (your own device): pidAdopt fires on every trusted-device
+   reopen, so a blind wipe would flash default prefs on every reopen (and strand them when offline)
+   until getUserPrefs restores. So wipe ONLY on an ownership CHANGE:
+     • same person re-adopting (reopen/resume)  → KEEP their mirror (no reset, no flash);
+     • an established PERSONAL device with no owner recorded yet (first login after the flag flips)
+       → adopt the existing local prefs in place (they're this one operator's) — no cutover reset;
+     • a DIFFERENT person, a SHARED device (no persistent token), or logout → WIPE.
+   `incomingTag` = syncOwnerTag(incoming personId); omit it (logout) to force a wipe + clear owner.
+   Hard no-op while FEATURES.userSync is OFF. */
+function wipeSyncMirror(incomingTag) {
+  if (!flagOn('userSync')) return;
+  let prev = ''; try { prev = localStorage.getItem(SYNC_OWNER_KEY) || ''; } catch (e) {}
+  const incoming = incomingTag || '';
+  if (incoming && incoming === prev) return;                                    // same operator reopening → keep their prefs
+  // First adopt with no recorded owner, on a PERSONAL/trusted device (localStorage token present ⇒
+  // one operator) → the local prefs are theirs: record ownership + seed the backend on first flush,
+  // don't wipe. A SHARED device (no persistent token) falls through to the wipe — residue isn't cleanly owned.
+  if (incoming && !prev && pidLocalToken()) { try { localStorage.setItem(SYNC_OWNER_KEY, incoming); } catch (e) {} return; }
+  try {
+    SYNC_MIRROR_KEYS.forEach((k) => localStorage.removeItem(k));
+    for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.indexOf('jactec.sort.') === 0) localStorage.removeItem(k); }
+  } catch (e) {}
+  try {
+    Object.keys(COLLAPSED_GROUPS).forEach((k) => delete COLLAPSED_GROUPS[k]);   // const object — mutate, don't reassign
+    Object.keys(GROUP_ORDER).forEach((k) => delete GROUP_ORDER[k]);
+    _ruRange = null; GLOBAL_VIEWS = null;                                       // let-caches → re-read from the (now empty) localStorage on next use
+    state.commsRail = loadCommsRail();                                          // localStorage wiped → a fresh empty rail
+    state.previewsOn = true; state.hapticsOff = false; state.loginMuted = false;
+  } catch (e) {}
+  try { if (incoming) localStorage.setItem(SYNC_OWNER_KEY, incoming); else localStorage.removeItem(SYNC_OWNER_KEY); } catch (e) {}
+}
+/* Gather the current device-local state into the per-user doc (spec §4.1 shape). Reads the
+   localStorage mirrors — the authoritative write path every synced site already keeps current —
+   so the doc always reflects what the user last set on THIS device. */
+function buildUserPrefsDoc() {
+  const g = (k) => { try { const v = localStorage.getItem(k); return v == null ? null : v; } catch (e) { return null; } };
+  const gj = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? d : v; } catch (e) { return d; } };
+  const sort = {};
+  try { Object.keys(SORT_FIELDS).forEach((c) => { const raw = localStorage.getItem('jactec.sort.' + c); if (raw) { try { sort[c] = JSON.parse(raw); } catch (e) {} } }); } catch (e) {}
+  return {
+    v: 1,
+    prefs: {
+      previewsOff: g('jactec.previewsOff'), hapticsOff: g('jactec.hapticsOff'), loginMuted: g('jactec.loginMuted'),
+      collapsedGroups: gj('jactec.collapsedGroups', {}), ruRange: gj('jactec.ruRange', null), sort,
+      // NB groupOrder is NOT in this blob — it's the separately re-keyed heavy store (spec §4.2,
+      // getGroupOrder/setGroupOrder); it's only in SYNC_MIRROR_KEYS for the shared-device wipe.
+    },
+    views: gj('jactec.views.all', {}),
+    dispatch: { order: gj('jactec.dispatchOrder', {}), times: gj('jactec.dispatchTimes', {}), schedule: gj('jactec.dispatchSchedule', {}), lanes: gj('jactec.dispatchLanes', {}) },
+    comms: { ended: gj('jactec.commsEnded', {}), rail: gj('jactec.commsRail', null) },
+    // Session resume (spec §5) — the TOP-LEVEL column only (Yard/Rentals/Customers) + the phone
+    // column index. NEVER a specific open record (recId): "resume where you left off" is coarse
+    // by design, so a customer-facing role (Sales-Outside / Driver on a phone) can't restore a
+    // customer screen. col rides live off state.mobileCol, so every flush captures it for free.
+    session: { col: (COLUMNS[state.mobileCol] && COLUMNS[state.mobileCol].id) || null, mobileCol: state.mobileCol },
+  };
+}
+/* Hydrate the device from a server doc: server wins over stale localStorage; a field ABSENT in
+   the doc leaves the local value untouched (offline fill-in / first-run). Writes BOTH the
+   localStorage mirror AND the in-memory caches so the very next render reflects the synced state. */
+function applyUserPrefsDoc(doc) {
+  if (!doc || typeof doc !== 'object') return false;
+  const setLS = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
+  const setJSON = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+  const p = doc.prefs || {};
+  if ('previewsOff' in p) { setLS('jactec.previewsOff', p.previewsOff); state.previewsOn = p.previewsOff !== '1'; }
+  if ('hapticsOff' in p) { setLS('jactec.hapticsOff', p.hapticsOff); state.hapticsOff = p.hapticsOff === '1'; }
+  if ('loginMuted' in p) { setLS('jactec.loginMuted', p.loginMuted); state.loginMuted = p.loginMuted === '1'; }
+  if (p.collapsedGroups && typeof p.collapsedGroups === 'object') { setJSON('jactec.collapsedGroups', p.collapsedGroups); Object.keys(COLLAPSED_GROUPS).forEach((k) => delete COLLAPSED_GROUPS[k]); Object.assign(COLLAPSED_GROUPS, p.collapsedGroups); }
+  if ('ruRange' in p) { setJSON('jactec.ruRange', p.ruRange); _ruRange = p.ruRange || null; }
+  if (p.sort && typeof p.sort === 'object') { Object.keys(p.sort).forEach((c) => setJSON('jactec.sort.' + c, p.sort[c])); }
+  if (doc.views && typeof doc.views === 'object') { setJSON('jactec.views.all', doc.views); GLOBAL_VIEWS = null; }
+  const d = doc.dispatch || {};
+  if ('order' in d) setJSON('jactec.dispatchOrder', d.order);
+  if ('times' in d) setJSON('jactec.dispatchTimes', d.times);
+  if ('schedule' in d) setJSON('jactec.dispatchSchedule', d.schedule);
+  if ('lanes' in d) setJSON('jactec.dispatchLanes', d.lanes);
+  const c = doc.comms || {};
+  if ('ended' in c) setJSON('jactec.commsEnded', c.ended);
+  if ('rail' in c) { setJSON('jactec.commsRail', c.rail); state.commsRail = loadCommsRail(); }
+  // session-resume (doc.session) is applied by loadUserPrefs after hydrate (it overrides the role
+  // landing that already ran), not from localStorage — it isn't a mirrored key.
+  return true;
+}
+/* Resume the top-level column the person last worked from (spec §5). Overrides applyRoleLanding's
+   role default when a saved column is present. Reveals only the column's DEFAULT member — never a
+   specific record — so no customer screen is ever restored. Runs once, post-hydrate, in loadUserPrefs. */
+function applySessionResume(sess) {
+  if (!sess || !sess.col) return;
+  const idx = COLUMNS.findIndex((c) => c.id === sess.col); if (idx < 0) return;
+  const s = activeSession();
+  if (s && s.cols) { const member = COLUMNS[idx].default; s.cols[sess.col] = member; const mc = s.cards[member]; if (mc) { mc.mode = 'list'; mc.recId = null; mc.recType = null; } }
+  state.mobileCol = (typeof sess.mobileCol === 'number' && sess.mobileCol >= 0 && sess.mobileCol < COLUMNS.length) ? sess.mobileCol : idx;
+}
+/* Boot (finishLoad, once personId is known): pull this person's doc and hydrate. Server doc beats
+   stale localStorage; an empty doc / unknown action (backend not deployed) → keep the device-local
+   mirror, and the first local change seeds the backend via flush. Fire-and-forget, never blocks boot. */
+async function loadUserPrefs() {
+  if (!syncActive()) return;                     // legacy login or flag OFF → device-local, no-op
+  try {
+    const r = await backendCall('getUserPrefs');  // personId resolved SERVER-SIDE from the token
+    if (r && r.ok && r.doc && typeof r.doc === 'object' && Object.keys(r.doc).length) {
+      applyUserPrefsDoc(r.doc); USERPREFS = r.doc;
+      applySessionResume(r.doc.session);                         // resume the last top-level column (overrides the role landing that already ran)
+      lastUserPrefsJson = JSON.stringify(buildUserPrefsDoc());   // baseline = post-hydrate local state → an immediate identical flush is a no-op
+      render();
+    } else {
+      lastUserPrefsJson = null;                    // empty/absent → let the first local change push the local mirror up
+    }
+  } catch (e) { /* offline → keep device-local; the next change retries via flush */ }
+}
+/* Debounced push of the whole current doc (mirrors flushSave/pushChatsSoon — imperative, render-
+   independent). Server field-merges last-write-wins (spec §5). No-op unless a verified person +
+   the flag; a diff-guard skips an unchanged doc. */
+async function flushUserPrefs() {
+  if (!syncActive()) return;
+  const doc = buildUserPrefsDoc(), js = JSON.stringify(doc);
+  if (js === lastUserPrefsJson) return;          // nothing changed since the last successful push
+  try { const r = await backendCall('setUserPrefs', { doc }); if (r && r.ok) { lastUserPrefsJson = js; USERPREFS = doc; } } catch (e) { /* offline → retries on the next change */ }
+}
+function flushUserPrefsSoon() { if (booting || !syncActive()) return; clearTimeout(userPrefsTimer); userPrefsTimer = setTimeout(flushUserPrefs, 1200); }
 /* ── §18h Wrangler Ops — the developer live-chat bridge (from-spec re-implementation,
    2026-07-09, of the stale claude/mirror-wrangler-chats-l8pjfd branch). A Developer-tier
    operator (roleTier(currentRole) >= tierRank('developer') — the SAME gate as Design
@@ -24513,8 +24377,8 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault(); e.returnValue = '';
 });
 function renderLogin(msg) {
-  resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
   if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
+  if (state.commsRail) { state.commsRail.cat = null; state.commsRail.sessions && Object.values(state.commsRail.sessions).forEach((s) => { s.menuOpen = false; }); }   // D8 — clock-in = an EMPTY rail (sessions persist per device, nothing summons itself)
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
@@ -24547,6 +24411,7 @@ function renderLogin(msg) {
   if (muteBtn) muteBtn.addEventListener('click', () => {
     state.loginMuted = !state.loginMuted;
     try { localStorage.setItem('jactec.loginMuted', state.loginMuted ? '1' : '0'); } catch (e) {}
+    flushUserPrefsSoon();   // §userSync
     muteBtn.classList.toggle('is-muted', state.loginMuted);
     muteBtn.setAttribute('aria-pressed', String(state.loginMuted));
     muteBtn.setAttribute('data-tip', state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute');
@@ -24568,15 +24433,14 @@ function renderLogin(msg) {
 }
 function finishLoad() {
   snapshotSaved();                                              // baseline = what the backend currently holds
-  resetCommsRailForLogin();                                    // the visible fix for "old chats on login": empty the rail on EVERY login mode, before the first main render (Jac 2026-07-17)
   buildIndexes(); state.cascade = createCascade(DATA); booting = false; render();
   cacheRefreshing(false);                                       // §instant-cache: fresh backend data is in — drop the "refreshing" cue
   cachePersistSnapshot();                                       // §instant-cache: photograph this confirmed backend state (personal device + flag only)
   if (flagOn('phoneIdentity')) { try { const emp = ((state.settings || {}).employees) || []; localStorage.setItem('jactec.pidRoster', JSON.stringify(emp.map((e) => ({ id: e.id, name: e.name })))); } catch (e) {} }   // cache non-secret roster names for the shared-device name-pick
   // (views no longer pull from the backend — personal per-device "my views", spec search-views D2)
+  loadUserPrefs();                                             // §userSync — pull THIS person's cross-device prefs/comms doc (no-op unless FEATURES.userSync + a resolved personId)
   loadGroupOrderFromBackend();                                  // pull THIS role's saved card-group order
   loadTripsFromBackend();                                       // §2.3 Phase 4 — pull the trips store (getTrips), server wins at boot
-  loadScanCapturesFromBackend();                                // pull QR-decal scan captures (getScanCaptures) to join into the yard journey
   salePricingAutoApply();                                       // used-sale price engine, auto mode (manager+ sessions only)
   loadChats();                                                  // pull the shared team-chat threads (§ team-chat sync)
   wranglerRailLoad();                                           // load the Mr. Wrangler rail from IndexedDB (+ one-time localStorage migration)
@@ -24707,13 +24571,16 @@ async function attemptLogin() {
 const pidUI = { step: 'identify', personId: '', name: '', masked: '', kind: '', err: '', _phone: '', _tok: '', _role: '' };
 function pidTokenGet() { try { return localStorage.getItem('jactec.pidToken') || sessionStorage.getItem('jactec.pidToken') || ''; } catch (e) { return ''; } }
 function pidTokenSet(tok, personal) { try { if (personal) { localStorage.setItem('jactec.pidToken', tok); sessionStorage.removeItem('jactec.pidToken'); } else { sessionStorage.setItem('jactec.pidToken', tok); localStorage.removeItem('jactec.pidToken'); } } catch (e) {} }
-function pidTokenClear() { try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} try { dataCache.wipe(); } catch (e) {} }   // §instant-cache: logout clears the on-device snapshot
+function pidTokenClear() { try { localStorage.removeItem('jactec.pidToken'); sessionStorage.removeItem('jactec.pidToken'); } catch (e) {} try { dataCache.wipe(); } catch (e) {} currentPersonId = ''; wipeSyncMirror(); }   // §instant-cache: logout clears the on-device snapshot; §userSync: and the synced mirror, so the next person on a shared device starts clean
 function pidRosterCache() { try { return JSON.parse(localStorage.getItem('jactec.pidRoster') || '[]'); } catch (e) { return []; } }
 // The verified token becomes the per-call credential: a truthy backendPassword keeps every
 // existing online-guard working, and backendCall sends it as sessionToken (backend prefers it).
 function pidAdopt(r, tok, personal) {
   try { dataCache.wipe(); } catch (e) {}   // §instant-cache: a new login never paints the prior person's snapshot (belt-and-suspenders to the tokenTag guard); finishLoad rewrites it for this person
+  const inPid = (r && (r.personId || r.id)) || pidUI.personId || '';       // §userSync — resolve the incoming person BEFORE the wipe so it can tell a same-person reopen from a takeover
+  wipeSyncMirror(syncOwnerTag(inPid));     // §userSync Blocker 1: wipe ONLY on an ownership change (a DIFFERENT person / shared device); a same-person reopen keeps their prefs (no-op while FEATURES.userSync is OFF)
   backendPassword = tok; currentRole = (r && r.role) || pidUI._role || ''; currentUser = (r && r.name) || pidUI.name || '';
+  currentPersonId = inPid;   // the sync key for this person (server still re-derives it from the token; this is the client-side gate only)
   pidTokenSet(tok, personal);
   if (r && r.scanDeviceToken) scanTokenSet(r.scanDeviceToken);   // remember this device for decal scans (write-only token)
   try { sessionStorage.setItem('jactec.role', currentRole); localStorage.setItem('jactec.user', currentUser); } catch (e) {}
@@ -24793,7 +24660,6 @@ async function pidCall(btnId, fn) {
   catch (e) { if (btn) { btn.disabled = false; btn.textContent = prev; } pidErr("Couldn't reach the database. Try again."); return null; }
 }
 function renderPhoneLogin(msg) {
-  resetCommsRailForLogin();   // clock-in = an EMPTY rail (covers a direct phone-login render, e.g. phoneBoot) — Jac 2026-07-17
   if (msg != null) pidUI.err = msg;
   const P = PHONE_IDENTITY, step = pidUI.step, roster = pidRosterCache();
   let inner = '';
@@ -24865,6 +24731,7 @@ function pidWire() {
   if (muteEl) muteEl.addEventListener('click', () => {
     state.loginMuted = !state.loginMuted;
     try { localStorage.setItem('jactec.loginMuted', state.loginMuted ? '1' : '0'); } catch (e) {}
+    flushUserPrefsSoon();   // §userSync
     muteEl.classList.toggle('is-muted', state.loginMuted);
     muteEl.setAttribute('aria-pressed', String(state.loginMuted));
     muteEl.setAttribute('data-tip', state.loginMuted ? 'Intro sound off — tap to unmute' : 'Intro sound on — tap to mute');
@@ -25201,6 +25068,7 @@ function boot() {
     // (R32), though, is a GLOBAL bar reflecting the ACTIVE card, so repaint it on column change.
     const fj = document.querySelector('.mobile-toolbar .mfoot-jog');
     if (fj) fj.innerHTML = footerJogInner();
+    flushUserPrefsSoon();   // §userSync — remember the column the person settled on (session resume, spec §5)
   }
   document.addEventListener('scroll', (e) => {
     if (!(e.target && e.target.classList && e.target.classList.contains('grid'))) return;
@@ -25483,13 +25351,7 @@ function boot() {
     // card-to-List never fired. Dismiss it and re-resolve the row beneath the cursor.
     let target = e.target;
     if (target.closest('.hover-preview')) { hideHoverPreview(); target = document.elementFromPoint(e.clientX, e.clientY) || target; }
-    if (!target.closest('.card') && !target.closest('.overlay .popup')) {
-      // The phone footer jog (.card-jog inside .mobile-toolbar) sits OUTSIDE any .card, so
-      // this early-return used to let the NATIVE context menu leak on a long-press of
-      // Back/Forward. Swallow it for the jog specifically (tap still fires) (Jac 2026-07-17).
-      if (target.closest('.card-jog')) e.preventDefault();
-      return;
-    }
+    if (!target.closest('.card') && !target.closest('.overlay .popup')) return;
     e.preventDefault();
     if (performance.now() - lastTouchCtx < 700) return;                        // §M3 — our touch long-press already opened it; swallow the trailing native event
     hideHoverPreview();                                                        // clear any preview still mid-fuse so it can't reappear over the menu
@@ -25624,10 +25486,11 @@ function exposeTestApi() {
       tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend
-      adoptScanCaptures, setScanCaps: (m) => { SCAN_CAPS = m || {}; },   // §scan-reconcile — test seam: seed SCAN_CAPS then run adoption (logic-test)
       autoRunRepair, autoRunAnchorsFor, secToClock, AUTORUN_DAY_START_SEC, AUTORUN_EOD_DEADLINE_SEC, AUTORUN_LOAD_BUFFER_SEC, dispatchPinOf,
-      openCustomerForm, renderOverlay, render, printInvoice, invoiceDocHtml, renderInvoicePng, invoiceSheetPng, invoicePrintGroups, invoiceAmendments, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature,
-      wranglerSend, wranglerNewChat, openWranglerDock, wranglerDockPollTick, devUnlocked, openWranglerOps, wrOpsAgo, __state: state };   // UI drivers for headless screenshot/e2e tests
+      openCustomerForm, renderOverlay, render, printInvoice, invoiceDocHtml, renderInvoicePng, invoicePrintGroups, invoiceAmendments, cardComplete, cardCaptureState, cardHasSelfie, cardHasSignature, captureSelfie, captureSignature,
+      wranglerSend, wranglerNewChat, openWranglerDock, wranglerDockPollTick, devUnlocked, openWranglerOps, wrOpsAgo,
+      buildUserPrefsDoc, applyUserPrefsDoc, applySessionResume, syncActive, wipeSyncMirror, flushUserPrefs, loadUserPrefs, SYNC_MIRROR_KEYS, commentUserKey, chatIsAdmin, myRosterId, setPersonId: (id) => { currentPersonId = id || ''; },   // §userSync (spec 2026-07-17) — test seam for the pure hydrate/mirror path (mocked fetch)
+      __state: state };   // UI drivers for headless screenshot/e2e tests
 
   } catch (e) { /* no window (non-browser) */ }
 }

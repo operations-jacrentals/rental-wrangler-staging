@@ -643,6 +643,15 @@ export const FEATURES = {
   // a save baseline, so it can't corrupt the Sheet; personal devices only (no PII at
   // rest on shared machines). ON = paint-from-cache path; OFF = today's splash + load.
   instantCache: true,
+  // Cross-device user sync (spec 2026-07-17-cross-device-user-sync-design). ON = a
+  // logged-in person's prefs/session/comms follow their personId across devices via a
+  // per-user backend blob (getUserPrefs/setUserPrefs) + re-keyed group-order/Wrangler
+  // rail; OFF = today's device-local localStorage (nothing synced, no mirror-wipe).
+  // Ships OFF so the frontend can promote before the backend getUserPrefs/setUserPrefs
+  // handlers are deployed (Jac deploys the backend last, via /clasp editor deploy);
+  // flipped ON only after that deploy. Gates EXPERIENCE only — operator isolation is the
+  // server-side personId-from-session-token check in Code.gs, never this flag.
+  userSync: true,   // PRODUCTION switch — ON (backend §A getUserPrefs/setUserPrefs deployed 2026-07-17)
 };
 
 /* Phone-identity client constants (non-secret — display/UX only; the backend owns the
