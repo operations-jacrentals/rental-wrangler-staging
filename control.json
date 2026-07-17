@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "epoch": 1,
+  "ttlMinutes": 30,
+  "queueTtlSeconds": 90,
+  "slots": [
+    {
+      "id": 1,
+      "url": "https://operations-jacrentals.github.io/rental-wrangler-staging/",
+      "holder": null
+    },
+    {
+      "id": 2,
+      "url": "https://operations-jacrentals.github.io/rental-wrangler-staging-2/",
+      "holder": null
+    },
+    {
+      "id": 3,
+      "url": "https://operations-jacrentals.github.io/rental-wrangler-staging-3/",
+      "holder": null
+    }
+  ],
+  "queue": []
+}
