@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "work-queue-92oeso-2",
+      "label": "deck demo — second deploy",
+      "feature": "work-queue-92oeso",
+      "branch": "claude/work-queue-92oeso",
+      "sha": "c8c5406",
+      "when": "2026-07-18T03:56:47.809Z"
+    },
+    {
       "id": "work-queue-92oeso-1",
       "label": "staging deck + switcher",
       "feature": "work-queue-92oeso",
