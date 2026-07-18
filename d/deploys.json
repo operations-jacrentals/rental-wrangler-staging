@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "sig-sheet-back-dismiss-2",
+      "label": "Merge remote-tracking branch 'origin/trunk' into claude/sig-sheet-back-d",
+      "feature": "sig-sheet-back-dismiss",
+      "branch": "claude/sig-sheet-back-dismiss",
+      "sha": "a44cd85",
+      "when": "2026-07-18T13:46:12.846Z"
+    },
+    {
       "id": "thread-rounding-performance-k4ea8y-1",
       "label": "comms instant-open (merged to trunk)",
       "feature": "thread-rounding-performance-k4ea8y",
