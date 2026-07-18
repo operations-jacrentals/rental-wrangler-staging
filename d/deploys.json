@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "deploys": [
+    {
+      "id": "work-queue-92oeso-1",
+      "label": "Deck link restore #2 (funnel + deck)",
+      "feature": "work-queue-92oeso",
+      "branch": "claude/work-queue-92oeso",
+      "sha": "4960b61",
+      "when": "2026-07-18T13:32:43.656Z"
+    }
+  ]
+}
