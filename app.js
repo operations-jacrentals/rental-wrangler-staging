@@ -31,7 +31,6 @@ import {
   legacyTransportPrice, computeTransportPrice, isFueledType, legsForType, YARD_ORIGIN, GOOGLE_MAPS_KEY, GPS_BACKEND_URL,
   fmtWindow, fmtShortDate, showsTruck, parseISO, TODAY_ISO, refreshTodayISO, invoiceShort, TRANSPORT_MAP,
   FLAG_META, FLAG_SEVERITY_RANK, INSURANCE_COVERAGE_TYPES, FEATURES, PHONE_IDENTITY,
-  FUNNELS, FUNNEL_KEYS,
 } from './config.js';
 // Feature-flag reader (scaffold only, dev-workflow trunk-based redesign D5): a big
 // replacement's new code path checks flagOn('key') instead of running unconditionally,
@@ -109,144 +108,6 @@ function parseCustomerName(raw, existingCompany) {
   return { firstName: parts.shift() || '', lastName: parts.join(' '), company };
 }
 const fullName = (c) => `${c.firstName || ''} ${c.lastName || ''}`.trim() || c.name || '';
-/* ── Customer funnels (redesign 2026-07-17, spec: customer-funnel-redesign) ──
-   EXPLICIT membership: a customer stores WHICH funnels they're in on `funnels`
-   (booleans), independent of the stored stage — so a lead can be "a Member" while
-   their sales stage is still empty, and the three tracks stay independent. Rental
-   membership is special: `funnels.rental` is only the MANUAL rental-prospect fork;
-   an actual renter lights up live via inRental() reading their rental records
-   (Phase 2), so a renter needs no stored flag. FUNNEL_KEYS = ['rental','member','equipment']. */
-const blankFunnels = () => ({ rental: false, member: false, equipment: false });
-// Never assume the object exists (a backend record can arrive pre-migration): return a
-// live, initialized `c.funnels` so a writer can toggle a membership on it in place.
-function ensureFunnels(c) {
-  if (!c) return blankFunnels();
-  if (c.funnels == null || typeof c.funnels !== 'object') c.funnels = blankFunnels();
-  else FUNNEL_KEYS.forEach((k) => { if (typeof c.funnels[k] !== 'boolean') c.funnels[k] = !!c.funnels[k]; });
-  return c.funnels;
-}
-/* ── Funnel derivations (Phase 2, spec: customer-funnel-redesign) ────────────
-   The Rental funnel is ACTIVITY-DRIVEN: its stage is read live off the customer's
-   own rental records, never a manual pick. Member/Equipment stages are the stored
-   membershipStage/usedSalesStage. `inRental` is the auto-join rule of thumb — anyone
-   who has ever reserved/rented is in the Rental funnel (plus a manual prospect fork). */
-const RENTAL_OUT = new Set(['On Rent', 'End Rent', 'Off Rent']);   // physically out in the field → 'Rented'
-function customerRentals(c) {
-  const id = c && c.customerId; if (id == null) return [];
-  return DATA.rentals.filter((r) => r.customerId === id);
-}
-// Has the customer EVER reserved or rented? (Quote / Cancelled / No Show aren't a commitment.)
-function hasRentalActivity(c) {
-  return customerRentals(c).some((r) => r.status && r.status !== 'Quote' && r.status !== 'Cancelled' && r.status !== 'No Show');
-}
-// In the Rental funnel = an explicit rental-prospect fork OR real rental activity (Jac's rule of thumb).
-function inRental(c) {
-  return !!(c && (ensureFunnels(c).rental || hasRentalActivity(c)));
-}
-// Derived Rental stage: physically out → 'Rented'; a live Reserved → 'Reserved'; else 'Lead'.
-function rentalFunnelStage(c) {
-  const rs = customerRentals(c);
-  if (rs.some((r) => RENTAL_OUT.has(r.status))) return 'Rented';
-  if (rs.some((r) => r.status === 'Reserved'))  return 'Reserved';
-  return 'Lead';
-}
-// The current stage of a given funnel for a customer (Rental derived; Member/Equipment stored).
-function funnelStageOf(c, funnel) {
-  if (funnel === 'rental')    return rentalFunnelStage(c);
-  if (funnel === 'member')    return c.membershipStage || 'N/A';
-  if (funnel === 'equipment') return c.usedSalesStage || 'N/A';
-  return 'N/A';
-}
-// Is the customer in a given funnel? Rental is special (activity OR manual fork); the others are the stored flag.
-function inFunnel(c, funnel) {
-  return funnel === 'rental' ? inRental(c) : !!ensureFunnels(c)[funnel];
-}
-// Is `stage` an AUTO (locked, derived) stage for `funnel`? (Rental Reserved/Rented, Member Signed, Equipment Paid.)
-function isAutoStage(funnel, stage) {
-  const f = FUNNELS[funnel]; return !!(f && f.auto && f.auto.includes(stage));
-}
-// Which stored field a manual funnel writes its stage to (Rental is derived → no field).
-function funnelStageField(funnel) { return funnel === 'member' ? 'membershipStage' : funnel === 'equipment' ? 'usedSalesStage' : null; }
-/* The ONE source of truth both the adaptive menu (Phase 3) and the detail ladder (Phase 5)
-   render from, so they can never disagree. Track A is the combined Rental→Member ladder with
-   the spec's visibility rules baked in; Equipment is the separate track. Each rung:
-   { funnel, stage, auto, current } — `auto` = locked/derived, `current` = the live position. */
-function funnelTrackA(c) {
-  const inR = inRental(c), mem = inFunnel(c, 'member');
-  const rStage = rentalFunnelStage(c), memStage = c.membershipStage || 'N/A';
-  const rungs = [];
-  // Entry 'Lead': Member owns it (manual pick) when Member is on; else it's the derived rental entry.
-  if (mem) rungs.push({ funnel: 'member', stage: 'Lead', auto: false, current: memStage === 'Lead' });
-  else if (inR) rungs.push({ funnel: 'rental', stage: 'Lead', auto: true, current: rStage === 'Lead' });
-  // Rental auto stages — shown only when the customer is in the Rental funnel (activity or manual fork).
-  if (inR) {
-    rungs.push({ funnel: 'rental', stage: 'Reserved', auto: true, current: rStage === 'Reserved' });
-    rungs.push({ funnel: 'rental', stage: 'Rented',   auto: true, current: rStage === 'Rented' });
-  }
-  // Member continuation — shown only when Member is selected (spec's "no distraction" rule).
-  if (mem) {
-    ['Contacted', 'Not A No!', 'Payment Discussed', 'Signed'].forEach((s) => rungs.push({ funnel: 'member', stage: s, auto: isAutoStage('member', s), current: memStage === s }));
-  }
-  return rungs;
-}
-function funnelTrackEquip(c) {
-  if (!inFunnel(c, 'equipment')) return [];
-  const s = c.usedSalesStage || 'N/A';
-  return FUNNELS.equipment.stages.map((st) => ({ funnel: 'equipment', stage: st, auto: isAutoStage('equipment', st), current: s === st }));
-}
-/* ── Dated funnel (Idea D, Jac 2026-07-17) — the customer detail shows the funnel as a
-   two-tab (Rental | Equipment Sales) stack of DATED layers. EVERYONE is implicitly in both
-   Rental and Equipment (a fresh customer just sits at 'Lead' in each); Member is the one opt-in
-   (the "Member Lead" checkbox = funnels.member) that EXTENDS the Rental funnel. Each layer
-   records the date it was reached + an optional note in c.funnelLog[funnel][stage] = {date,note}.
-   Rental Reserved/Rented dates DERIVE from the customer's live rentals (never a manual stamp);
-   Lead + all Member/Equipment dates are stored (stamped 'today' on reach, editable). */
-function ensureFunnelLog(c) {
-  if (!c) return { rental: {}, member: {}, equipment: {} };
-  if (!c.funnelLog || typeof c.funnelLog !== 'object') c.funnelLog = {};
-  FUNNEL_KEYS.forEach((k) => { if (!c.funnelLog[k] || typeof c.funnelLog[k] !== 'object') c.funnelLog[k] = {}; });
-  return c.funnelLog;
-}
-// The furthest-reached stage of a funnel: Rental derived from activity; Member/Equipment the
-// stored stage — and since everyone starts at the top, an empty/N/A stage reads as 'Lead'.
-function funnelCurrentStage(c, key) {
-  if (key === 'rental') return rentalFunnelStage(c);
-  const v = key === 'member' ? c.membershipStage : c.usedSalesStage;
-  // Unset / N/A / any off-vocabulary legacy value (e.g. a "Don't Contact" left by an AI-chat or
-  // CSV write that never ran through the funnel UI) clamps to the entry, so indexOf is never -1 —
-  // otherwise every layer would read 'upcoming' and a click on the top layer would silently
-  // overwrite the stored value (fresh-context review, 2026-07-17).
-  return (!v || v === 'N/A' || !FUNNELS[key].stages.includes(v)) ? 'Lead' : v;
-}
-// earliest reserved / on-rent rental startDate for the Rental funnel's auto dates.
-function reservedRentalDate(c) {
-  const rs = customerRentals(c).filter((r) => r.status === 'Reserved' && r.startDate).sort((a, b) => parseISO(a.startDate) - parseISO(b.startDate));
-  return rs.length ? rs[0].startDate : '';
-}
-function onRentRentalDate(c) {
-  const rs = customerRentals(c).filter((r) => RENTAL_OUT.has(r.status) && r.startDate).sort((a, b) => parseISO(a.startDate) - parseISO(b.startDate));
-  return rs.length ? rs[0].startDate : '';
-}
-// A rental Reserved/Rented date is DERIVED and never editable; every other layer's date is stored.
-const funnelDateDerived = (key, stage) => key === 'rental' && (stage === 'Reserved' || stage === 'Rented');
-function funnelLayerDate(c, key, stage) {
-  if (funnelDateDerived(key, stage)) return stage === 'Reserved' ? reservedRentalDate(c) : onRentRentalDate(c);
-  const e = ensureFunnelLog(c)[key][stage];
-  return (e && e.date) || '';
-}
-function funnelLayerNote(c, key, stage) {
-  const e = ensureFunnelLog(c)[key][stage];
-  return (e && e.note) || '';
-}
-// ── Layer = a dated ACTION (Jac 2026-07-17: "notes = actions") ─────────────────────────────
-// A funnel layer's planned move is an OPEN scheduled next-action (an activityLog entry) tagged to
-// this exact funnel+stage. Several layers can be armed at once (plan the play by layer); each glows
-// red/yellow/green by its own due date. The same entries feed the date-sorted queue below the funnel.
-// The tab SCOPE a funnel files under — Rental + Member share the Rental tab (and its queue).
-const funnelScope = (key) => (key === 'equipment' ? 'usedSales' : 'rental');
-function funnelLayerAction(c, key, stage) {
-  return (c.activityLog || []).find((a) => naIsSched(a) && !a.outcome && a.fkey === key && a.stage === stage) || null;
-}
 let migrationDirty = false;
 /* One-time, idempotent: give every customer firstName/lastName parsed from `name`,
    then keep `name` as the derived "First Last" display. Runs on seed AND loaded data. */
@@ -323,23 +184,6 @@ function migrateCustomers() {
       c.funnelNAApplied = true; migrationDirty = true;
     }
     if (c.membershipStage === 'Paid') { c.membershipStage = 'Signed'; migrationDirty = true; }   // F3 — membership terminal relabeled Paid→Signed (auto-set by signing)
-    // ── Funnel redesign backfill (2026-07-17) — one-time per customer ──
-    // Collapse the legacy split-lead vocabulary onto the new unified 'Lead' entry
-    // stage, then derive EXPLICIT funnel membership from the stored stages: Member
-    // from membershipStage, Equipment from usedSalesStage. Rental stays a manual fork
-    // (false here) — real renters surface via inRental() at read time, so there is no
-    // O(customers×rentals) history scan on load. No stage values are otherwise changed.
-    if (c.funnels == null) {
-      ['membershipStage', 'usedSalesStage'].forEach((f) => {
-        if (c[f] === 'Inbound Lead' || c[f] === 'Outbound Lead') c[f] = 'Lead';
-      });
-      c.funnels = {
-        rental:    false,
-        member:    !!(c.membershipStage && c.membershipStage !== 'N/A'),
-        equipment: !!(c.usedSalesStage && c.usedSalesStage !== 'N/A'),
-      };
-      migrationDirty = true;
-    }
   });
 }
 /* ── §20 multi-unit rentals — "a Rental is an EVENT" ──
@@ -612,7 +456,7 @@ function heldSignBlock(o, custRec, d) {
   const p = (custRec && custRec.pendingCapture) || {};   // §7.1c pre-card held pieces (saddle onto the first card)
   return `<div class="ag-capcap" style="margin:16px 2px 8px">Signed agreement</div>
     ${capProgress([{ label: 'Card', done: false }, { label: 'Selfie', done: !!p.selfie }, { label: 'Signature', done: !!p.signature }])}
-    <p class="muted" style="font-size:11px;margin:2px 2px 0">Selfie &amp; signature save now and saddle onto the first card you add; On-Rent &amp; delivery unlock once that card is complete.</p>
+    <p class="muted" style="font-size:0.6471rem;margin:2px 2px 0">Selfie &amp; signature save now and saddle onto the first card you add; On-Rent &amp; delivery unlock once that card is complete.</p>
     ${agCaptureBlock(o, ag, 'account')}`;
 }
 /* Move an account-level HELD signing onto a freshly-added card — the draft's FROZEN
@@ -641,8 +485,6 @@ function attachHeldSigning(c, k) {
 function markMembershipSigned(c, key) {
   if (key !== 'membership' || !c || c.membershipStage === 'Signed') return;
   c.membershipStage = 'Signed';
-  ensureFunnels(c).member = true;   // funnel redesign: a signed member IS in the Member funnel — else the Signed terminal is hidden (funnelTrackA needs inFunnel('member'))
-  const log = ensureFunnelLog(c).member; if (!log.Signed) log.Signed = {}; if (!log.Signed.date) log.Signed.date = TODAY_ISO;   // stamp the reached-date so the blue closed-won layer shows when it happened (auto-sign has no reachFunnelStage path)
   logAction(c, 'Membership agreement signed → Signed');
 }
 function signCardAgreement(c, k, signature, selfie) {
@@ -870,7 +712,7 @@ function cardTabBody(c) {
       ${k.isDefault ? badge('Default', 'blue') : actionPill('commit', 'Make default', { js: 'js-card-default', data: { rec: c.customerId, card: k.id } })}
       <button class="x js-card-remove" data-rec="${c.customerId}" data-card="${k.id}" data-tip="Remove card">${I.x}</button>
     </div>`;
-  }).join('') : '<span class="muted" style="font-size:12px">No cards on file.</span>';
+  }).join('') : '<span class="muted" style="font-size:0.7059rem">No cards on file.</span>';
   return `<div class="cards-list">${rows}</div>
     ${canMoney() ? `<div style="margin-top:10px">${addBtn('Card', { link: true, js: 'js-add-card', data: { rec: c.customerId } })}</div>` : ''}`;
 }
@@ -883,11 +725,11 @@ function achTabBody(c) {
       ${k.verified ? badge('Verified', 'green') : actionPill('commit', 'Verify', { js: 'js-bank-verify', data: { rec: c.customerId, bank: k.id } })}
       ${k.isDefault ? badge('Default', 'blue') : actionPill('commit', 'Make default', { js: 'js-bank-default', data: { rec: c.customerId, bank: k.id } })}
       <button class="x js-bank-remove" data-rec="${c.customerId}" data-bank="${k.id}" data-tip="Remove bank account">${I.x}</button>
-    </div>`).join('') : '<span class="muted" style="font-size:12px">No bank accounts on file.</span>';
+    </div>`).join('') : '<span class="muted" style="font-size:0.7059rem">No bank accounts on file.</span>';
   return `<div class="cards-list">${rows}</div>
     ${!canMoney() ? ''
       : consent ? `<div style="margin-top:10px">${addBtn('ACH', { link: true, js: 'js-add-ach', data: { rec: c.customerId } })}</div>`
-                : '<span class="muted" style="font-size:11px">Capture a selfie + signature (Edit account) before adding a bank account.</span>'}`;
+                : '<span class="muted" style="font-size:0.6471rem">Capture a selfie + signature (Edit account) before adding a bank account.</span>'}`;
 }
 
 /* §19 stable-key migration: give every existing invoice line a `lid` and remap
@@ -1678,15 +1520,15 @@ function transportEditorHtml() {
   const live = mapsReady();
   const who = u ? esc(u.name) + ' · ' : '';
   return `<div class="tedit sec" data-r="R5b">
-    <div class="tedit-head"><span class="stamp">Set ${te.leg === 'recovery' ? 'recovery' : 'delivery'} site</span><span class="muted" style="font-size:10.5px">${who}drag the pin for the exact driver drop</span></div>
+    <div class="tedit-head"><span class="stamp">Set ${te.leg === 'recovery' ? 'recovery' : 'delivery'} site</span><span class="muted" style="font-size:0.6176rem">${who}drag the pin for the exact driver drop</span></div>
     <div class="tedit-map js-tmap${live ? '' : ' ph'}">${live ? '' : (((GOOGLE_MAPS_KEY || _mapsKey) && !te.mapFailed)
       ? `<span class="map-spin" aria-hidden="true"></span><span class="map-tag">Loading dispatch map…</span>`
-      : `<span class="map-pin" aria-hidden="true">${ICO_PIN}</span><span class="map-tag stamp" style="font-size:11px;color:var(--accent)">${te.mapFailed ? 'Live map unavailable' : 'Offline'} · city-tier pricing</span><span class="map-sub">${te.mapFailed ? 'Type the site address below — pricing falls back to city tiers. Reopen the editor to retry the live map.' : 'Type the site address below — the live map &amp; exact mileage come online once the dispatch key is set.'}</span>`)}</div>
+      : `<span class="map-pin" aria-hidden="true">${ICO_PIN}</span><span class="map-tag stamp" style="font-size:0.6471rem;color:var(--accent)">${te.mapFailed ? 'Live map unavailable' : 'Offline'} · city-tier pricing</span><span class="map-sub">${te.mapFailed ? 'Type the site address below — pricing falls back to city tiers. Reopen the editor to retry the live map.' : 'Type the site address below — the live map &amp; exact mileage come online once the dispatch key is set.'}</span>`)}</div>
     <input class="lf-in js-taddr" placeholder="Site address — start typing…" value="${esc(te.addr || '')}" autocomplete="off" spellcheck="false" aria-label="Site address">
     <div class="js-tsug tedit-sug" role="listbox"></div>
     <div class="tedit-foot">
       <span class="muted tedit-hint">↑↓ choose · Tab/Enter set · Esc cancel</span>
-      <span class="muted js-te-dist" style="font-size:10.5px;margin-left:8px"></span>
+      <span class="muted js-te-dist" style="font-size:0.6176rem;margin-left:8px"></span>
       <span class="spacer"></span>
       ${ghostPill('Cancel', { js: 'js-tedit-cancel' })}
       ${actionPill('commit', 'Set address', { js: 'js-tedit-save' })}
@@ -2110,7 +1952,7 @@ function salePricingAutoApply() {
    the generic sync). Volume of asks per category feeds purchasing/fleet-spread decisions. */
 function lostDemandBtn(c) {
   const n = (c.lostDemand || []).length;
-  return `<button class="catr-slot js-lost-demand" data-r="R5b" data-cat="${esc(c.categoryId)}" data-tip="A customer wanted one and none were free — log the lost ask${n ? ` (${n} logged)` : ''}"><span class="add-field anchor" style="height:20px;font-size:10px">+Lost${n ? ` ${n}` : ''}</span></button>`;
+  return `<button class="catr-slot js-lost-demand" data-r="R5b" data-cat="${esc(c.categoryId)}" data-tip="A customer wanted one and none were free — log the lost ask${n ? ` (${n} logged)` : ''}"><span class="add-field anchor" style="height:20px;font-size:0.5882rem">+Lost${n ? ` ${n}` : ''}</span></button>`;
 }
 function categoryAvailableCount(catId, startISO, endISO, selfId) {
   return DATA.units.filter((u) => u.categoryId === catId && isUnitAvailableFor(u, startISO, endISO, selfId)).length;
@@ -2729,6 +2571,7 @@ function openStandard(card, recId, recType) {
   sweepEmptyDrafts(recId);   // #8 — leaving an empty draft deletes it
   pushCardHistory(cs);       // Task 1 — record the prior (list) view so Back can return
   cs.mode = 'standard'; cs.recId = recId; cs.recType = recType || null; cs.graphView = false;   // opening a record exits the in-column graph view
+  if (card === 'customers' && state.funnelTab) delete state.funnelTab[recId];   // §3.5 — a fresh customer open resets the funnel toggle to Rental
   if (card === 'customers') { if (state.custInvOpen) delete state.custInvOpen[recId]; if (state.custInvMenu) delete state.custInvMenu[recId]; }   // §3.3 — collapse the embedded Invoices accordion on a fresh open (openInvoice re-sets it after)
   if (card === 'customers') { if (state.custAcctOpen) delete state.custAcctOpen[recId]; if (state.custAgOpen) delete state.custAgOpen[recId]; if (state.custAgDraft) delete state.custAgDraft[recId]; }   // Phase 1/2b — collapse the Account section + its Agreements accordion + any in-progress draft on a fresh open
   if (card === 'units') { if (state.svcSecOpen) delete state.svcSecOpen[recId]; if (state.unitSecOpen) delete state.unitSecOpen[recId]; if (state.woRowOpen) delete state.woRowOpen[recId]; }   // collapse the Services + Work Orders / Specs / GPS / Investment sections + any open Work Order row on a fresh open (mirrors the Account/Invoices collapse above)
@@ -4179,105 +4022,22 @@ function custMetaField(c, field, label, ph) {
   const val = c[field];
   return `<div class="kv"><span class="pfx">${esc(label)}</span><span class="v inline-edit" data-edit="custField" data-field="${esc(field)}" data-rec="${esc(c.customerId)}" data-ph="${esc(ph)}">${val ? esc(val) : `<span class="add-field" data-r="R5c">+${esc(label)}</span>`}</span></div>`;
 }
-/* R35 — the DATED-ACTION FUNNEL (Idea D + action reshape, Jac 2026-07-17). A two-tab
-   (Rental | Equipment Sales) stack of clickable LAYERS, narrowing like a real funnel. Everyone is
-   implicitly in both tabs; the "Member Lead" checkbox extends the Rental tab with the membership
-   stages. Each layer is a SLOT for a dated next-action ("notes = actions"): arm any layer with an
-   action (note + date) and it glows red / yellow / green by that date's urgency — several can be
-   armed at once, so you plan the play by layer. A reached-but-unarmed layer is quiet steel history
-   (a check + when it happened); the terminal Signed/Paid, once reached, is SOLID BLUE — closed won.
-   Clicking a layer opens its action editor (arm/edit/complete the action, or advance the customer
-   here). Rental Reserved/Rented history-dates DERIVE from live rentals. Bespoke — .dfunnel stamped. */
-function funnelLayerHtml(c, key, stage, i, ci, offset, curId) {
-  const st = getStatus('funnelStage', stage);
-  const auto = key === 'rental' || isAutoStage(key, stage);   // rental stages + Signed = derived history-dates
-  // `cur` = the GLOBAL furthest layer when funnels stack (Rental → Member on the Rental tab), so only
-  // one "now" tag shows; `reached` stays per-funnel.
-  const cur = curId ? (key + ':' + stage === curId) : (i === ci);
-  const reached = i <= ci;
-  const isWon = reached && key !== 'rental' && i === FUNNELS[key].stages.length - 1;   // Signed/Paid reached = closed won
-  const act = funnelLayerAction(c, key, stage);                                        // this layer's ARMED (open, dated) action
-  const w = Math.max(56, 100 - (i + (offset || 0)) * 6);
-  const attrs = `data-rec="${esc(c.customerId)}" data-fkey="${key}" data-stage="${esc(stage)}" style="width:${w}%"`;
-  const nowTag = cur ? `<span class="dl-now">now</span>` : '';
-  // 1) ARMED — the layer carries an open, dated action → two lines, urgency-colored (unless it's the
-  //    closed-won terminal, which stays blue). This is where green now means "on track", not "done".
-  if (act && !isWon) {
-    const u = naUrgency(act.when), p = parseSchedText(act.text);
-    const dd = dayDiff(TODAY, parseISO(act.when));
-    const when = u === 'due' ? (dd === 0 ? 'Today' : `Late ${-dd}d`) : fmtShortDate(act.when);
-    return `<button class="dl act u-${u} js-funnel-layer" ${attrs} data-tip="Click to edit this action">`
-      + `<span class="dl-top"><span class="dl-dot">▸</span><span class="dl-nm">${esc(st.label)}</span>${nowTag}</span>`
-      + `<span class="dl-act"><span class="dl-atxt">${esc(p.note)}</span><span class="dl-due"><span class="dd"></span>${esc(when)}</span></span></button>`;
-  }
-  // 2) CLOSED WON — Signed / Paid reached → solid primary blue.
-  if (isWon) {
-    const dateISO = funnelLayerDate(c, key, stage), note = funnelLayerNote(c, key, stage);
-    return `<button class="dl won js-funnel-layer" ${attrs} data-tip="Closed won — click to edit">`
-      + `<span class="dl-dot">✓</span><span class="dl-nm">${esc(st.label)}</span>`
-      + (note ? `<span class="dl-note">· ${esc(note)}</span>` : '')
-      + `<span class="dl-dt">${dateISO ? esc(fmtShortDate(dateISO)) : ''}</span></button>`;
-  }
-  // 3) REACHED, unarmed — quiet steel history: a check + when it happened (green freed for urgency).
-  if (reached) {
-    const dateISO = funnelLayerDate(c, key, stage), note = funnelLayerNote(c, key, stage);
-    const showLock = auto && stage !== 'Lead';
-    return `<button class="dl done${cur ? ' cur' : ''} js-funnel-layer" ${attrs} data-tip="Click to plan the next action">`
-      + `<span class="dl-dot">✓</span><span class="dl-nm">${esc(st.label)}</span>`
-      + (showLock ? `<span class="dl-lock">${I.lock}</span>` : '')
-      + nowTag
-      + (note ? `<span class="dl-note">· ${esc(note)}</span>` : '')
-      + `<span class="dl-dt">${dateISO ? esc(fmtShortDate(dateISO)) : ''}</span></button>`;
-  }
-  // 4) UPCOMING, unarmed — a dashed slot inviting a planned action (or advancing here).
-  return `<button class="dl up js-funnel-layer" ${attrs} data-tip="Click to plan an action or advance here">`
-    + `<span class="dl-dot"></span><span class="dl-nm">${esc(st.label)}</span>`
-    + `<span class="dl-plan">+ action</span></button>`;
-}
-function datedFunnelHtml(c, key, offset, curId) {
-  const stages = FUNNELS[key].stages;
-  const ci = stages.indexOf(funnelCurrentStage(c, key));
-  return stages.map((s, i) => funnelLayerHtml(c, key, s, i, ci, offset, curId)).join('');
-}
-function memberLeadRow(c) {
-  const on = inFunnel(c, 'member');
-  return `<button class="dl-check${on ? ' on' : ''} js-member-lead" data-rec="${esc(c.customerId)}" data-tip="${on ? 'Untick to stop pursuing membership' : 'Tick to extend the funnel with the membership stages'}" style="width:79%">`
-    + `<span class="dl-box">${on ? '✓' : ''}</span><span class="dl-ck-t">Member Lead</span>`
-    + `<span class="dl-ck-h">${on ? 'extending ↓' : 'tick to extend'}</span></button>`;
-}
-/* Dated two-tab funnel (Idea D). The R14 segmented toggle IS the section header (Rental |
-   Equipment Sales — everyone's in both); the tab body is the dated-layer stack for that funnel,
-   plus the Member Lead extension on the Rental tab, and the tab's meta / Next-Actions / Log. */
 function funnelSectionHtml(c) {
   const tab = (state.funnelTab && state.funnelTab[c.customerId]) || 'rental';
-  // Full-width toggle sitting just above the funnel (Jac 2026-07-17 — matches the mockup); the
-  // account-type badge is dropped from here (it already lives in the Account section).
   const seg = segCtl([
     { label: 'Rental', js: `js-funnel-tab ${naDotClass(c, 'rental')}`, data: { rec: c.customerId, tab: 'rental' }, on: tab === 'rental' ? 'accent' : null },
     { label: 'Equipment Sales', js: `js-funnel-tab ${naDotClass(c, 'usedSales')}`, data: { rec: c.customerId, tab: 'usedSales' }, on: tab === 'usedSales' ? 'accent' : null },
-  ], 'funnel-full');
+  ]);
   let body;
   if (tab === 'rental') {
-    const mem = inFunnel(c, 'member');
-    // ONE current across the stacked Rental → Member journey. The Member position wins ONLY once
-    // Member has moved past its 'Lead' entry — otherwise a Rented customer who just gets ticked
-    // "Member Lead" would visually jump backwards to the new Member-Lead layer (review fix); until
-    // then, the live Rental position (e.g. Rented) stays the highlighted current.
-    const memStage = funnelCurrentStage(c, 'member');
-    const curId = (mem && memStage !== 'Lead') ? 'member:' + memStage : 'rental:' + funnelCurrentStage(c, 'rental');
-    const stack = `<div class="dfunnel" data-r="R35">`
-      + datedFunnelHtml(c, 'rental', 0, curId)
-      + memberLeadRow(c)
-      + (mem ? datedFunnelHtml(c, 'member', FUNNELS.rental.stages.length + 1, curId) : '')
-      + `</div>`;
-    body = stack
-      + (mem ? `<div class="fieldstack funnel-fields">${membershipMetaHtml(c)}</div>` : '')
+    body = `<div class="fb-toprow">${funnelPill(c.customerId, 'membership', c.membershipStage || 'N/A')}${acctBtn(c)}</div>`
+      + `<div class="fieldstack funnel-fields">${membershipMetaHtml(c)}</div>`
       + nextActionsHtml(c, 'rental')
       + actionLogHtml(c, 'rental');
   } else {
     const intCats = (c.interestedCategoryIds || []).map((id) => { const cat = IDX.category.get(id); return cat ? refPill('categories', id, cat.name, { x: 'intcat-remove', xData: id, tag: 'Cat' }) : ''; }).join('');
     const intMakes = (c.interestedMakes || []).map((mk) => refPill(null, mk, mk, { x: 'intmake-remove', xData: mk, tag: 'Make', tone: 'tan' })).join('');
-    body = `<div class="dfunnel" data-r="R35">${datedFunnelHtml(c, 'equipment', 0)}</div>`
+    body = `<div class="fb-toprow">${funnelPill(c.customerId, 'usedSales', c.usedSalesStage || 'N/A')}${acctBtn(c)}</div>`
       + `<div class="fieldstack funnel-fields">${custMetaField(c, 'desiredAge', 'Desired Age', 'Add desired age')}${custMetaField(c, 'desiredHours', 'Desired Hours', 'Add desired hours')}</div>`
       + `<div class="funnel-sublabel">Interested in</div>`
       + `<div class="kv pillrow interested">${intCats}${intMakes}${addBtn('Make / Category', { link: true, js: 'js-addmakecat', h: 26, data: { rec: c.customerId } })}</div>`
@@ -4285,70 +4045,9 @@ function funnelSectionHtml(c) {
       + actionLogHtml(c, 'usedSales');
   }
   return `<div class="section funnel-sec">`
-    + `<div class="funnel-hd full">${seg}</div>`
+    + `<div class="funnel-hd"><span class="fh-rule"></span>${seg}<span class="fh-rule"></span></div>`
     + `<div class="funnel-body">${body}</div>`
     + `</div>`;
-}
-// ── Dated-funnel mutators (Idea D) ──
-// Reach an UPCOMING manual stage: set the current-stage field + stamp today. Rental stages and
-// auto terminals are derived, never reached by hand.
-function reachFunnelStage(custId, key, stage) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  if (!FUNNELS[key] || !FUNNELS[key].stages.includes(stage)) return;   // only a real stage of this funnel
-  if (key === 'rental' || isAutoStage(key, stage)) return;
-  const field = funnelStageField(key); if (!field) return;
-  c[field] = stage;
-  const log = ensureFunnelLog(c)[key]; if (!log[stage]) log[stage] = {}; if (!log[stage].date) log[stage].date = TODAY_ISO;
-  ensureFunnels(c)[key] = true;
-  logAction(c, `${FUNNELS[key].label} → ${getStatus('funnelStage', stage).label}`);
-  reindex('customers', c); render();
-}
-// Member Lead checkbox — reuse the funnel-membership toggle (keeps the Signed terminal-wipe
-// guard); stamp the Member Lead date when first ticked so the 'Lead' layer carries a date.
-function toggleMemberLead(custId) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  const wasOn = inFunnel(c, 'member');
-  toggleFunnelMembership(custId, 'member');
-  if (!wasOn && inFunnel(c, 'member')) { const log = ensureFunnelLog(c).member; if (!log.Lead) log.Lead = {}; if (!log.Lead.date) log.Lead.date = TODAY_ISO; render(); }
-}
-// Open a layer's ACTION editor — prefill from the layer's armed action, or a fresh one for today.
-function openFunnelLayerEdit(custId, key, stage) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  const act = funnelLayerAction(c, key, stage);
-  const p = act ? parseSchedText(act.text) : null;
-  openOverlay({ kind: 'funnelLayer', custId, fkey: key, stage,
-    actWhen: act ? act.when : TODAY_ISO,
-    actWhenTime: (p && to24(p.time)) || to24(nowHourLabel()) || '09:00',   // datefield writes the time to o[field+'Time']
-    actNote: p ? p.note : '' });
-}
-// Save the layer's action = an OPEN scheduled next-action tagged to funnel+stage (create OR edit the
-// existing one). It joins the date-sorted queue below and drives the tab's urgency dot. Arming a
-// future layer does NOT advance the customer (2B) — that's the explicit Advance button.
-function saveFunnelLayer() {
-  const o = state.overlay; if (!o || o.kind !== 'funnelLayer') return;
-  const c = IDX.customer.get(o.custId); if (!c) { closeOverlay(); return; }
-  const date = o.actWhen; if (!date) { flashOr('.datefield', 'Pick a date first.'); return; }
-  const note = (document.querySelector('.overlay .js-fl-note')?.value || '').trim();
-  const text = `Scheduled: ${note || 'follow-up'} @ ${date} ${to12(o.actWhenTime || '09:00')}`;
-  c.activityLog = c.activityLog || [];
-  const existing = funnelLayerAction(c, o.fkey, o.stage);
-  if (existing) { existing.when = date; existing.text = text; existing.scope = funnelScope(o.fkey); existing.fkey = o.fkey; existing.stage = o.stage; }
-  else c.activityLog.push({ when: date, text, scope: funnelScope(o.fkey), fkey: o.fkey, stage: o.stage });
-  reindex('customers', c); toast(existing ? 'Action saved.' : 'Action added.'); state.datepick = null; closeOverlay(); render();
-}
-// Advance the customer to this manual stage (they actually moved) — a deliberate, separate step from
-// completing an action (2B). Stamps the history date; keeps the editor open so you can arm the next move.
-function advanceFunnelLayer(custId, key, stage) {
-  reachFunnelStage(custId, key, stage);
-  if (state.overlay && state.overlay.kind === 'funnelLayer') renderOverlay();
-}
-// ✓ Done / ✕ Cancel the layer's armed action — logs it to the Action Log; does NOT advance the stage (2B).
-function completeFunnelAction(custId, done) {
-  const o = state.overlay; if (!o || o.kind !== 'funnelLayer') return;
-  const c = IDX.customer.get(custId); if (!c) { closeOverlay(); return; }
-  const act = funnelLayerAction(c, o.fkey, o.stage);
-  if (act) { act.outcome = done ? 'done' : 'cancelled'; act.closedWhen = TODAY_ISO; reindex('customers', c); toast(done ? 'Action completed — logged.' : 'Action cancelled — logged.'); }
-  closeOverlay(); render();
 }
 /* ── Phase 1 (2026-07-10 Account/Agreements + Membership redesign, spec §3/§7b
    D19-D27, plan T1.1-T1.4) — the new top-of-card ACCOUNT section. UI SHELL:
@@ -5055,12 +4754,12 @@ function settingsFlagsPane(o) {
       const off = !!oo.off;
       const sevCtl = segCtl(['red', 'yellow', 'green'].map((sv) => ({ label: sv === 'red' ? 'R' : sv === 'yellow' ? 'Y' : 'G', js: 'js-flag-sev', data: { ent, id: f.id, sev: sv }, on: (!off && sev === sv) ? sv : null })));
       const onCtl = segCtl([{ label: 'On', js: 'js-flag-ov', data: { ent, id: f.id, val: 'on' }, on: !off ? 'green' : null }, { label: 'Off', js: 'js-flag-ov', data: { ent, id: f.id, val: 'off' }, on: off ? 'red' : null }]);
-      const changed = oo.off || oo.severity ? `<span class="muted" style="font-size:10px">edited</span>` : '';
+      const changed = oo.off || oo.severity ? `<span class="muted" style="font-size:0.5882rem">edited</span>` : '';
       return `<div class="set-row" style="gap:9px;align-items:center"><span style="flex:1;min-width:150px;${off ? 'opacity:.45' : ''}">${flagEl(f.label, sev)} ${esc(f.label)}</span>${sevCtl}${onCtl}${changed}</div>`;
     }).join('');
     return `<div class="set-sec"><h4 class="set-h">${esc(ENT_LBL[ent] || ent)}</h4>${items}</div>`;
   }).join('');
-  return `<div class="set-pane"><div class="muted" style="font-size:11.5px;margin-bottom:9px">Every flag is owner-tunable — Off hides it everywhere; R/Y/G overrides its severity. Defaults return by flipping back. Disabling a money/credit flag is audited.</div>${rows}</div>`;
+  return `<div class="set-pane"><div class="muted" style="font-size:0.6765rem;margin-bottom:9px">Every flag is owner-tunable — Off hides it everywhere; R/Y/G overrides its severity. Defaults return by flipping back. Disabling a money/credit flag is audited.</div>${rows}</div>`;
 }
 /* ── Settings → Team Roster (spec hr-compliance trimmed scope, Jac 2026-06-29) ──────
    The employee list — name · role · phone · note. Deliberately NO credentials/medical/
@@ -5098,7 +4797,7 @@ function settingsTeamPane(o) {
     <div class="emp-welcome-lbl">Crew welcome text</div>
     <textarea class="emp-welcome-ta" data-emp-welcome rows="3" placeholder="${esc(welcomeDefault)}" data-tip="Sent to a hand when they're added or their number changes">${esc(welcomeVal)}</textarea>
     <div class="emp-welcome-foot"><span class="emp-welcome-tok">Tokens <em>{name}</em> and <em>{link}</em> (the app link) fill in when it sends — no login code, they get that in the app.</span><button type="button" class="emp-act js-emp-welcome-reset" data-tip="Restore the default welcome wording">Reset to default</button></div></div>` : '';
-  return `<div class="set-pane"><div class="muted" style="font-size:11.5px;margin-bottom:9px">${esc(note)}</div>${rows || '<div class="muted" style="font-size:12px">No hands on the roster yet.</div>'}${welcomeBlock}<div class="kv pillrow" style="margin-top:9px">${addBtn('Employee', { link: true, js: 'js-emp-add' })}${showAuth ? `<button type="button" class="emp-act js-emp-blast" data-tip="Text the whole roster the app link + welcome">Round up the crew</button>` : ''}</div></div>`;
+  return `<div class="set-pane"><div class="muted" style="font-size:0.6765rem;margin-bottom:9px">${esc(note)}</div>${rows || '<div class="muted" style="font-size:0.7059rem">No hands on the roster yet.</div>'}${welcomeBlock}<div class="kv pillrow" style="margin-top:9px">${addBtn('Employee', { link: true, js: 'js-emp-add' })}${showAuth ? `<button type="button" class="emp-act js-emp-blast" data-tip="Text the whole roster the app link + welcome">Round up the crew</button>` : ''}</div></div>`;
 }
 /* ── Settings → Notifications (Phase A control center — design spec
    docs/superpowers/specs/2026-07-14-notifications-pane-design.md) ────────────────────
@@ -5996,21 +5695,20 @@ function unitStatusGate(r, eu) {
   const st = getStatus('rentalStatus', unitStatus(r, eu));
   return `<span class="pill gate c-${st.color} js-unit-status" data-r="R1" data-rec="${esc(r.rentalId)}" data-unit="${esc(eu.unitId)}">${I.chev}${esc(st.label)}</span>`;
 }
-/** R1: funnel-stage gate — displays a customer's stored stage (`which` picks the label the
- *  caller passes in) and opens the ONE adaptive funnel menu (redesign 2026-07-17). Used by the
- *  Sales pipeline board's Used-Equipment / Membership columns. */
+/** R1: funnel-stage gate (§7.1). */
 function funnelPill(custId, which, stage) {
   const st = getStatus('funnelStage', stage);
-  return `<span class="pill gate c-${st.color} js-funnelmenu" data-r="R1" data-rec="${esc(custId)}">${I.chev}${esc(st.label)}</span>`;
+  return `<span class="pill gate c-${st.color} js-funnel" data-r="R1" data-rec="${esc(custId)}" data-which="${which}">${I.chev}${esc(st.label)}</span>`;
 }
 /** R1: the SAME gate-pill shape as funnelPill, but for the Customers-list quick-add
- *  DRAFT (no customerId exists yet) — opens the single-select funnel menu, which writes
- *  a FUNNEL KEY to state.custQuickAdd.funnel (funnel redesign 2026-07-17) instead of a
- *  real record. Unset / N/A reads as a short "Lead?" placeholder; a real pick shows the
- *  funnel name (blue = the Lead entry the new customer will land at). */
-function custQuickAddFunnelPill(funnel) {
-  const real = FUNNELS[funnel] ? funnel : null;
-  return `<span class="pill gate c-${real ? 'blue' : 'gray'} js-custqa-funnel" data-r="R1">${I.chev}${esc(real ? FUNNELS[real].label : 'Lead?')}</span>`;
+ *  DRAFT (no customerId exists yet) — opens openCustQuickAddFunnelDropdown, which
+ *  writes straight to state.custQuickAdd.funnel instead of a real record. */
+function custQuickAddFunnelPill(stage) {
+  const set = !!(stage && stage !== 'N/A');
+  const st = getStatus('funnelStage', stage || 'N/A');
+  // Unset reads as a short placeholder ("Lead?", gray) — its own inline label now that the
+  // stamped caps are gone; a real pick shows the stage in its registry color. (Jac 2026-07-17)
+  return `<span class="pill gate c-${set ? st.color : 'gray'} js-custqa-funnel" data-r="R1">${I.chev}${esc(set ? st.label : 'Lead?')}</span>`;
 }
 /** R4: a DERIVED pill — rides another pill in the same section; no bg/border,
  *  destination icon + ink color only; sits directly RIGHT of its parent. */
@@ -6119,12 +5817,12 @@ function svcPartPanelEl(u, task, pr, idx) {
       <div class="svc-ref-head" style="margin-top:14px">Vendor</div>
       <div class="svc-vendor-block">
         <div class="svc-vendor-name">${esc(vendor.name || '')}</div>
-        ${vendor.primaryContact ? `<div class="muted" style="font-size:11.5px">${esc(vendor.primaryContact)}</div>` : ''}
+        ${vendor.primaryContact ? `<div class="muted" style="font-size:0.6765rem">${esc(vendor.primaryContact)}</div>` : ''}
         ${vendor.phone ? linkName(vendor.phone, { js: 'js-open-link', data: { url: 'tel:' + String(vendor.phone).replace(/[^\d+]/g, '') } }) : ''}
         ${vendor.email ? linkName(vendor.email, { js: 'js-open-link', data: { url: 'mailto:' + vendor.email } }) : ''}
         ${vendor.website ? linkName(vendor.website, { js: 'js-open-link', data: { url: webUrl(vendor.website) } }) : ''}
       </div>` : (enriched ? '' : `
-      <p class="muted" style="font-size:12px;margin-top:8px">Not in the parts catalog yet.</p>
+      <p class="muted" style="font-size:0.7059rem;margin-top:8px">Not in the parts catalog yet.</p>
       <div class="svc-part-row">${linkName('Search this part number ↗', { js: 'js-open-link', data: { url: 'https://www.google.com/search?q=' + encodeURIComponent(pr.oem || pr.name || '') } })}</div>`);
   const pp = el('div', 'popup svc-part-popup'); pp.style.width = '300px';
   pp.innerHTML = popupShell({
@@ -6133,7 +5831,7 @@ function svcPartPanelEl(u, task, pr, idx) {
     closeJs: 'js-svc-part-close',
     body: `
       ${img ? `<img class="insp-thumb" src="${esc(img)}" alt="${esc(pr.name || 'part')}">` : ''}
-      <div class="muted" style="font-size:11px;margin-bottom:8px">OEM ${esc(pr.oem || '—')}${catalogPart ? ` · Catalog ${esc(catalogPart.productNumber || '')}` : ''}</div>
+      <div class="muted" style="font-size:0.6471rem;margin-bottom:8px">OEM ${esc(pr.oem || '—')}${catalogPart ? ` · Catalog ${esc(catalogPart.productNumber || '')}` : ''}</div>
       ${cost != null ? kv(money(cost), { pfx: 'Cost', derived: pr.cost == null }) : ''}
       ${catalogPart && catalogPart.qtyOnHand != null ? kv(catalogPart.qtyOnHand + ' on hand', { pfx: 'Stock', derived: true }) : ''}
       ${url ? `<div class="svc-part-row">${linkName(url.length > 30 ? 'Order / info ↗' : url, { js: 'js-open-link', data: { url: webUrl(url) } })}</div>` : ''}
@@ -6417,7 +6115,7 @@ function runCtxAction(act) {
 }
 /** R17: forward-action pills — commit (blue) / money (green) / danger (solid red). */
 function actionPill(kind, label, { js, data, h } = {}) {
-  return `<button class="pill c-${kind}${js ? ' ' + js : ''}" data-r="R17"${dataAttrs(data)}${h ? ` style="height:${h}px;font-size:11px"` : ''}>${esc(label)}</button>`;
+  return `<button class="pill c-${kind}${js ? ' ' + js : ''}" data-r="R17"${dataAttrs(data)}${h ? ` style="height:${h}px;font-size:0.6471rem"` : ''}>${esc(label)}</button>`;
 }
 /** R18: the ONE quiet/neutral action — Cancel, Close, secondary tools.
  *  `disabled` greys it (is-disabled) and drops the js hook so it's inert; pair with `tip`
@@ -6508,7 +6206,6 @@ const RULE_META = {
   R32: ['Nav jog', 'cardJog / .card-jog · .mfoot-jog', 'the two-way Back/Forward view-history stepper. On desktop + in-card it is a neutral steel pill (chevron arms split by a saddle-stitch seam, orange only on hover/press) that shows only when the card has history. On phone it lives ALWAYS-ON as a snug chip pinned to the bottom-RIGHT of the footer tool bar (matching the .iconbtn tool buttons), Chrome-style: bright chevrons that grey when their stack is empty — reflecting the snapped column’s card (repainted on swipe).'],
   R33: ['Global toggle', 'globeToggle', 'the icon-only globe pinned right in a grid card’s search bar — flips that bar, and every grid-card bar in lockstep, between per-card and whole-yard “global” search (dim steel off, safety-orange on). A scope-MODE toggle like R31 but icon-only + it drives the shared query; replaces the old giant #globalsearch bar. Behind FEATURES.cardGlobalSearch.'],
   R34: ['Wash cycle button', 'washBtn', 'one pressable status pill that advances a unit’s wash on each click — neutral “Wash?” → caution “Wash It!” (yellow, requested) → ready “✓ Washed” (green, logged) → click again un-marks today’s wash. Registry STATUS tones (green/yellow/gray), NOT action colors; a press-to-advance control like R1 but it cycles in place instead of opening a dropdown. Replaces the old Wash / Don’t Wash / Washed R14 toggle; wash no longer gates inspection Pass.'],
-  R35: ['Dated-action funnel', 'datedFunnelHtml / .dfunnel', 'the customer-detail funnel as a two-tab (Rental | Equipment Sales) stack of clickable LAYERS, narrowing like a real funnel — everyone sits in both tabs (a fresh customer at Lead). Each layer is a SLOT for a dated next-action ("notes = actions"): arm any layer with an action (note + date) and it glows red/yellow/green by that date’s urgency (naUrgency) — several can be armed at once. A reached-but-unarmed layer is quiet steel history (a check + when it happened); the terminal Signed/Paid, once reached, is SOLID BLUE (closed won). Clicking a layer opens its action editor (arm/edit/complete, or Advance the customer here). The armed actions are the same scheduled entries as the date-sorted queue below. Rental Reserved/Rented history-dates derive from live rentals. Bespoke — layers are NOT .pill, the .dfunnel container carries the stamp.'],
 };
 /* ════════════ APP-12 · DESIGN-SYSTEM CATALOG — the tabbed Rulebook (Jac 2026-06-14) ════
    The Rulebook grew from "stamped element rules" (R0–R24 above) into the WHOLE
@@ -6522,16 +6219,16 @@ const RB_FOUNDATION = {
   // ── TYPE ──
   'type-display': ['Aa', 'Display · stamped', "'Saira Condensed' · 600–800 · UPPERCASE · +1–2px tracking",
     'The yard “stamped-steel” voice: wordmark, column tabs, KPI labels, section headers, ignition buttons.',
-    `<span style="font-family:'Saira Condensed',sans-serif;text-transform:uppercase;letter-spacing:1.6px;font-weight:800;font-size:23px;color:var(--txt)">Clock In · Wrangle</span>`],
+    `<span style="font-family:'Saira Condensed',sans-serif;text-transform:uppercase;letter-spacing:1.6px;font-weight:800;font-size:1.3529rem;color:var(--txt)">Clock In · Wrangle</span>`],
   'type-body': ['Aa', 'Body', "'Geist' (var(--font)) · 400–700",
     'Everything you read: row text, field values, descriptions. Quiet, legible, never stamped.',
-    `<span style="font-size:14px;color:var(--txt)">Rugged equipment, rented right — the body face carries the content.</span>`],
+    `<span style="font-size:0.8235rem;color:var(--txt)">Rugged equipment, rented right — the body face carries the content.</span>`],
   'type-mono': ['‹›', 'Mono', 'ui-monospace · 10–12px · txt-3',
     'Code + debug references only: the Inspector tag and rulebook builder names.',
-    `<code style="font-family:ui-monospace,monospace;font-size:12px;color:var(--txt-3)">UNITS › INSPECTION › “Passed”</code>`],
+    `<code style="font-family:ui-monospace,monospace;font-size:0.7059rem;color:var(--txt-3)">UNITS › INSPECTION › “Passed”</code>`],
   'type-scale': ['#', 'Size scale', '28 · 15 · 13 · 12 · 11 · 10 · 9.5px',
     'Bigger = identity/value (28 KPI · 15 popup title). 12–13 = content. ≤11 = stamped micro-labels & counters. ONE size (11px) for every status badge.',
-    `<span style="display:flex;align-items:baseline;gap:13px;flex-wrap:wrap;color:var(--txt)"><span style="font-size:28px;font-weight:800">28</span><span style="font-size:15px;font-weight:700">15</span><span style="font-size:13px">13</span><span style="font-size:12px">12</span><span style="font-family:'Saira Condensed';text-transform:uppercase;letter-spacing:1px;font-size:11px;font-weight:700">11 label</span><span style="font-size:9.5px;color:var(--txt-3)">9.5</span></span>`],
+    `<span style="display:flex;align-items:baseline;gap:13px;flex-wrap:wrap;color:var(--txt)"><span style="font-size:1.6471rem;font-weight:800">28</span><span style="font-size:0.8824rem;font-weight:700">15</span><span style="font-size:0.7647rem">13</span><span style="font-size:0.7059rem">12</span><span style="font-family:'Saira Condensed';text-transform:uppercase;letter-spacing:1px;font-size:0.6471rem;font-weight:700">11 label</span><span style="font-size:0.5588rem;color:var(--txt-3)">9.5</span></span>`],
   'type-weight': ['B', 'Weight', '800 · 700 · 600 · 400',
     '800 stamped identity · 700 titles & labels · 600 strong body · 400 body.',
     `<span style="display:flex;gap:16px;align-items:baseline;color:var(--txt)"><span style="font-weight:800">800</span><span style="font-weight:700">700</span><span style="font-weight:600">600</span><span style="font-weight:400">400</span></span>`],
@@ -6553,7 +6250,7 @@ const RB_FOUNDATION = {
     rbSw('var(--tan,#c2925a)', 'Tan', 'saddle-stitch', '#1a1205')],
   'color-ec-red': ['⚠', 'ec-red · flagging glow', 'fill: color-mix(--red 65%, white) · shadow: 0 0 3px --red, 0 0 7px (--red 60%+transparent)',
     'Official treatment for EVERY flagging-red signal — text names/pills/flags/headers, borders, dots/bars. Three knobs in style.css .ec-red group: fill % (65), inner glow (3px), outer halo (7px / 60%). Never use pure --red alone on flagging text.',
-    `<span style="-webkit-text-fill-color:color-mix(in srgb,var(--red) 65%,white);text-shadow:0 0 3px var(--red),0 0 7px color-mix(in srgb,var(--red) 60%,transparent);font-weight:700;font-size:13px;letter-spacing:.5px">TUCKER FONTENOT · No Card · $0.30 overdue</span>`],
+    `<span style="-webkit-text-fill-color:color-mix(in srgb,var(--red) 65%,white);text-shadow:0 0 3px var(--red),0 0 7px color-mix(in srgb,var(--red) 60%,transparent);font-weight:700;font-size:0.7647rem;letter-spacing:.5px">TUCKER FONTENOT · No Card · $0.30 overdue</span>`],
   // ── FORM ──
   'radius': ['◳', 'Radius', '--radius 14–16 · --chip-radius 11–12 · 8–10 controls · 999 pills',
     'Cards/popups softest · chips medium · controls tight · pills & counters full-round · rings/avatars circles.',
@@ -6563,7 +6260,7 @@ const RB_FOUNDATION = {
     `<span style="display:flex;gap:12px"><span class="rb-surf" style="box-shadow:var(--shadow)">float</span><span class="rb-surf" style="box-shadow:var(--chip-shadow)">chip</span><span class="rb-surf" style="box-shadow:0 0 0 2px var(--accent-line),0 0 22px -8px var(--accent)">glow</span></span>`],
   'spacing': ['▦', 'Spacing', 'grid 12 · list 7 · section pad 12 · row pad 9–11',
     'Tight, dense yard data — generous enough to scan, never airy.',
-    `<span style="display:flex;align-items:center;color:var(--txt-3);font-size:11px;gap:8px"><span style="display:flex;gap:12px"><span style="width:14px;height:14px;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:3px"></span><span style="width:14px;height:14px;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:3px"></span></span>12px gap</span>`],
+    `<span style="display:flex;align-items:center;color:var(--txt-3);font-size:0.6471rem;gap:8px"><span style="display:flex;gap:12px"><span style="width:14px;height:14px;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:3px"></span><span style="width:14px;height:14px;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:3px"></span></span>12px gap</span>`],
   'motion': ['↻', 'Motion', '.12s controls · .15s surfaces · .5s rings/timeline',
     'Fast, functional. Keyframes: attnGlow (flash) · plateIn (login) · flagPulse · rwLint. prefers-reduced-motion respected everywhere.',
     `<span class="pill c-blue" style="animation:attnGlow 1.1s ease-in-out infinite;border-radius:10px"><span class="t">flash</span></span>`],
@@ -6593,23 +6290,23 @@ const RB_FOUNDATION = {
   // ── HEADERS / CONTAINERS ──
   'header-section': ['▭', 'Section header', '.section>h4 · centered · 11px UPPER',
     'Centered stamped label; right-side flags pin absolutely so the title stays true-center.',
-    `<span style="display:block;text-align:center;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--txt-3)">Inspection</span>`],
+    `<span style="display:block;text-align:center;font-size:0.6471rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--txt-3)">Inspection</span>`],
   'header-popup': ['▭', 'Popup header', '.popup-head · icon + h3(15) + ✕',
     'Every overlay leads with an accent icon, a 15px title, and the close on the right.',
-    `<span style="display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:7px 10px;background:var(--panel)"><span style="color:var(--accent);display:inline-flex">${I.doc || ''}</span><b style="font-size:14px">Popup title</b></span>`],
+    `<span style="display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:7px 10px;background:var(--panel)"><span style="color:var(--accent);display:inline-flex">${I.doc || ''}</span><b style="font-size:0.8235rem">Popup title</b></span>`],
   'overlay-popup': ['◳', 'Pop-up / overlay', '.overlay scrim + .popup',
     'Centered modal: 50%-black scrim · panel with the orange border + glow halo · max 92vw/86vh · internal scroll.',
     `<span class="rb-surf" style="background:var(--panel);border:1px solid var(--accent);box-shadow:0 0 0 2px var(--accent-line),0 0 20px -6px var(--accent);width:130px;height:42px;border-radius:12px">modal</span>`],
   'menu-dropdown': ['▾', 'Menu', '.dropdown-menu / .ctx-menu',
     'Floating orange-ringed lists: the sort/filter dropdowns and the R20 right-click menu.',
-    `<span style="display:inline-block;background:var(--panel);border:1px solid var(--accent);border-radius:11px;box-shadow:0 0 0 2px var(--accent-line);padding:5px;min-width:128px"><span style="display:block;padding:5px 9px;border-radius:8px;font-size:12px;color:var(--txt-2)">Sort · Name</span><span style="display:block;padding:5px 9px;border-radius:8px;font-size:12px;color:var(--accent);background:var(--panel-2)">Sort · Status</span></span>`],
+    `<span style="display:inline-block;background:var(--panel);border:1px solid var(--accent);border-radius:11px;box-shadow:0 0 0 2px var(--accent-line);padding:5px;min-width:128px"><span style="display:block;padding:5px 9px;border-radius:8px;font-size:0.7059rem;color:var(--txt-2)">Sort · Name</span><span style="display:block;padding:5px 9px;border-radius:8px;font-size:0.7059rem;color:var(--accent);background:var(--panel-2)">Sort · Status</span></span>`],
   'grid': ['▥', 'Yard grid', '.grid · 3 equal cols · 12px gap',
     'The fixed 3-column layout (Units · Rentals · Customers). Reflows 3→2→1 by width on phones (M0–M3); never squishes below the desktop floor.',
     `<span style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:150px"><span class="rb-surf" style="height:30px"></span><span class="rb-surf" style="height:30px"></span><span class="rb-surf" style="height:30px"></span></span>`],
   // ── DATA VIZ ──
   'data-kpi': ['◎', 'KPI rings', '.kpi-ring · concentric progress',
     'The header rings: Apple-style progress, each colored by its value band, number + stamped role label below.',
-    `<span style="display:inline-grid;place-items:center;width:38px;height:38px;border-radius:50%;background:conic-gradient(var(--green) 72%,var(--track) 0)"><span style="display:grid;place-items:center;width:27px;height:27px;border-radius:50%;background:var(--bg);font-size:10px;font-weight:800;color:var(--txt)">9</span></span>`],
+    `<span style="display:inline-grid;place-items:center;width:38px;height:38px;border-radius:50%;background:conic-gradient(var(--green) 72%,var(--track) 0)"><span style="display:grid;place-items:center;width:27px;height:27px;border-radius:50%;background:var(--bg);font-size:0.5882rem;font-weight:800;color:var(--txt)">9</span></span>`],
   'data-gauge': ['▰', 'Activity gauge', '.active-bar.bipolar · steel data-plate',
     'A bipolar −100…+100 track (customer health); a hazard overlay marks the deep-danger end.',
     `<span style="display:inline-block;width:140px;height:14px;border-radius:7px;overflow:hidden;background:var(--track)"><span style="display:block;height:100%;width:64%;background:linear-gradient(90deg,var(--red),var(--orange),var(--yellow),var(--green))"></span></span>`],
@@ -6637,7 +6334,7 @@ const RB_TABS = [
   { id: 'upload', label: 'Upload & Capture', intro: 'Add-file zones and photo/site captures.',
     items: [{ r: 'R21' }, { f: 'upload-capture' }] },
   { id: 'data', label: 'Data & Behaviors', intro: 'Visualizations, plus the app’s behaviors — it flashes instead of erroring, right-clicks, tooltips, and self-lints.',
-    items: [{ r: 'R16' }, { r: 'R15' }, { r: 'R35' }, { r: 'R13' }, { f: 'data-kpi' }, { f: 'data-gauge' }, { r: 'R19' }, { r: 'R25' }, { r: 'R20' }, { r: 'R23' }, { f: 'behavior-preview' }, { r: 'R0' }] },
+    items: [{ r: 'R16' }, { r: 'R15' }, { r: 'R13' }, { f: 'data-kpi' }, { f: 'data-gauge' }, { r: 'R19' }, { r: 'R25' }, { r: 'R20' }, { r: 'R23' }, { f: 'behavior-preview' }, { r: 'R0' }] },
 
   { id: 'windows', label: 'Windows', intro: 'Every pop-up window in the app, by kind. Expand one for a live preview, its fields, and a copy-paste edit reference — your map to wrangle any screen.', items: [] },
 ];
@@ -6645,7 +6342,7 @@ const RB_TABS = [
 const CLASS_RULE = [
   ['.c-titlecard', 'R10'], ['.nsec', 'R12'], ['.hvals', 'R13'], ['.history', 'R13'],
   ['.timeline', 'R16'], ['.jnode', 'R15'], ['.jseg', 'R15'], ['.journey', 'R15'],
-  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.file-drop', 'R21'], ['.datefield', 'R22'], ['.dfunnel', 'R35'], ['.section', 'R11'],
+  ['.seg', 'R14'], ['.kv.derived', 'R8'], ['.derived', 'R8'], ['.file-drop', 'R21'], ['.datefield', 'R22'], ['.section', 'R11'],
 ];
 function ruleOf(target) {
   if (!target || !target.closest) return null;
@@ -7264,10 +6961,10 @@ const ROWS = {
     const driverChip = multi
       ? (t.driverId
         ? `<button class="catr-slot js-trip-driver" data-id="${esc(t.id)}" data-day="${esc(t.day)}" data-tip="Driver on this trip (${t.stops.length} stops) — tap to change">${badge(driverName(t.driverId), 'navy')}</button>`
-        : (driverRoster().length ? `<button class="catr-slot js-trip-driver" data-r="R5b" data-id="${esc(t.id)}" data-day="${esc(t.day)}" data-tip="Assign a driver to this trip"><span class="add-field anchor" data-r="R5b" style="height:20px;font-size:10px">+Driver</span></button>` : ''))
+        : (driverRoster().length ? `<button class="catr-slot js-trip-driver" data-r="R5b" data-id="${esc(t.id)}" data-day="${esc(t.day)}" data-tip="Assign a driver to this trip"><span class="add-field anchor" data-r="R5b" style="height:20px;font-size:0.5882rem">+Driver</span></button>` : ''))
       : (t.driverId
         ? `<button class="catr-slot js-stop-driver" data-id="${esc(t.id)}" data-rec="${esc(t.rentalId)}" data-unit="${esc(t.unitId || '')}" data-task="${esc(t.task)}" data-tip="Driver on this leg — tap to change">${badge(driverName(t.driverId), 'navy')}</button>`
-        : (driverRoster().length ? `<button class="catr-slot js-stop-driver" data-r="R5b" data-id="${esc(t.id)}" data-rec="${esc(t.rentalId)}" data-unit="${esc(t.unitId || '')}" data-task="${esc(t.task)}" data-tip="Assign a driver to this leg"><span class="add-field anchor" data-r="R5b" style="height:20px;font-size:10px">+Driver</span></button>` : ''));
+        : (driverRoster().length ? `<button class="catr-slot js-stop-driver" data-r="R5b" data-id="${esc(t.id)}" data-rec="${esc(t.rentalId)}" data-unit="${esc(t.unitId || '')}" data-task="${esc(t.task)}" data-tip="Assign a driver to this leg"><span class="add-field anchor" data-r="R5b" style="height:20px;font-size:0.5882rem">+Driver</span></button>` : ''));
     // §2.3 row-2 — one unit pill per stop; a merged trip numbers the sequence (the
     // implicit array order IS the run order — spec §2.3, within-trip drag-reorder
     // skipped as a documented nice-to-have).
@@ -7955,11 +7652,11 @@ function woExpandedHtml(w) {
     + `<div class="wo-open-body">`
     + `<div class="kv" style="justify-content:flex-end;gap:6px">${flagsStack([typeFlag, dateFlag], 22)}</div>`
     + `<div class="wototals">${addBtn('Part/Task', { anchor: true, js: 'js-add-part', h: 26, data: { rec: w.woId } })}<span class="derived">${money(parts)} parts + ${hrs} hrs</span></div>`
-    + `${lines || '<div class="kv"><span class="muted" style="font-size:12px">No line items yet</span></div>'}`
+    + `${lines || '<div class="kv"><span class="muted" style="font-size:0.7059rem">No line items yet</span></div>'}`
     + `<div class="wofoot"><span class="derived">Parts ${money(Math.max(0, billed - laborBilled))} + Hrs ${money(laborBilled)} = ${money(billed)}</span>`
     + (w.cancelled
-        ? `<span class="pill c-gray" style="height:26px;font-size:11px" data-tip="This work order is cancelled">Cancelled</span>${actionPill('commit', 'Reopen WO', { js: 'js-wo-reopen', h: 26, data: { rec: w.woId } })}`
-        : `${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}<button class="pill ghost js-wo-cancel" data-r="R18" data-rec="${esc(w.woId)}" style="height:26px;font-size:11px">Cancel WO</button>${actionPill('commit', 'Complete WO', { js: `js-wo-complete ramp${bn.color === 'green' ? ' ready' : ''}`, h: 26, data: { rec: w.woId } })}`)
+        ? `<span class="pill c-gray" style="height:26px;font-size:0.6471rem" data-tip="This work order is cancelled">Cancelled</span>${actionPill('commit', 'Reopen WO', { js: 'js-wo-reopen', h: 26, data: { rec: w.woId } })}`
+        : `${addBtn('Invoice', { link: true, icon: CARD_ICON.invoices, js: 'js-bill-wo', h: 26, data: { rec: w.woId } })}<button class="pill ghost js-wo-cancel" data-r="R18" data-rec="${esc(w.woId)}" style="height:26px;font-size:0.6471rem">Cancel WO</button>${actionPill('commit', 'Complete WO', { js: `js-wo-complete ramp${bn.color === 'green' ? ' ready' : ''}`, h: 26, data: { rec: w.woId } })}`)
     + `</div>`
     + `</div>`
     + `</div>`;
@@ -8155,7 +7852,7 @@ function miniJourneyHtml(r2, eu) {
   if (te && te.rentalId === r2.rentalId && (te.unitId || null) === (eu ? eu.unitId : null)) return transportEditorHtml();
   const type = (T.transportType && T.transportType !== 'Self') ? T.transportType : null;
   if (!type) {
-    return `<div class="kv" style="justify-content:center;gap:9px"><span class="muted" style="font-size:10.5px">Self pickup · no transport</span><button class="add-field anchor js-tedit-open" data-r="R5b" data-rec="${esc(r2.rentalId)}"${du} data-leg="delivery" style="height:24px;font-size:11px">+Transport</button></div>`;
+    return `<div class="kv" style="justify-content:center;gap:9px"><span class="muted" style="font-size:0.6176rem">Self pickup · no transport</span><button class="add-field anchor js-tedit-open" data-r="R5b" data-rec="${esc(r2.rentalId)}"${du} data-leg="delivery" style="height:24px;font-size:0.6471rem">+Transport</button></div>`;
   }
   const sd = !!T.startCapture, ed = !!T.endCapture;
   const delAddr = T.deliveryAddress ? esc(T.deliveryAddress) : '+Address';
@@ -8389,7 +8086,7 @@ const DETAIL = {
             ${stallRouteHtml(r, eu)}
           </div>`;
         }).join('')
-      : `<div class="stall stall-empty rd-unit rd-unit-empty">${pickUnitBtn}<span class="muted" style="font-size:12px">drag a unit on, or cancel the quote</span></div>`;
+      : `<div class="stall stall-empty rd-unit rd-unit-empty">${pickUnitBtn}<span class="muted" style="font-size:0.7059rem">drag a unit on, or cancel the quote</span></div>`;
 
     /* Footer: field call only. The Complete/Cancel Rental buttons are RETIRED
        (Jac 2026-07-03) — terminal gates on every unit ARE the completion; the
@@ -8459,13 +8156,13 @@ const DETAIL = {
     const gpsSeen = gpsM ? gpsRelTime(gpsM.lastSeen) : '';
     const gpsBody = `<div class="fieldstack">
       ${kvPills((gsUnit ? statusPill('gpsStatus', gsUnit.status, { focal: true }) : badge('No GPS')) + (gpsMapped ? '' : addBtn('Connect GPS', { link: true, js: 'js-gps-connect', data: { rec: u.unitId } })))}
-      ${gpsStale ? `<div class="kv" style="justify-content:center"><span class="muted" style="font-size:11px">Last known — live link down</span></div>` : ''}
+      ${gpsStale ? `<div class="kv" style="justify-content:center"><span class="muted" style="font-size:0.6471rem">Last known — live link down</span></div>` : ''}
       ${gpsM ? `<div class="kv" style="justify-content:center;gap:8px;flex-wrap:wrap">
-        ${gpsSeen ? `<span class="muted" style="font-size:11px">Last seen ${esc(gpsSeen)}</span>` : ''}
+        ${gpsSeen ? `<span class="muted" style="font-size:0.6471rem">Last seen ${esc(gpsSeen)}</span>` : ''}
         ${gpsMapHref ? `<a class="gps-maplink" href="${gpsMapHref}" target="_blank" rel="noopener">${esc(gpsM.address || 'View on map')}</a>` : ''}
         ${badge(gpsM.engineOn ? 'Engine On' : 'Engine Off', gpsM.engineOn ? 'green' : 'gray')}
       </div>` : ''}
-      ${gpsMapped ? `<div class="kv"><span class="v muted" style="font-size:11px">${esc(u.gpsProvider)} · ${esc(u.gpsDeviceId)}</span>${ghostPill('Reconnect', { js: 'js-gps-connect', data: { rec: u.unitId } })}</div>` : ''}
+      ${gpsMapped ? `<div class="kv"><span class="v muted" style="font-size:0.6471rem">${esc(u.gpsProvider)} · ${esc(u.gpsDeviceId)}</span>${ghostPill('Reconnect', { js: 'js-gps-connect', data: { rec: u.unitId } })}</div>` : ''}
       ${efld('units', u, 'unitId', 'gpsType', 'GPS unit/type')}
       ${efld('units', u, 'unitId', 'gpsPlacement', 'Placement')}
       ${gpsShutdownControl(u, gpsM)}
@@ -8566,7 +8263,7 @@ const DETAIL = {
           ])}
         </div>
         <div class="kv" style="justify-content:center">${washBtn(u)}</div>
-        ${li2?.description ? `<div class="kv" style="justify-content:center"><span class="muted">Latest:</span> <span style="font-size:12.5px">${esc(li2.description)}</span></div>` : ''}
+        ${li2?.description ? `<div class="kv" style="justify-content:center"><span class="muted">Latest:</span> <span style="font-size:0.7353rem">${esc(li2.description)}</span></div>` : ''}
       </div>
     </div>`;
     const svcSec = serviceTasksHtml(u);   // Shop retirement (Jac 2026-07-07): services live ON the unit
@@ -8655,7 +8352,7 @@ const DETAIL = {
         ${ghostPill('Cancel', { js: 'js-rp-cancel' })}${actionPill('commit', 'Link', { js: 'js-rp-save', data: { rec: x.expenseId } })}
       </div>` : kvPills(addBtn('Part', { line: true, js: 'js-rcpt-addpart', h: 26, data: { rec: x.expenseId } }));
     const reconcile = `<div class="section"><h4>Reconcile — Parts</h4><div class="fieldstack">
-      ${partRows ? `<div class="hlog">${partRows}</div>` : '<span class="muted" style="font-size:12px">No parts linked yet.</span>'}
+      ${partRows ? `<div class="hlog">${partRows}</div>` : '<span class="muted" style="font-size:0.7059rem">No parts linked yet.</span>'}
       ${partForm}
       ${kv(money(lineTotal), { pfx: 'Line Total', derived: true })}
       ${kv(`<span style="color:var(--${unColor})">${(un < 0 ? '-' : '') + money(Math.abs(un))}</span>`, { pfx: 'Unaccounted', derived: true, html: true })}
@@ -8747,16 +8444,16 @@ const DETAIL = {
     const activeBar = customerActivityChart(c);
 
     const notes = notesSection('customers', c, 'customerId', 'accountNotes');
-    /* Jac order (2026-07-17): filled Notes ABOVE the Account section (right under the
-       title) → the Account section → the ONE funnel section (RENTAL | EQUIPMENT SALES
-       full-width toggle IS the header; each tab = the dated funnel + meta + Next-Actions
-       list + Action Log) → the Invoices section (sits directly BELOW the funnel) → active
-       bar → Comms → Cards → (empty Notes) → History. The old side-by-side membership/
-       used-sales columns AND the Action Board are folded into funnelSectionHtml. */
+    /* Jac order (2026-07-08 reorg): filled Notes ABOVE the funnel toggle (under the
+       title) → the ONE funnel section (RENTAL | EQUIPMENT SALES toggle IS the header;
+       each tab = funnel pill + account button + meta + Next-Actions list + Action Log)
+       → the Invoices section (sits directly BELOW the funnel, Jac 2026-07-08) → active
+       bar → Account → Comms → Cards → (empty Notes) → History. The old side-by-side
+       membership/used-sales columns AND the Action Board are folded into funnelSectionHtml. */
     return `<div class="detail">
       <div class="detail-head">${title}</div>
-      ${notes.top}
       ${customerAccountSection(c)}
+      ${notes.top}
       ${funnelSectionHtml(c)}
       ${customerInvoicesSection(c, cs)}
       ${activeBar}
@@ -8804,13 +8501,13 @@ const DETAIL = {
     const dupSrc = cs?.dupFrom ? IDX.model.get(cs.dupFrom) : null;
     const addModelRow = cs?.addingModel
       ? `<div class="kv pillrow" style="gap:7px">
-          ${dupSrc ? `<span class="muted" style="font-size:11px;width:100%">Duplicating ${esc(dupSrc.name)} — rename below</span>` : ''}
+          ${dupSrc ? `<span class="muted" style="font-size:0.6471rem;width:100%">Duplicating ${esc(dupSrc.name)} — rename below</span>` : ''}
           <input class="lf-in js-am-name" placeholder="Model name" style="flex:1" value="${dupSrc ? esc(dupSrc.name + ' copy') : ''}">
           ${ghostPill('Cancel', { js: 'js-am-cancel' })}${actionPill('commit', 'Add', { js: 'js-am-save', data: { rec: c.categoryId } })}
         </div>`
       : kvPills(addBtn('Model', { line: true, js: 'js-add-model', h: 26, data: { rec: c.categoryId } }));
     const models = `<div class="section"><h4>Models</h4><div class="fieldstack">
-      ${modelRows || '<span class="muted" style="font-size:12px">No models yet — units in this category use the generic service schedule.</span>'}
+      ${modelRows || '<span class="muted" style="font-size:0.7059rem">No models yet — units in this category use the generic service schedule.</span>'}
       ${addModelRow}
     </div></div>`;
     // every unit in the category — R2 linked pill + R4 derived status pill (Jac 2026-06-12)
@@ -8839,7 +8536,7 @@ const DETAIL = {
           ${efld('categories', c, 'categoryId', 'endOfLifeYears', 'End of life (yrs)', { type: 'number', admin: true, fmt: (v) => v + ' YRS', sfx: 'end of life' })}
           ${c.usefulLifeHours > 0 && c.endOfLifeYears > 0 ? kv(`${num(Math.round(c.usefulLifeHours / (c.endOfLifeYears * 12)))} HRS/MO`, { sfx: 'expected pace', derived: true }) : ''}
         </div>
-        <div class="side r">${unitRows || '<span class="muted" style="font-size:12px">No units</span>'}</div>
+        <div class="side r">${unitRows || '<span class="muted" style="font-size:0.7059rem">No units</span>'}</div>
       </div></div>`;
     const notes = notesSection('categories', c, 'categoryId');
     return `<div class="detail">
@@ -8893,7 +8590,7 @@ const DETAIL = {
           ? `${badge('Refunded')}${actionPill('commit', 'Details', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
           : t.balance <= 0 && t.paid > 0
             ? `${badge(`Paid${i.paymentMethod ? ' · ' + i.paymentMethod : ''}`, 'green')}${actionPill('danger', 'Refund', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}`
-            : `${actionPill('money', hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money2(t.balance) : 'Take payment', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}${hasCardOnFile(cust) ? `<span class="muted" style="font-size:11px">${esc(cardLabel(cust))}</span>` : ''}`)
+            : `${actionPill('money', hasCardOnFile(cust) ? (t.paid > 0 ? 'Pay balance ' : 'Pay ') + money2(t.balance) : 'Take payment', { js: 'js-pay-invoice', data: { rec: i.invoiceId } })}${hasCardOnFile(cust) ? `<span class="muted" style="font-size:0.6471rem">${esc(cardLabel(cust))}</span>` : ''}`)
       : '') + colCell;
     // Void (Jac 2026-07-09): an UNPAID invoice ($0 assigned) can be voided — unlinks its rental
     // so the slot frees to re-invoice and retires this to a $0 auditable record (no hard-delete).
@@ -8902,17 +8599,17 @@ const DETAIL = {
     const voidCell = (canMoney()
       ? invoiceVoidable(i)
         ? actionPill('danger', 'Void invoice', { js: 'js-void-invoice', h: 26, data: { rec: i.invoiceId } })
-        : (t.paid > 0.005 && !i.refunded && !i.voided ? `<span class="muted" style="font-size:11px" data-tip="A payment is assigned — refund it first, then you can void this invoice.">Refund to void</span>` : '')
+        : (t.paid > 0.005 && !i.refunded && !i.voided ? `<span class="muted" style="font-size:0.6471rem" data-tip="A payment is assigned — refund it first, then you can void this invoice.">Refund to void</span>` : '')
       : '');
     const lineForm = `<div class="lineform"><input class="lf-in js-lf-label" placeholder="Custom line description" /><div class="lineform-row"><input class="lf-in js-lf-amt" type="number" min="0" placeholder="Amount $" /></div><div class="pillrow" style="justify-content:flex-end">${ghostPill('Cancel', { js: 'js-line-cancel' })}${actionPill('commit', 'Add line', { js: 'js-line-save', data: { rec: i.invoiceId } })}</div></div>`;
     // Merge (#64): a customer's other UNPAID invoices can fold into this one. Money-safe
     // by construction — only $0-paid, unlocked, un-refunded bills qualify (invoiceMergeable).
     const mergeables = (canMoney() && invoiceMergeable(i)) ? DATA.invoices.filter((o) => o.invoiceId !== i.invoiceId && o.customerId === i.customerId && invoiceMergeable(o)) : [];
-    const mergePicker = `<div class="lineform mergeform"><div class="muted" style="font-size:12px;margin-bottom:7px">Fold another unpaid invoice for ${esc(cust ? cust.name : 'this customer')} into ${esc(i.invoiceId)} — its lines move over and the original is removed.</div>${mergeables.map((o) => { const ot = invoiceTotals(o); const n = (o.lineItems || []).length; return `<div class="hitem"><b class="derived">${esc(invoiceShort(o.invoiceId))}</b><span class="muted" style="font-size:11px">${n} line${n === 1 ? '' : 's'} · ${money2(ot.total)}</span><span class="spacer"></span>${actionPill('commit', 'Merge in', { js: 'js-merge-pick', h: 24, data: { keep: i.invoiceId, rec: o.invoiceId } })}</div>`; }).join('')}<div class="pillrow" style="justify-content:flex-end;margin-top:7px">${ghostPill('Done', { js: 'js-merge-cancel' })}</div></div>`;
+    const mergePicker = `<div class="lineform mergeform"><div class="muted" style="font-size:0.7059rem;margin-bottom:7px">Fold another unpaid invoice for ${esc(cust ? cust.name : 'this customer')} into ${esc(i.invoiceId)} — its lines move over and the original is removed.</div>${mergeables.map((o) => { const ot = invoiceTotals(o); const n = (o.lineItems || []).length; return `<div class="hitem"><b class="derived">${esc(invoiceShort(o.invoiceId))}</b><span class="muted" style="font-size:0.6471rem">${n} line${n === 1 ? '' : 's'} · ${money2(ot.total)}</span><span class="spacer"></span>${actionPill('commit', 'Merge in', { js: 'js-merge-pick', h: 24, data: { keep: i.invoiceId, rec: o.invoiceId } })}</div>`; }).join('')}<div class="pillrow" style="justify-content:flex-end;margin-top:7px">${ghostPill('Done', { js: 'js-merge-cancel' })}</div></div>`;
     const manageRow = state.invLineForm === i.invoiceId ? lineForm
       : (state.invMergePick === i.invoiceId && mergeables.length) ? mergePicker
       : locked
-        ? `<div class="pillrow"><span class="muted" style="font-size:12px">🔒 Pricing locked.</span>${canMoney() ? actionPill('commit', 'Unlock to edit', { js: 'js-unlock-invoice', data: { rec: i.invoiceId } }) : ''}</div>`
+        ? `<div class="pillrow"><span class="muted" style="font-size:0.7059rem">🔒 Pricing locked.</span>${canMoney() ? actionPill('commit', 'Unlock to edit', { js: 'js-unlock-invoice', data: { rec: i.invoiceId } }) : ''}</div>`
         : `<div class="pillrow pillcol">${addBtn('Rental', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Rental' } })}${addBtn('WO', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'WO' } })}${addBtn('Custom', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Custom' } })}</div>${canMoney() && (i.lineItems || []).length ? `<div class="pillrow pillcol">${actionPill('commit', '🔒 Lock price', { js: 'js-lock-invoice', data: { rec: i.invoiceId } })}</div>` : ''}${mergeables.length ? `<div class="pillrow pillcol">${addBtn('Merge invoice', { line: true, js: 'js-merge-open', h: 26, data: { rec: i.invoiceId } })}</div>` : ''}`;
     const invoiceSec = `<div class="section"><h4>Invoice</h4>
       <div class="inv-split">
@@ -8922,7 +8619,7 @@ const DETAIL = {
           ${manageRow}
         </div>
         <div class="inv-data">
-          ${lines || '<span class="muted" style="font-size:12px">No line items yet</span>'}
+          ${lines || '<span class="muted" style="font-size:0.7059rem">No line items yet</span>'}
           ${(i.lineItems || []).length ? '<div class="inv-div"></div>' : ''}
           ${subRows}
           ${ledgerRow('Subtotal', money2(t.subtotal))}
@@ -8930,7 +8627,7 @@ const DETAIL = {
           ${ledgerRow('Total', money2(t.total), 'big')}
           ${ledgerRow('Paid', `${money2(t.paid)} / ${money2(t.total)}`)}
           ${ledgerRow(`Due${i.dueDate ? ' · ' + fmtShortDate(i.dueDate) : ''}`, money2(t.balance), 'due')}
-          ${!locked ? `<div class="kv" style="justify-content:flex-end;align-items:center;gap:7px;margin-top:2px"><span class="derived" style="font-size:11px">Set due date</span><input type="date" class="js-due-date" data-rec="${esc(i.invoiceId)}" value="${esc(i.dueDate || '')}" style="font-size:11px;color:var(--txt);background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:3px 7px;color-scheme:dark"></div>` : ''}
+          ${!locked ? `<div class="kv" style="justify-content:flex-end;align-items:center;gap:7px;margin-top:2px"><span class="derived" style="font-size:0.6471rem">Set due date</span><input type="date" class="js-due-date" data-rec="${esc(i.invoiceId)}" value="${esc(i.dueDate || '')}" style="font-size:0.6471rem;color:var(--txt);background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:3px 7px;color-scheme:dark"></div>` : ''}
           ${(payCell || voidCell) ? `<div class="pillrow" style="justify-content:flex-end;margin-top:9px">${payCell}${voidCell}</div>` : ''}
           <div class="pillrow" style="justify-content:flex-end;margin-top:9px">${ghostPill('🖨 Print', { js: 'js-print-invoice', data: { rec: i.invoiceId }, tip: 'Edge-to-edge already. For a fully clean page, turn off “Headers & footers” in the print dialog (Chrome remembers it).' })}${ghostPill('✉ Send Email', { js: 'js-send-email', data: { rec: i.invoiceId }, disabled: !cust || !cust.email, tip: !cust ? 'No customer on file' : !cust.email ? 'No email on file' : '' })}${ghostPill('💬 Send Text', { js: 'js-send-text', data: { rec: i.invoiceId }, disabled: !cust || !cust.phone, tip: !cust ? 'No customer on file' : !cust.phone ? 'No phone on file' : '' })}</div>
         </div>
@@ -8969,7 +8666,7 @@ const DETAIL = {
       <div class="pillrow"><button class="pill c-green js-part-save" data-rec="${w.woId}">Add line</button><button class="pill c-gray js-part-cancel">Cancel</button></div>
     </div>`;
     const journeySec = `<div class="section"><h4>Journey</h4>
-      <div class="hlog">${journey || '<span class="muted" style="font-size:12px">No line items</span>'}</div>
+      <div class="hlog">${journey || '<span class="muted" style="font-size:0.7059rem">No line items</span>'}</div>
       ${state.woPartForm === w.woId ? partForm : `<div class="pillrow" style="margin-top:8px">${addBtn('Part/Task', { anchor: true, js: 'js-add-part', h: 26, data: { rec: w.woId } })}${billBtn}</div>`}
     </div>`;
     const billToggle = gatePillRaw(`Bill customer: ${w.billCustomer === 'Yes' ? 'Yes' : 'No'}`, w.billCustomer === 'Yes' ? 'orange' : 'gray', 'js-wo-bill', { rec: w.woId }, true);
@@ -9010,7 +8707,7 @@ const DETAIL = {
     const headTop = top ? (top.washRequested ? `<span class="pill c-blue">Wash Requested</span>` : `<span class="pill c-${top.color}">${esc(getStatus('serviceStatus', top.status).label)}</span>`) : '';
     const notes = notesSection('units', u, 'unitId');
     return `<div class="detail">
-      <div class="detail-head">${unitPill(u.unitId)}<span class="muted" style="font-size:13px;font-weight:600">${num(u.currentHours)} HRS</span>${ar ? statusPill('rentalStatus', rentalDisplayStatus(ar), { card: 'rentals', recId: ar.rentalId }) : ''}${headTop}</div>
+      <div class="detail-head">${unitPill(u.unitId)}<span class="muted" style="font-size:0.7647rem;font-weight:600">${num(u.currentHours)} HRS</span>${ar ? statusPill('rentalStatus', rentalDisplayStatus(ar), { card: 'rentals', recId: ar.rentalId }) : ''}${headTop}</div>
       ${notes.top}
       ${tasks}
       ${notes.bottom}
@@ -9049,7 +8746,7 @@ const DETAIL = {
     </div></div>`;
     const notes = notesSection('inspections', n, 'inspectionId');
     return `<div class="detail">
-      <div class="detail-head">${unit ? unitPill(unit.unitId) : '<span class="d-title">Inspection</span>'}${resultPill}<span class="muted" style="font-size:12px;margin-left:auto">${esc(fmtShortDate(n.date))}</span></div>
+      <div class="detail-head">${unit ? unitPill(unit.unitId) : '<span class="d-title">Inspection</span>'}${resultPill}<span class="muted" style="font-size:0.7059rem;margin-left:auto">${esc(fmtShortDate(n.date))}</span></div>
       ${notes.top}
       ${report}
       ${notes.bottom}
@@ -9074,7 +8771,7 @@ function historySection(card, rec, cs, chips) {
   const items = q ? base.filter((h) => (h.search || `${h.when} ${h.text}`).toLowerCase().includes(q)) : base;
   const log = items.length
     ? items.map((h) => `<div class="hitem"><span class="htime">${esc(h.when)}</span>${h.pill || ''}<span>${esc(histText(h.text))}</span>${h.by ? `<span class="hby">${esc(h.by)}</span>` : ''}</div>`).join('')
-    : `<div class="muted" style="font-size:12px">${q || chip ? 'No matching history.' : 'No history yet.'}</div>`;
+    : `<div class="muted" style="font-size:0.7059rem">${q || chip ? 'No matching history.' : 'No history yet.'}</div>`;
   const chipBar = chips?.length
     ? `<div class="hvals">${chips.map((c) => `<button class="hv ${c.cls || ''} ${cs?.histKind === c.kind ? 'on' : ''} js-hchip" data-card="${esc(card)}" data-kind="${esc(c.kind)}">${esc(c.label)}</button>`).join('')}</div>` : '';
   // History Search (§0.6) — appears once the log has some depth.
@@ -9429,31 +9126,26 @@ function columnEl(col, session) {
   // stamp the VIEW identity (list vs which record) so render() keys scroll memory by it
   const cs = card.dataset.card && session.cards ? session.cards[card.dataset.card] : null;
   card.dataset.view = (cs && cs.mode === 'standard' && cs.recId != null) ? `${cs.recType || ''}:${cs.recId}` : 'list';
-  // Phone builds its panels via mobileRailPanelEl (the §M8 5-card swipe rail); columnEl is the
-  // DESKTOP/tablet path only. The sub-card tab strip + search/sort bar live INSIDE the card top (a full-width card
+  if (document.body.classList.contains('is-phone')) {
+    // §M7 — EXACTLY the pre-scroll-snap §M6 layout, verified against the old build: BOTH chip
+    // rows sit ABOVE the card, not inside it. The toggle chips (mobileNavEl → .mdock-row) and the
+    // search/graph/sort chips (the listbar in a .mdock-searchslot) float above the card; the card
+    // itself (hazard cap + list) sits below. The .col is a flex column so the card fills the rest
+    // and its body scrolls; the two chip rows are fixed-height at the top of the column.
+    wrap.appendChild(mobileNavEl(active));
+    const lb = card.querySelector('.card-body .listbar');
+    if (lb) { const slot = el('div', 'mdock-searchslot'); slot.appendChild(lb); wrap.appendChild(slot); }
+    wrap.appendChild(card);
+    // §M/R32 — the phone Back/Forward jog is NOT in the column; it lives always-on in the
+    // footer tool bar (mobileToolbarEl → .mfoot-jog), reflecting the snapped column's card.
+    return wrap;
+  }
+  // Desktop: the sub-card tab strip + search/sort bar live INSIDE the card top (a full-width card
   // header, so the card-body scrollbar runs only through the list, not a gutter beside the bar).
   card.insertBefore(colTabsEl(col, active, session), card.firstChild);
   const lb = card.querySelector('.card-body .listbar'), body = card.querySelector('.card-body');
   if (lb && body) card.insertBefore(lb, body);
   const st = card.querySelector('.card-body .rus'); if (st && body) card.insertBefore(st, body);   // §13.7 — flex-basis 25% resolves against .card, the full column
-  wrap.appendChild(card);
-  return wrap;
-}
-// §M8 — one phone SWIPE-RAIL panel for a SPECIFIC member (not a column's active member): the
-// same chip row + search slot + card that columnEl stacks per-column on desktop, but keyed to an
-// explicit card so the ribbon can place Categories/Units (and Customers/Sales) as their own
-// separate swipe stops. BOTH chip rows sit ABOVE the card (toggle chips + the search/graph/sort
-// listbar); the card (hazard cap + list) sits below and its body scrolls. Phone only — the
-// Back/Forward jog stays always-on in the footer tool bar (mobileToolbarEl → .mfoot-jog).
-function mobileRailPanelEl(member, session) {
-  const wrap = el('div', 'col'); wrap.dataset.col = COLUMN_OF[member] || '';
-  const card = memberCardEl(member, session);
-  // stamp the VIEW identity (list vs which record) so render() keys scroll memory by it
-  const cs = card.dataset.card && session.cards ? session.cards[card.dataset.card] : null;
-  card.dataset.view = (cs && cs.mode === 'standard' && cs.recId != null) ? `${cs.recType || ''}:${cs.recId}` : 'list';
-  wrap.appendChild(mobileNavEl(member));                                      // toggle chip row, this panel's card highlighted
-  const lb = card.querySelector('.card-body .listbar');
-  if (lb) { const slot = el('div', 'mdock-searchslot'); slot.appendChild(lb); wrap.appendChild(slot); }
   wrap.appendChild(card);
   return wrap;
 }
@@ -9556,7 +9248,7 @@ function calendarCardEl(session) {
     const gmaps = dest ? `<span class="trips-gmaps">${linkName('Open in Google Maps', { href: `https://www.google.com/maps/dir/?api=1&destination=${dest}`, ext: true })}</span>` : '';
     panel.innerHTML = live
       ? `<div class="dispm js-dispmount" data-day="${esc(state.dispatchDay || TODAY_ISO)}">${mapsReady() ? '' : '<span class="map-spin" aria-hidden="true"></span><span class="map-tag">Loading dispatch map…</span>'}</div>${gmaps}`
-      : `<div class="trips-map-ph"><span class="map-pin" aria-hidden="true">${ICO_PIN}</span><span class="map-tag stamp" style="font-size:11px;color:var(--accent)">Map offline</span><span class="map-sub">The run below still drives the day.</span></div>${gmaps}`;
+      : `<div class="trips-map-ph"><span class="map-pin" aria-hidden="true">${ICO_PIN}</span><span class="map-tag stamp" style="font-size:0.6471rem;color:var(--accent)">Map offline</span><span class="map-sub">The run below still drives the day.</span></div>${gmaps}`;
     body.appendChild(panel);
   }
   let trips = tripsFor();
@@ -10190,7 +9882,7 @@ function toolsMenuRows() {
   // (Developer/Admin) render only when unlocked, exactly as before.
   const fam = (name, rows) => `<details class="dd-fam"><summary class="dd-fam-h">${esc(name)}<span class="dd-fam-chev">${I.chev}</span></summary><div class="dd-fam-body">${rows}</div></details>`;
   // General — the everyday tools + the manual cache-buster (force the newest build past a stale mobile cache, Jac 2026-07-16).
-  const general = `<button class="dd-item js-app-update"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${STATUS_ICONS.refresh}</span>Check for updates<span style="margin-left:auto;color:var(--txt-3);font-size:11px;letter-spacing:.3px">v${esc(appVersion())}</span></button>`
+  const general = `<button class="dd-item js-app-update"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${STATUS_ICONS.refresh}</span>Check for updates<span style="margin-left:auto;color:var(--txt-3);font-size:0.6471rem;letter-spacing:.3px">v${esc(appVersion())}</span></button>`
     + item('js-qr', I.qr, 'Share session (QR)')
     + item('js-previews', state.previewsOn ? I.eye : I.eyeOff, state.previewsOn ? 'Hover previews: on' : 'Hover previews: off', state.previewsOn)
     + item('js-hotkeys', I.mouse, 'Mouse & keyboard shortcuts');
@@ -10200,10 +9892,7 @@ function toolsMenuRows() {
     + item('js-gps-issues', I.alert, 'GPS Issues')
     + item('js-gps-utilization', I.graph, 'Fleet Utilization')
     + item('js-gps-bouncie-trucks', CARD_ICON.units, 'Pull Bouncie Trucks');
-  // Phone folds the (dropped) comms bell here: Requests · Transports due · Notifications, shown
-  // as an always-open Alerts section at the top so they never hide behind a collapsed family.
-  const alertRows = document.body.classList.contains('is-phone') ? commsMenuRows({ noInbox: false }) : '';
-  let html = (alertRows ? `<div class="dd-sec">Alerts</div>${alertRows}` : '') + fam('General', general) + fam('GPS / Fleet', gps);
+  let html = fam('General', general) + fam('GPS / Fleet', gps);
   if (devUnlocked()) {
     html += fam('Developer', item('js-lint', I.eye, 'Design lint (R0)', document.body.classList.contains('rw-lint'))
       + item('js-inspect', I.search, 'Design Inspector', state.inspect)
@@ -10215,9 +9904,7 @@ function toolsMenuRows() {
 }
 function openToolsMenu(anchorEl) { openDropdown(anchorEl, toolsMenuRows(), { align: 'right' }); }
 function toolsBtn() {
-  const phone = document.body.classList.contains('is-phone');
-  const n = phone ? commsBellCount() : 0;   // phone folds the bell's alerts into Tools — badge the wrench so they still catch the eye
-  return `<button class="iconbtn js-tools-menu" data-tip="Tools${phone ? ' & alerts' : ''} — QR, previews, hotkeys, GPS fleet tools${devUnlocked() ? ', dev tools' : ''}">${CARD_ICON.workOrders}${n ? `<span class="bb-badge">${n > 9 ? '9+' : n}</span>` : ''}</button>`;
+  return `<button class="iconbtn js-tools-menu" data-tip="Tools — QR, previews, hotkeys, GPS fleet tools${devUnlocked() ? ', dev tools' : ''}">${CARD_ICON.workOrders}</button>`;
 }
 /** Comms bell — Requests, Transport alerts, and Notifications, one direct-jump
  *  row each with its own count; badges roll up onto the bell itself. (Chat and
@@ -10295,8 +9982,10 @@ function wrChatResolved(c) {
   return filed.length > 0 && filed.every((n) => !wranglerRequests.some((rq) => rq.number === n));
 }
 // §M1 — phone-only per-column bottom strip: Yard→internal chat · Rentals→tool bar · Customers→external chats (shell).
-// §M1/§M8 — the card the phone is currently showing (the active column's member). The §M8 swipe
-// rail reuses this as "what am I on": mobileRailIndex() snaps the track to this card's rail slot.
+// §M1 — the card the phone is currently showing (the active column's member). Also what the
+// grid swipe folds through mainCardOfMember() — it's the same "what am I on" state regardless
+// of whether the swipe started in the footer or the grid (2026-07-10: activeMobileCard(), a
+// byte-identical twin used only by the old grid Back/Fwd swipe, was removed as dead code).
 function currentMobileMember() {
   const colObj = COLUMNS[Math.max(0, Math.min(2, state.mobileCol))];
   const s = activeSession();
@@ -10312,30 +10001,15 @@ const MOBILE_TOGGLE_GROUPS = [
   { col: 'middle', members: ['rentals', 'calendar'] },
   { col: 'right',  members: ['customers', 'sales'] },
 ];
-// §M8 (Jac 2026-07-18) — the phone SWIPE RAIL supersedes the old 3-column swipe: a single
-// left→right ribbon of 5 cards — Categories · Units · Rentals · Customers · Sales — so a swipe
-// steps card-by-card across the whole ribbon instead of column-by-column (one more swipe past
-// Units reaches Categories; one more past Customers reaches Sales). Calendar (the Office
-// Dispatch / Driver grid) is the ONE card OFF the rail: tapping its chip swaps it into the CENTER
-// slot in place of Rentals, so it's reachable but never a swipe stop. Spatial, not per-column:
-// the LEFT column's two cards take the two LEFT slots (sub Categories outboard of main Units),
-// the RIGHT column's two take the two RIGHT slots (main Customers then sub Sales), the middle
-// contributes only Rentals (or the swapped-in Calendar). state.mobileCol stays the COLUMN index
-// (0–2) that every downstream reader (zip-zones, cross-column links, the footer jog, cross-device
-// session sync) is keyed to — it's DERIVED from the snapped rail card.
-const MOBILE_RAIL = ['categories', 'units', 'rentals', 'customers', 'sales'];
-// The live rail members for a session — the center slot follows the middle column's active member
-// so a tapped Calendar shows there (off-rail swap-in-place) instead of Rentals.
-function mobileRailMembers(session) {
-  const mid = (session && session.cols && session.cols.middle) || 'rentals';
-  return MOBILE_RAIL.map((m) => (m === 'rentals' ? mid : m));
-}
-// Rail index (0–4) to snap the track to for the card currently on screen (= the active member of
-// the active column, via currentMobileMember); 0 if that card is somehow off the rail.
-function mobileRailIndex(session) {
-  const i = mobileRailMembers(session).indexOf(currentMobileMember());
-  return i < 0 ? 0 : i;
-}
+// §M1/§M3 — the FULL ordered swipe sequence, incl. sub-cards, derived (never hardcoded)
+// from MOBILE_TOGGLE_GROUPS so it stays correct if that list ever changes: left-to-right,
+// main-then-sub per column → ['units','categories','rentals','calendar','customers','sales'].
+// This is what a FOOTER swipe steps through (Jac, 2026-07-10 refinement — swiping the dock
+// should reach the ACTUAL next card, subs included, not just the 3 mains).
+const MOBILE_SWIPE_ORDER = MOBILE_TOGGLE_GROUPS.flatMap((g) => g.members);
+// The 3 MAIN cards, left→right — what a swipe ANYWHERE ELSE (grid/list/detail) steps between
+// (never a sub-card); the footer swipe uses MOBILE_SWIPE_ORDER above instead.
+const MAIN_CARDS = ['units', 'rentals', 'customers'];
 // Which main card a member (incl. a sub-card) belongs to.
 function mainCardOfMember(m) {
   const col = COLUMN_OF[m];
@@ -10356,9 +10030,11 @@ function goToCard(member) {
 // card the user is currently ON expands to icon + stamped label — every other icon, in
 // every group, stays icon-only (keeps 3 narrow toggles from fighting each other for label
 // width). Tap an icon to jump straight to that card's list. The card's search/sort row is
-// moved DOWN into .mdock-searchslot by render(). Swiping now steps through the §M8 5-card SWIPE
-// RAIL (Categories·Units·Rentals·Customers·Sales — MOBILE_RAIL); swipe Back/Forward through
-// history stays retired, the jog buttons cover that.
+// moved DOWN into .mdock-searchslot by render(). Swipe the dock left/right to step through
+// the FULL MOBILE_SWIPE_ORDER sequence incl. sub-cards; a swipe anywhere ELSE (the grid) instead
+// steps through the 3 MAIN cards only (2026-07-10 refinement — two different swipe zones, see
+// the pointerup handler in boot(); swipe Back/Forward through history stays retired, the jog
+// buttons cover that).
 // §M7 — the phone footer is a THREE-column switcher/indicator (one button per desktop column:
 // Units · Rentals · Customers), each showing that column's current member icon+label. Tap a
 // button → smooth scroll-snaps the track to that column (the [data-mcol] handler in onClick);
@@ -10381,38 +10057,11 @@ function footerJogInner() {
   const cs = s.cards ? s.cards[member] : null;
   return cardJog(member, cs, { always: true });
 }
-// §M7 (Jac 2026-07-17) — the phone comms row: three BIG floating tiles (Team · Customers ·
-// Mr. Wrangler), each labeled + wearing its worst-status dot. Reuses .js-comms-chip so the same
-// click funnel fires (Customer → the channel menu). The icon-only chips stay a desktop idiom.
-function commsTilesHtml() {
-  const tile = (cat) => {
-    const meta = COMMS_CAT_META[cat];
-    const on = cat === 'customer' ? commsCustActive() : state.commsRail.cat === cat;   // phone routes all three through the rail
-    const worst = cat === 'customer' ? commsCustWorst() : commsCatWorst(cat);
-    const label = cat === 'customer' ? 'Customers' : (cat === 'wrangler' ? 'Mr. Wrangler' : meta.label);
-    // icon-only tiles (Jac 2026-07-17) — labels dropped so the glyph fills the chip; aria-label carries the name
-    return `<button class="mtile js-comms-chip${on ? ' on' : ''}" data-cat="${cat}" aria-pressed="${on}" aria-label="${esc(label)}" data-tip="${esc(meta.tip)}">`
-      + `${worst ? `<span class="mtile-dot c-${worst}" aria-hidden="true"></span>` : ''}`
-      + `<span class="mtile-ico">${meta.icon()}</span></button>`;
-  };
-  return `<div class="mfoot-comms" role="group" aria-label="Comms — Team, Customers, Mr. Wrangler">${COMMS_CHIP_CATS.map(tile).join('')}</div>`;
-}
-// §M7 — the phone FOOTER: a floating, backdrop-less comms band. Three big comms tiles fill the
-// left; the Back/Forward jog rides top-right with Receipt · Tools · notifications tucked under it
-// (all icon-only, same size). The merged Customer menu floats above the band when summoned.
 function mobileToolbarEl() {
   const d = el('div', 'mobile-toolbar');
-  // Jac 2026-07-17: bell dropped — its Requests/Transports/Notifications fold into the Tools menu
-  // (count badged on the wrench). Jog owns the top row (double-wide now Receipt+Tools share the row).
-  // Comms open FULL-SCREEN (mountMobileComms) — no inline menu rides the footer anymore.
-  d.innerHTML = commsTilesHtml()
-    + `<div class="mfoot-utils">`
-    +   `<div class="mfoot-jog">${footerJogInner()}</div>`
-    +   `<div class="mfoot-urow">`
-    +     `<button class="iconbtn js-newitem" data-new="receipt" aria-label="New receipt" data-tip="New receipt">${CARD_ICON.expenses}</button>`
-    +     toolsBtn()
-    +   `</div>`
-    + `</div>`;
+  // The jog is a SIBLING of the (horizontally-scrollable) tool row, pinned to the bottom-RIGHT
+  // so it can never scroll off-screen; the tools scroll in the space to its left.
+  d.innerHTML = `<div class="top-toolbar">${bottomBarInner()}${commsBellBtn()}</div><div class="mfoot-jog">${footerJogInner()}</div>`;
   return d;
 }
 /* ════════════════════════════════════════════════════════════════════════
@@ -10494,10 +10143,11 @@ function openChat(id, msg) {
   chatShow(); render();
   if (msg) toast(msg);
 }
-/* D9 — the ONE way to surface the active team chat: it lands on the comms rail as the Team
-   session's SINGLE open window (single-open law). Desktop floats it above the rail; phone
-   renders that same rail state FULL-SCREEN (mountMobileComms) — no more bottom-sheet dock. */
+/* D9 — the ONE way to surface the active team chat: phones keep the bottom-sheet dock;
+   desktop lands it on the comms rail as the Team session's SINGLE open window
+   (single-open law — summoning it closes whatever window was up). */
 function chatShow() {
+  if (document.body.classList.contains('is-phone')) { state.chat.open = true; return; }
   const id = state.chat.activeId; if (!id) return;
   commsUnend(id, 'team');                           // any open resurrects an ended chat
   const rail = state.commsRail;
@@ -10633,7 +10283,7 @@ function wranglerDockEl() {
   const chip = rec ? `<span class="wr-chip">${CARD_ICON[entityCardOf(o.card, o.recType)] || ''}${esc(detailTitle(entityCardOf(o.card, o.recType), rec))}</span>` : '';
   return `
     <div class="wr-dock-head">
-      <span style="font-size:18px">🤠</span>
+      <span style="font-size:1.0588rem">🤠</span>
       <span class="wr-dock-title">Mr. Wrangler</span>
       ${chip}
       <span class="spacer"></span>
@@ -11030,16 +10680,17 @@ function openWranglerDock(opts) {
   if (opts.reqNumber !== undefined) w.reqNumber = opts.reqNumber;
   if (opts.reqTitle !== undefined) w.reqTitle = opts.reqTitle;
   if (opts.reqUrl !== undefined) w.reqUrl = opts.reqUrl;
-  // The conversation lands on the comms rail as the Mr. Wrangler session's SINGLE open window
-  // (single-open law) — desktop floats it, phone renders that SAME rail state full-screen
-  // (mountMobileComms reads sessions.wrangler.lastOpen), so this sync must run on both.
-  const rail = state.commsRail;
-  if (rail.cat !== 'wrangler') { commsLeaveCat(rail.cat); rail.cat = 'wrangler'; }
-  const s = rail.sessions.wrangler;
-  s.lastOpen = String(w.id); s.menuOpen = false;
-  s.hidden = (s.hidden || []).filter((x) => String(x) !== String(w.id));
-  commsUnend(w.id, 'wrangler');                    // any open resurrects an ended chat
-  saveCommsRail();
+  // D9 — desktop has no floating dock anymore: the conversation lands on the comms
+  // rail as the Mr. Wrangler session's SINGLE open window (single-open law).
+  if (!document.body.classList.contains('is-phone')) {
+    const rail = state.commsRail;
+    if (rail.cat !== 'wrangler') { commsLeaveCat(rail.cat); rail.cat = 'wrangler'; }
+    const s = rail.sessions.wrangler;
+    s.lastOpen = String(w.id); s.menuOpen = false;
+    s.hidden = (s.hidden || []).filter((x) => String(x) !== String(w.id));
+    commsUnend(w.id, 'wrangler');                    // any open resurrects an ended chat
+    saveCommsRail();
+  }
   render();
   setTimeout(() => { const i = document.querySelector('.wrangler-dock .js-wr-in'); if (i) i.focus(); const f = document.querySelector('.wrangler-dock .wr-feed'); if (f) f.scrollTop = f.scrollHeight; }, 0);
 }
@@ -12908,17 +12559,12 @@ function wirePopupDrag(overlay) {
    stack stays balanced. Phone-only — desktop keeps Esc/click. Wired in boot(). ── */
 let backGuard = false, backConsuming = false;
 let swipeFired = false;   // §M1/§M3 — a footer or grid section-switch swipe sets this so the trailing click is swallowed once
-function anyDismissable() { return !!(state.overlay || state.datesearch || state.chat.open || state.wrangler.open || (document.body.classList.contains('is-phone') && state.commsRail.cat)); }
+function anyDismissable() { return !!(state.overlay || state.datesearch || state.chat.open || state.wrangler.open); }
 function dismissTopSheet() {
   if (state.datesearch) { closeDateSearch(); return true; }
   if (overlayLocked()) { attnFlash('.rr-stars'); toast('Rate the return first — it can’t be skipped.'); return true; }   // required modal: refuse Esc/back
   if (state.overlay) { closeOverlay(); return true; }
-  if (document.body.classList.contains('is-phone') && state.commsRail.cat) {   // phone full-screen comms: a thread backs to its inbox, the inbox closes the surface
-    const s = commsSess();
-    if (s && s.lastOpen != null) { s.lastOpen = null; s.menuOpen = true; saveCommsRail(); render(); return true; }
-    commsLeaveCat(state.commsRail.cat); state.commsRail.cat = null; if (s) s.menuOpen = false; saveCommsRail(); render(); return true;
-  }
-  if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; render(); return true; }   // mirror js-wr-close (desktop)
+  if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; render(); return true; }   // mirror js-wr-close
   if (state.chat.open) { state.chat.open = false; render(); return true; }                                    // mirror js-chat-close
   return false;
 }
@@ -12967,8 +12613,8 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: I.qr, title: o.title || 'Share session', tag: 'Share · this session', body: `
       <div style="text-align:center">
         <img class="qr-img" alt="QR code" src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&bgcolor=15171c&color=ff7a1a&data=${encodeURIComponent(url)}" width="220" height="220" style="border-radius:12px;background:var(--panel-2)" />
-        <p class="muted" style="margin-top:10px;font-size:12px;word-break:break-all">${esc(url)}</p>
-        <p class="muted" style="margin-top:6px;font-size:11px">${esc(o.caption || 'Scan to open this session on another device (single shared login — §1/§4.2).')}</p>
+        <p class="muted" style="margin-top:10px;font-size:0.7059rem;word-break:break-all">${esc(url)}</p>
+        <p class="muted" style="margin-top:6px;font-size:0.6471rem">${esc(o.caption || 'Scan to open this session on another device (single shared login — §1/§4.2).')}</p>
       </div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'migrateUnits') {
@@ -12978,16 +12624,16 @@ function buildPopupEl(o, overlay, opts = {}) {
     const rentals = o.plan.reduce((n, p) => n + p.count, 0);
     const rows = o.plan.map((p) => `<tr style="border-top:1px solid rgba(255,255,255,.06)">
         <td style="padding:5px 8px">${esc(p.name)}</td>
-        <td style="padding:5px 8px"><span class="pill ${p.action === 'create' ? 'c-commit' : 'ref'}" style="height:20px;font-size:10px">${p.action === 'create' ? 'New · ' + p.unitId : 'Link · ' + p.unitId}</span></td>
+        <td style="padding:5px 8px"><span class="pill ${p.action === 'create' ? 'c-commit' : 'ref'}" style="height:20px;font-size:0.5882rem">${p.action === 'create' ? 'New · ' + p.unitId : 'Link · ' + p.unitId}</span></td>
         <td style="padding:5px 8px;color:var(--muted)">${esc(IDX.category.get(p.categoryId)?.name || p.categoryId || '—')}</td>
         <td style="padding:5px 8px;color:var(--muted);text-align:right">${p.count}</td></tr>`).join('');
     const pop = el('div', 'popup'); pop.style.width = '560px';
     pop.innerHTML = popupShell({ icon: CARD_ICON.units || '', title: 'Round up missing units', tag: 'Units · migrate',
       foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-migrate-go" data-r="R17">Create &amp; link ${o.plan.length}</button>`,
       body: `
-        <p style="font-size:13px;margin-bottom:10px"><b>${o.plan.length}</b> unit${o.plan.length === 1 ? '' : 's'} were referenced on rentals but never recorded. This will <b>create ${creates}</b> new record${creates === 1 ? '' : 's'}${links ? ` and <b>link ${links}</b> to existing units` : ''}, then connect <b>${rentals}</b> rental${rentals === 1 ? '' : 's'} (and their customers, categories &amp; invoices) to them.</p>
+        <p style="font-size:0.7647rem;margin-bottom:10px"><b>${o.plan.length}</b> unit${o.plan.length === 1 ? '' : 's'} were referenced on rentals but never recorded. This will <b>create ${creates}</b> new record${creates === 1 ? '' : 's'}${links ? ` and <b>link ${links}</b> to existing units` : ''}, then connect <b>${rentals}</b> rental${rentals === 1 ? '' : 's'} (and their customers, categories &amp; invoices) to them.</p>
         <div style="max-height:46vh;overflow:auto;border:1px solid rgba(255,255,255,.1);border-radius:8px">
-          <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <table style="width:100%;border-collapse:collapse;font-size:0.7059rem">
             <thead><tr style="position:sticky;top:0;background:var(--panel-2)"><th style="text-align:left;padding:6px 8px">Unit</th><th style="text-align:left;padding:6px 8px">Action</th><th style="text-align:left;padding:6px 8px">Category</th><th style="text-align:right;padding:6px 8px">Rentals</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -13073,7 +12719,7 @@ function buildPopupEl(o, overlay, opts = {}) {
         ${o.devicesLoading ? `<div class="set-loading" style="min-height:140px"><div class="set-loading-bar" aria-hidden="true"></div><div class="set-loading-lbl">Rounding up ${esc(o.provider)} machines…</div></div>`
           : o.devicesError ? `<p class="set-err" style="text-align:left">${esc(o.devicesError)}</p>`
           : list.length ? `<div class="gps-dev-list">${rows}</div>`
-          : `<p class="muted" style="font-size:12px">No ${q ? 'matching' : 'authorized'} machines${q ? ` for “${esc(o.deviceQuery)}”` : ' on this account yet'}.</p>`}`;
+          : `<p class="muted" style="font-size:0.7059rem">No ${q ? 'matching' : 'authorized'} machines${q ? ` for “${esc(o.deviceQuery)}”` : ' on this account yet'}.</p>`}`;
       foot = ghostPill('Back', { js: 'js-gps-back' });
     } else {   // 'poll' — the live first-contact confirmation (§5a step 3)
       const UI = {
@@ -13291,7 +12937,7 @@ function buildPopupEl(o, overlay, opts = {}) {
         <span class="gps-poll-ic c-${UI.color}">${UI.icon}</span>
         <div class="gpsru-poll-txt">
           <div class="gpsru-poll-lbl">${esc(UI.label)}</div>
-          <div class="muted" style="font-size:11px">${o.pollState === 'timeout' ? 'It may just be catching up — try again, or confirm from the last-known data above.' : `Attempt ${o.pollAttempt || 0} of ${o.pollMax || 8}`}</div>
+          <div class="muted" style="font-size:0.6471rem">${o.pollState === 'timeout' ? 'It may just be catching up — try again, or confirm from the last-known data above.' : `Attempt ${o.pollAttempt || 0} of ${o.pollMax || 8}`}</div>
         </div>
         ${o.pollState === 'timeout' ? ghostPill('Try again', { js: 'js-gpsru-poll-start', data: { rec: o.pollUnitId } }) : ''}
       </div>`;
@@ -13310,14 +12956,14 @@ function buildPopupEl(o, overlay, opts = {}) {
       return `<div class="gpsru-detail">
         ${segCtl(GPS_PROVIDERS.map((p) => ({ label: p, js: 'js-gpsru-swap-provider', data: { rec: r.unitId, val: p }, on: provider === p ? 'orange' : '' })))}
         <div class="bv-searchwrap" style="width:100%;margin:9px 0"><span class="s-icon">${I.search}</span><input class="bv-query js-gpsru-swap-search" placeholder="Search ${esc(provider)} devices…" value="${esc(o.swapQuery || '')}"></div>
-        ${devRows ? `<div class="gps-dev-list">${devRows}</div>` : `<p class="muted" style="font-size:12px">No ${sq ? 'matching' : 'available'} ${esc(provider)} devices${(o.devices || []).length ? '' : ' — scan first'}.</p>`}
+        ${devRows ? `<div class="gps-dev-list">${devRows}</div>` : `<p class="muted" style="font-size:0.7059rem">No ${sq ? 'matching' : 'available'} ${esc(provider)} devices${(o.devices || []).length ? '' : ' — scan first'}.</p>`}
         <div class="gpsru-detail-actions"><span class="spacer"></span>${ghostPill('Cancel', { js: 'js-gpsru-swap-cancel' })}</div>
       </div>`;
     };
     const expandHtml = (r) => {
       if (o.expandedMode === 'swap') return swapHtml(r);
       if (!r.deviceId) return `<div class="gpsru-detail">
-        <p class="muted" style="font-size:12.5px">No tracker picked yet for this unit.</p>
+        <p class="muted" style="font-size:0.7353rem">No tracker picked yet for this unit.</p>
         <div class="gpsru-detail-actions">${ghostPill('Pick a device', { js: 'js-gpsru-swap-open', data: { rec: r.unitId } })}</div>
       </div>`;
       const u = IDX.unit.get(r.unitId);
@@ -13562,9 +13208,9 @@ function buildPopupEl(o, overlay, opts = {}) {
       R8: '<span class="derived">$2,610 · 7-Day×1 + 1-Day×3</span>',
       R9: flagsStack([flagEl('Passed', 'green', { icon: CARD_ICON.inspections }), flagEl('ETA Jun 18', 'yellow', { icon: CARD_ICON.workOrders })]),
       R10: '<span class="c-titlecard"><span class="c-icon">' + CARD_ICON.units + '</span><span class="c-title">Beacon</span></span>',
-      R11: '<span style="display:inline-block;border:1px solid color-mix(in srgb, var(--green) 45%, transparent);border-radius:9px;padding:4px 14px;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--green)">INSPECTION</span>',
-      R12: '<span class="add-field" data-r="R5c" style="height:24px;font-size:11px">+Notes</span><span class="muted" style="font-size:11px"> (boxless line)</span>',
-      R13: '<button class="hv g on" style="font-size:11px;font-weight:700;border:1px solid var(--accent);border-radius:99px;padding:2px 8px;background:none;color:var(--accent)">12 Inspections</button>',
+      R11: '<span style="display:inline-block;border:1px solid color-mix(in srgb, var(--green) 45%, transparent);border-radius:9px;padding:4px 14px;font-size:0.5882rem;font-weight:700;letter-spacing:.5px;color:var(--green)">INSPECTION</span>',
+      R12: '<span class="add-field" data-r="R5c" style="height:24px;font-size:0.6471rem">+Notes</span><span class="muted" style="font-size:0.6471rem"> (boxless line)</span>',
+      R13: '<button class="hv g on" style="font-size:0.6471rem;font-weight:700;border:1px solid var(--accent);border-radius:99px;padding:2px 8px;background:none;color:var(--accent)">12 Inspections</button>',
       R14: segCtl([{ label: '✓ Pass', on: 'green' }, { label: 'Not Ready' }, { label: '✕ Fail' }]),
       R15: '<span style="display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;background:#fff;color:#16181d">' + I.video + '</span><span style="border-top:2px dotted var(--line);width:34px;display:inline-block;vertical-align:middle;margin:0 4px"></span><span style="display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;background:var(--green-bg);color:var(--green)">✓</span>',
       R16: '<span style="display:inline-flex;height:22px;width:120px;border:1px solid var(--line);border-radius:7px;overflow:hidden"><span style="flex:1;background:var(--green-bg);border-right:1px dashed var(--line-soft)"></span><span style="flex:1;background:var(--green-bg);border-right:1px dashed var(--line-soft)"></span><span style="flex:1;border-right:1px dashed var(--line-soft)"></span><span style="flex:1"></span></span>',
@@ -13580,7 +13226,7 @@ function buildPopupEl(o, overlay, opts = {}) {
       R23: '<span class="pill c-gray" data-tip="The one styled tip"><span class="t">hover me</span></span>',
     };
     EX.R21 = fileDrop('Add File', { icon: I.box });
-    EX.R25 = '<span style="position:relative;display:inline-flex;align-items:center;gap:9px;padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden;max-width:360px"><span style="position:absolute;top:0;left:0;right:0;height:3px;background:repeating-linear-gradient(135deg,var(--red) 0 13px,#14181d 13px 26px)"></span><span style="font-family:\'Saira Condensed\',system-ui,sans-serif;text-transform:uppercase;letter-spacing:1.4px;font-weight:800;font-size:12px;color:var(--red);white-space:nowrap">⚠ Not saving</span><span style="font-size:11px;color:var(--txt-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">changes held, retrying…</span></span>';
+    EX.R25 = '<span style="position:relative;display:inline-flex;align-items:center;gap:9px;padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden;max-width:360px"><span style="position:absolute;top:0;left:0;right:0;height:3px;background:repeating-linear-gradient(135deg,var(--red) 0 13px,#14181d 13px 26px)"></span><span style="font-family:\'Saira Condensed\',system-ui,sans-serif;text-transform:uppercase;letter-spacing:1.4px;font-weight:800;font-size:0.7059rem;color:var(--red);white-space:nowrap">⚠ Not saving</span><span style="font-size:0.6471rem;color:var(--txt-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">changes held, retrying…</span></span>';
     // ── tabbed render — a row builder per kind, then just the active tab's items ──
     const ruleRow = (r) => {
       const m = RULE_META[r]; if (!m) return '';
@@ -13593,7 +13239,7 @@ function buildPopupEl(o, overlay, opts = {}) {
       return `<div class="rb-row">
         <span class="rb-id">${r}</span>
         <div class="rb-ex">${EX[r] || '<span class="muted">—</span>'}</div>
-        <div class="rb-info"><b>${esc(m[0])}</b> · <code>${esc(m[1])}</code><div class="muted" style="font-size:11px">${esc(m[2])}</div>${idxHtml}</div>
+        <div class="rb-info"><b>${esc(m[0])}</b> · <code>${esc(m[1])}</code><div class="muted" style="font-size:0.6471rem">${esc(m[2])}</div>${idxHtml}</div>
       </div>`;
     };
     const foundRow = (key) => {
@@ -13602,7 +13248,7 @@ function buildPopupEl(o, overlay, opts = {}) {
         <span class="rb-id found">${esc(f[0])}</span>
         <div class="rb-found-body">
           <div class="rb-ex">${f[4]}</div>
-          <div class="rb-info"><b>${esc(f[1])}</b> · <code>${esc(f[2])}</code><div class="muted" style="font-size:11px">${esc(f[3])}</div></div>
+          <div class="rb-info"><b>${esc(f[1])}</b> · <code>${esc(f[2])}</code><div class="muted" style="font-size:0.6471rem">${esc(f[3])}</div></div>
         </div>
       </div>`;
     };
@@ -13701,16 +13347,16 @@ function buildPopupEl(o, overlay, opts = {}) {
       foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('commit', rec ? 'Save' : (forTask ? 'Add part' : 'Add line'), { js: 'js-pf2-save' })}`,
       body: `
         ${fileDrop(state.partPhoto || rec?.photo ? '✓ photo attached' : 'Add Photo (not required)', { js: 'js-pf2-file', capture: 'environment', done: !!(state.partPhoto || rec?.photo), icon: I.camera })}
-        ${forTask ? '' : `<p class="muted" style="text-align:center;font-size:11.5px;margin:7px 0 10px">✨ Mr. Wrangler will add the parts for you!</p>`}
+        ${forTask ? '' : `<p class="muted" style="text-align:center;font-size:0.6765rem;margin:7px 0 10px">✨ Mr. Wrangler will add the parts for you!</p>`}
         <input class="lf-in js-pf2-desc" placeholder="Part/Task Name" value="${esc((forTask ? pr?.name : li?.part) || '')}" style="width:100%;margin-bottom:7px">
-        ${forTask && pr?.oem ? `<div class="muted" style="font-size:11px;margin:-3px 0 7px">OEM ${esc(pr.oem)} · from the manufacturer manual</div>` : ''}
+        ${forTask && pr?.oem ? `<div class="muted" style="font-size:0.6471rem;margin:-3px 0 7px">OEM ${esc(pr.oem)} · from the manufacturer manual</div>` : ''}
         <div style="display:flex;gap:7px;margin-bottom:7px">
           <input class="lf-in js-pf2-cost" type="number" min="0" placeholder="$Cost" value="${(forTask ? pr?.cost : li?.cost) ?? ''}" style="flex:1">
           ${forTask ? '' : `<input class="lf-in js-pf2-hours" type="number" min="0" step="0.5" placeholder="Hours" value="${li?.hours ?? ''}" style="flex:1">`}
         </div>
         <input class="lf-in js-pf2-url" placeholder="URL link" value="${esc((forTask ? pr?.url : li?.url) || '')}" style="width:100%;margin-bottom:7px">
         <input class="lf-in js-pf2-vendor" placeholder="Vendor" value="${esc(ven?.name || '')}" style="width:100%;margin-bottom:4px">
-        ${forTask ? '' : `<p class="muted" style="font-size:11px;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is reviewed for the description/cost/url, and hours are estimated from the category + industry standards.</p>`}` });
+        ${forTask ? '' : `<p class="muted" style="font-size:0.6471rem;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is reviewed for the description/cost/url, and hours are estimated from the category + industry standards.</p>`}` });
     overlay.appendChild(pop);
   } else if (o.kind === 'modelSchedule') {
     // A model's real maintenance schedule (Jac 2026-07-07) — replaces the generic
@@ -13728,7 +13374,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.workOrders, title: mo?.name || 'Model schedule', tag: 'Category · model',
       foot: `${ghostPill('Close', { js: 'js-close' })}`,
       body: `
-        ${rows || '<p class="muted" style="font-size:12.5px;text-align:center;margin:6px 0 12px">No tasks yet — this model falls back to the generic schedule until you add some.</p>'}
+        ${rows || '<p class="muted" style="font-size:0.7353rem;text-align:center;margin:6px 0 12px">No tasks yet — this model falls back to the generic schedule until you add some.</p>'}
         <div class="wototals">${addBtn('Task', { anchor: true, js: 'js-add-svctask', h: 26, data: { rec: o.modelId } })}</div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'svctaskform') {
@@ -13760,7 +13406,7 @@ function buildPopupEl(o, overlay, opts = {}) {
           ${dateField('date', o.date)}
         </div>
         <input class="lf-in js-rf-part" placeholder="Part Name" value="" style="width:100%;margin-bottom:4px">
-        <p class="muted" style="font-size:11px;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is read for the vendor, amount, date and category.</p>` });
+        <p class="muted" style="font-size:0.6471rem;margin:4px 0 4px">✨ Empty fields are filled by Mr. Wrangler after saving: the photo is read for the vendor, amount, date and category.</p>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'wodone') {
     // v2: Complete WO with open line items → warn, don't hard-block
@@ -13770,8 +13416,8 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.workOrders, title: 'Complete this Work Order?', tag: 'Work order · confirm', danger: true,
       foot: `${ghostPill('Cancel', { js: 'js-close' })}${actionPill('danger', 'Complete WO', { js: 'js-wodone-confirm', data: { rec: o.woId } })}`,
       body: `
-        <p style="font-size:13px;margin-bottom:6px">Are you sure? Not all items are completed.</p>
-        <p class="muted" style="font-size:12px;margin-bottom:4px">Still open: ${open.map((l) => `“${esc(l.part)} · ${esc(getStatus('woPhase', l.phase).label)}”`).join(' · ') || '—'}</p>` });
+        <p style="font-size:0.7647rem;margin-bottom:6px">Are you sure? Not all items are completed.</p>
+        <p class="muted" style="font-size:0.7059rem;margin-bottom:4px">Still open: ${open.map((l) => `“${esc(l.part)} · ${esc(getStatus('woPhase', l.phase).label)}”`).join(' · ') || '—'}</p>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'role') {
     const role = ROLES.find((r) => r.id === o.role);
@@ -13781,7 +13427,7 @@ function buildPopupEl(o, overlay, opts = {}) {
       const raw = vals[i];
       const b = bandColor(raw == null ? 0 : raw);
       const valTxt = raw == null ? '<span class="muted">Coming soon</span>' : `<span style="color:var(--${b.color})">${raw}%</span>`;
-      return `<div class="kpi-line" data-tip="${esc(KPI_HELP[k] || '')}"><span class="ring-no" style="border-color:var(--${raw == null ? 'line' : b.color});color:var(--${raw == null ? 'txt-3' : b.color})">${i + 1}</span><span class="k-name">${esc(k)}<span class="muted" style="font-size:10px;margin-left:6px">${ringTag[i]}</span></span><span class="k-val">${valTxt}</span></div>`;
+      return `<div class="kpi-line" data-tip="${esc(KPI_HELP[k] || '')}"><span class="ring-no" style="border-color:var(--${raw == null ? 'line' : b.color});color:var(--${raw == null ? 'txt-3' : b.color})">${i + 1}</span><span class="k-name">${esc(k)}<span class="muted" style="font-size:0.5882rem;margin-left:6px">${ringTag[i]}</span></span><span class="k-val">${valTxt}</span></div>`;
     }).join('');
     const pop = el('div', 'popup kpi-popup');
     pop.innerHTML = popupShell({ icon: RING_ICON[role.id], title: `${role.label} KPIs`, tag: 'Role · scorecard', body: `
@@ -13904,7 +13550,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     const pop = el('div', 'popup hk-popup');
     pop.innerHTML = popupShell({ icon: I.mouse, title: 'Mouse shortcuts', tag: 'Operator · controls', bodyClass: 'hk-body', body: `
         ${rows.map((r) => `<div class="hk-row"><div class="hk-demo hk-${r.d}">${hkDemoInner(r.d)}</div><div class="hk-text"><div class="hk-name">${esc(r.n)}</div><div class="hk-desc">${esc(r.t)}</div></div></div>`).join('')}
-        <p class="muted" style="font-size:11px;margin:6px 2px 0">These work on a list row or anywhere on a card.</p>` });
+        <p class="muted" style="font-size:0.6471rem;margin:6px 2px 0">These work on a list row or anywhere on a card.</p>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'roadmap') {
     // §M2 — "Coming 2026" roadmap (the morale window behind the blurred rings).
@@ -14084,7 +13730,7 @@ function buildPopupEl(o, overlay, opts = {}) {
             <div class="ag-pcell"><div class="ag-pcap">Selfie</div>${signingSelfieSrc(sg) ? `<img class="ag-selfie" src="${esc(signingSelfieSrc(sg))}" alt="selfie on file" />` : '<div class="ag-selfie empty">—</div>'}</div>
             <div class="ag-pcell"><div class="ag-pcap">Signature</div>${signingSignatureSrc(sg) ? `<img class="ag-sigthumb" src="${esc(signingSignatureSrc(sg))}" alt="signature on file" />` : '<div class="ag-sigthumb"></div>'}</div>
           </div>
-          <p class="muted" style="font-size:11px;margin:12px 2px 0">🔒 Locked — the exact agreement accepted on this card. Re-signing happens only on a new card or an account-type change.</p>`;
+          <p class="muted" style="font-size:0.6471rem;margin:12px 2px 0">🔒 Locked — the exact agreement accepted on this card. Re-signing happens only on a new card or an account-type change.</p>`;
       } else {
         const key = requiredAgreementKey(custRec); const ag = AGREEMENTS[key];
         body = `
@@ -14222,14 +13868,14 @@ function buildPopupEl(o, overlay, opts = {}) {
         <div class="kv" style="justify-content:center">${kv(money2(t.balance), { sfx: `balance handed over · ${daysPast} days past` })}</div>
         <label class="pay-field"><span>Reason</span><select class="lf-in js-col-reason"><option>Uncollectable in-house</option><option>Customer unresponsive</option><option>Disputed — exhausted</option><option>Business closed</option><option>Other</option></select></label>
         <label class="pay-field"><span>Note</span><input class="lf-in js-col-note" placeholder="Optional note for the record" /></label>
-        <div class="muted" style="font-size:11.5px;margin-top:8px">This queues the debt for the collections agency and takes it off active aging. <b>It also blacklists the account</b> (blocks new rentals). A Recall reverses both.</div>` });
+        <div class="muted" style="font-size:0.6765rem;margin-top:8px">This queues the debt for the collections agency and takes it off active aging. <b>It also blacklists the account</b> (blocks new rentals). A Recall reverses both.</div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'installNudge') {
     // A1 — one-time Add-to-Home-Screen sheet (spec frontend-performance P1 / mobile-remote D3).
     const pop = el('div', 'popup nc-popup');
     pop.innerHTML = popupShell({ icon: CARD_ICON.units || '', title: 'Saddle Up — Add to Home Screen', tag: 'App · install',
       foot: `<button class="pill ghost js-install-later" data-r="R18">Not now</button><button class="pill ignition js-install-go" data-r="R17">Add it</button>`,
-      body: `<div class="muted" style="font-size:12.5px;line-height:1.5">Pin Rental Wrangler to your home screen — full-screen, one tap from the yard, no browser chrome. You can always do it later from the browser menu.</div>` });
+      body: `<div class="muted" style="font-size:0.7353rem;line-height:1.5">Pin Rental Wrangler to your home screen — full-screen, one tap from the yard, no browser chrome. You can always do it later from the browser menu.</div>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'checklist') {
     // Required-checklist takeover (Settings → Inspections): replaces the sheet until completed;
@@ -14305,7 +13951,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.inspections, title: `${passed ? 'Inspection' : 'Failure report'} — ${unit?.name || '—'}`, tag: `Inspection · ${passed ? 'passed' : 'failure'}`, danger: !passed,
       foot: `<button class="pill ignition js-close" data-r="R17">Done</button>`,
       body: `
-        <div class="pillrow" style="margin-bottom:12px">${unit ? unitPill(unit.unitId) : ''}<span class="pill c-${ir.color}">${esc(ir.label)}</span>${n.woId ? refPill('workOrders', n.woId, 'Work Order') : ''}<span class="muted" style="font-size:12px;margin-left:auto">${esc(fmtShortDate(n.date))}</span></div>
+        <div class="pillrow" style="margin-bottom:12px">${unit ? unitPill(unit.unitId) : ''}<span class="pill c-${ir.color}">${esc(ir.label)}</span>${n.woId ? refPill('workOrders', n.woId, 'Work Order') : ''}<span class="muted" style="font-size:0.7059rem;margin-left:auto">${esc(fmtShortDate(n.date))}</span></div>
         ${media}
         <textarea class="insp-desc js-insp-desc" data-rec="${n.inspectionId}" placeholder="${esc(descPh)}">${esc(n.description || '')}</textarea>
         ${passed ? '' : `<div class="insp-gate" style="margin-top:12px"><span class="insp-gate-lbl">Charge the customer?</span>${segCtl([
@@ -14327,7 +13973,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.serviceOrders || '', title: `Complete service — ${u.name}`, tag: 'Service · complete',
       foot: `<button class="pill ignition js-svc-save" data-r="R17" data-unit="${u.unitId}" data-task="${task.taskId}">Record completion</button>`,
       body: `
-        <div class="pillrow" style="margin-bottom:12px">${unitPill(u.unitId)}<span class="pill c-${task.color}">${esc(task.name)}</span><span class="muted" style="font-size:12px;margin-left:auto">${esc(svcText(task))}</span></div>
+        <div class="pillrow" style="margin-bottom:12px">${unitPill(u.unitId)}<span class="pill c-${task.color}">${esc(task.name)}</span><span class="muted" style="font-size:0.7059rem;margin-left:auto">${esc(svcText(task))}</span></div>
         <div class="svc-ref"><div class="svc-ref-head">What you need${sourceLinkBtn(task.sourceUrl, task.source)}</div><div class="svc-ref-body">${svcNeedHtml(u, task)}</div></div>
         <label class="svc-field"><span>Hours at completion</span><input type="number" class="js-svc-hours" value="${num(u.currentHours)}"></label>
         <label class="svc-field"><span>Date completed</span><input type="date" class="js-svc-date" value="${TODAY_ISO}"></label>
@@ -14374,28 +14020,6 @@ function buildPopupEl(o, overlay, opts = {}) {
         <label class="svc-field" style="margin-top:8px"><span>Sale date</span>${dateField('saleDate', o.saleDate)}</label>
         <textarea class="insp-desc js-sell-note" placeholder="Buyer / notes (optional)…"></textarea>` });
     overlay.appendChild(pop);
-  } else if (o.kind === 'funnelLayer') {
-    // A layer's ACTION editor (Jac 2026-07-17: notes = actions). Arm/edit the dated next-action for
-    // this funnel+stage — it joins the queue below + drives the tab's urgency dot. Advancing the
-    // customer here is a separate, explicit button (2B); ✓/✕ log the armed action (never advance).
-    const c = IDX.customer.get(o.custId);
-    if (!c) { return false; }
-    const st = getStatus('funnelStage', o.stage);
-    const act = funnelLayerAction(c, o.fkey, o.stage);
-    const stages = FUNNELS[o.fkey].stages;
-    const ahead = o.fkey !== 'rental' && !isAutoStage(o.fkey, o.stage)
-      && stages.indexOf(o.stage) > stages.indexOf(funnelCurrentStage(c, o.fkey));
-    if (o.actWhen === undefined) o.actWhen = TODAY_ISO;
-    const doneRow = act
-      ? `<div class="fl-actbtns">${actionPill('commit', '✓ Done', { js: 'js-fl-done', data: { rec: o.custId } })}${actionPill('danger', '✕ Cancel', { js: 'js-fl-cancel', data: { rec: o.custId } })}</div>`
-      : '';
-    const pop = el('div', 'popup'); pop.style.width = '340px';
-    pop.innerHTML = popupShell({ icon: CARD_ICON.customers || '', title: `${FUNNELS[o.fkey].label} · ${st.label}`, tag: 'Funnel · next action',
-      foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button>${ahead ? `<button class="pill c-commit js-fl-advance" data-r="R17" data-rec="${esc(o.custId)}">Advance here</button>` : ''}<button class="pill ignition js-fl-save" data-r="R17" data-rec="${esc(o.custId)}">${act ? 'Save action' : 'Add action'}</button>`,
-      body: `<label class="svc-field"><span>Action date &amp; time</span>${dateField('actWhen', o.actWhen, { withTime: true, time: o.actWhenTime })}</label>`
-        + `<label class="svc-field" style="margin-top:8px"><span>Next action (the layer's note)</span><textarea class="insp-desc js-fl-note" placeholder="What's the move? (quote call, demo, e-sign…)">${esc(o.actNote || '')}</textarea></label>`
-        + doneRow });
-    overlay.appendChild(pop);
   } else if (o.kind === 'splitUnit') {
     // §20 split — give one unit its own window on a NEW sibling rental, same invoice.
     const r = IDX.rental.get(o.rentalId), u = IDX.unit.get(o.unitId);
@@ -14405,7 +14029,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.rentals, title: `Different dates — ${u.name}`, tag: 'Rental · split window',
       foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-split-go" data-r="R17">Make separate rental</button>`,
       body: `
-        <p style="font-size:12.5px;margin-bottom:12px">The other machines stay on <b>${esc(fmtWindow(r.startDate, r.endDate) || 'this window')}</b>. This makes a <b>separate rental</b> for ${esc(u.name)}${inv ? ` on the same invoice (${esc(invoiceShort(inv.invoiceId))})` : ''}, moving its journey + lines over.</p>
+        <p style="font-size:0.7353rem;margin-bottom:12px">The other machines stay on <b>${esc(fmtWindow(r.startDate, r.endDate) || 'this window')}</b>. This makes a <b>separate rental</b> for ${esc(u.name)}${inv ? ` on the same invoice (${esc(invoiceShort(inv.invoiceId))})` : ''}, moving its journey + lines over.</p>
         <label class="svc-field"><span>Start</span>${dateField('splitStart', o.splitStart)}</label>
         <label class="svc-field" style="margin-top:8px"><span>End</span>${dateField('splitEnd', o.splitEnd)}</label>` });
     overlay.appendChild(pop);
@@ -14417,11 +14041,11 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.customers || '', title: `Add card — ${c.name}`, tag: 'Customer · card on file',
       foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-card-save" data-r="R17">Save card</button>`,
       body: `
-        <p class="muted" style="font-size:11px;margin:0 0 10px">Saved cards can be charged right away. Capture the selfie + signature below to authorize On-Rent &amp; deliveries — or just save the card and sign it later.</p>
+        <p class="muted" style="font-size:0.6471rem;margin:0 0 10px">Saved cards can be charged right away. Capture the selfie + signature below to authorize On-Rent &amp; deliveries — or just save the card and sign it later.</p>
         <div class="pay-cap">Card number</div>
         <div class="pay-card-field" id="sl-card-element"></div>
         <div class="pay-err" id="sl-card-error"></div>
-        <p class="muted" style="font-size:11px;margin:10px 0 0">Entered securely via Stripe. We store only the brand + last 4 digits — never the full number.</p>
+        <p class="muted" style="font-size:0.6471rem;margin:10px 0 0">Entered securely via Stripe. We store only the brand + last 4 digits — never the full number.</p>
         <div class="ag-cardsplit"></div>
         ${heldSignBlock(o, c, {})}` });
     overlay.appendChild(pop);
@@ -14447,7 +14071,7 @@ function buildPopupEl(o, overlay, opts = {}) {
           <div class="ach-col"><div class="pay-cap">Holder type</div><select class="lf-in" id="sl-ach-holdertype"><option value="individual">Individual</option><option value="company">Company</option></select></div>
         </div>
         <div class="pay-err" id="sl-ach-error"></div>
-        <p class="muted" style="font-size:11px;margin:10px 0 0">Entered securely via Stripe. We store only the bank name + last 4 digits — never the full routing or account number. The signature + selfie on file authorize ACH debits. The account must be verified before it can be charged.</p>` });
+        <p class="muted" style="font-size:0.6471rem;margin:10px 0 0">Entered securely via Stripe. We store only the bank name + last 4 digits — never the full routing or account number. The signature + selfie on file authorize ACH debits. The account must be verified before it can be charged.</p>` });
     overlay.appendChild(pop);
   } else if (o.kind === 'verifyAch') {
     // §14b verify a pending ACH via the micro-deposit descriptor code the customer
@@ -14459,7 +14083,7 @@ function buildPopupEl(o, overlay, opts = {}) {
     pop.innerHTML = popupShell({ icon: CARD_ICON.customers || '', title: `Verify ${k.bankName || 'bank'} ••${k.last4}`, tag: 'Customer · verify ACH',
       foot: `<button class="pill ghost js-close" data-r="R18">Cancel</button><button class="pill ignition js-ach-verify-save" data-r="R17">Verify account</button>`,
       body: `
-        <p class="muted" style="font-size:12px;margin:0 0 12px">Stripe sent a small deposit (about $0.01) to this account. Once it lands (1–2 business days), the customer sees a 6-character code on their statement starting with <b>SM</b>. Enter it here to verify the account for charging.</p>
+        <p class="muted" style="font-size:0.7059rem;margin:0 0 12px">Stripe sent a small deposit (about $0.01) to this account. Once it lands (1–2 business days), the customer sees a 6-character code on their statement starting with <b>SM</b>. Enter it here to verify the account for charging.</p>
         <div class="pay-cap">Verification code</div>
         <input class="lf-in" id="sl-vach-code" autocomplete="off" maxlength="6" placeholder="SM____" style="text-transform:uppercase;letter-spacing:2px">
         <div class="pay-err" id="sl-vach-error"></div>` });
@@ -14571,7 +14195,6 @@ const WINDOW_CATALOG = [
   { kind: 'service',       label: 'Complete service',        tag: 'Service · complete',        sample: () => ({ unitId: ((DATA.units || [])[0] || {}).unitId, taskId: 'svc-wash' }) },
   { kind: 'schedule',      label: 'Schedule follow-up',      tag: 'Customer · follow-up',      sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
   { kind: 'sellUnit',      label: 'Sell a unit',             tag: 'Unit · sale',               sample: () => ({ unitId: ((DATA.units || [])[0] || {}).unitId, saleDate: TODAY_ISO }) },
-  { kind: 'funnelLayer',   label: 'Funnel layer action',     tag: 'Funnel · next action',      sample: () => ({ custId: ((DATA.customers || [])[0] || {}).customerId, fkey: 'member', stage: 'Contacted', actWhen: TODAY_ISO, actWhenTime: '09:00', actNote: '' }) },
   { kind: 'splitUnit',     label: 'Different dates (split)',  tag: 'Rental · split window',     sample: () => ({ rentalId: ((DATA.rentals || [])[0] || {}).rentalId, unitId: ((DATA.units || [])[0] || {}).unitId }) },
   { kind: 'addCard',       label: 'Add card',                tag: 'Customer · card on file',   sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
   { kind: 'addAch',        label: 'Add bank account',        tag: 'Customer · ACH bank',       sample: () => ({ customerId: ((DATA.customers || [])[0] || {}).customerId }) },
@@ -15604,8 +15227,7 @@ function wrPlanSummary(plan) {
 }
 function wrCreateCustomer(f) {
   const id = nextCustomerId();
-  const usedSalesStage = f.usedSalesStage || 'N/A', membershipStage = f.membershipStage || 'N/A';   // funnel redesign: 'N/A' default (the retired 'Inbound Lead'-for-everyone default is gone)
-  const c = { customerId: id, firstName: f.firstName || '', lastName: f.lastName || '', name: `${f.firstName || ''} ${f.lastName || ''}`.trim() || (f.company || 'New lead'), company: f.company || '', phone: f.phone || '', email: f.email || '', address: f.address || '', industry: f.industry || '', accountType: f.accountType || 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: f.accountNotes || '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage, membershipStage, funnels: { rental: false, member: membershipStage !== 'N/A', equipment: usedSalesStage !== 'N/A' }, _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName: f.firstName || '', lastName: f.lastName || '', name: `${f.firstName || ''} ${f.lastName || ''}`.trim() || (f.company || 'New lead'), company: f.company || '', phone: f.phone || '', email: f.email || '', address: f.address || '', industry: f.industry || '', accountType: f.accountType || 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: f.accountNotes || '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: f.usedSalesStage || 'Inbound Lead', membershipStage: f.membershipStage || 'Inbound Lead', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c); logAction(c, 'Added by Mr. Wrangler');
   return c;
 }
@@ -16697,90 +16319,38 @@ function setExpenseReconcile(expenseId, val) {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render(); renderOverlay();
 }
-/* ── Funnel redesign 2026-07-17 (spec: customer-funnel-redesign) — the ONE adaptive
-   menu, shared by the detail funnel section and the quick-add "Lead?" pill. It REPLACES
-   the old per-funnel gate-timeline dropdowns (openFunnelDropdown / setFunnelStage) with an
-   explicit-membership model:
-     • Leads  — three chips toggle funnels.* (multi-select in the detail view).
-     • Stages — only the rungs applicable to the customer's memberships + live rental
-                activity (funnelTrackA / funnelTrackEquip). Auto rungs (Reserved/Rented
-                derived, Signed on agreement-sign) render LOCKED — never a manual pick. ── */
-function funnelMenuChip(c, key) {
-  const on = inFunnel(c, key);
-  const actLock = key === 'rental' && hasRentalActivity(c);   // Rental is auto-joined by live rentals — can't be turned off
-  return `<button class="fm-chip${on ? ' on' : ''}${actLock ? ' lock' : ''} js-funnel-join" data-rec="${esc(c.customerId)}" data-funnel="${key}" aria-pressed="${on}"${actLock ? ' data-tip="In the Rental funnel from live rentals — can’t remove"' : ''}><span class="fm-dot"></span>${esc(FUNNELS[key].label)}</button>`;
+// F3: the membership funnel ends in 'Signed' (auto-set by signing the agreement) instead
+// of 'Paid'; 'Signed' is shown in the timeline but locked — never a manual choice.
+const MEMBERSHIP_FUNNEL_ORDER = ['N/A', 'Inbound Lead', 'Outbound Lead', "Don't Contact", 'Contacted', 'Not A No!', 'Payment Discussed', 'Signed'];
+function openFunnelDropdown(custId, which, anchorEl) {
+  const cust = IDX.customer.get(custId);
+  const cur = which === 'membership' ? cust?.membershipStage : cust?.usedSalesStage;
+  const title = which === 'membership' ? 'Membership funnel' : 'Used sales funnel';
+  const mk = (v, inner, sc) => `<button class="gt-row ${sc} js-setfunnel" data-rec="${esc(custId)}" data-which="${which}" data-val="${esc(v)}">${inner}</button>`;
+  const opts = which === 'membership' ? { order: MEMBERSHIP_FUNNEL_ORDER, lock: new Set(['Signed']) } : {};
+  const html = gateTimeline('funnelStage', cur || 'N/A', title, mk, opts);
+  openDropdown(anchorEl, html, { cls: 'gt' });
 }
-function funnelMenuStageRow(c, r) {
-  const st = getStatus('funnelStage', r.stage);
-  const bothA = r.funnel !== 'equipment' && inRental(c) && inFunnel(c, 'member');   // Track A carries two sub-funnels → tag which one
-  const tag = r.funnel === 'equipment' ? '' : (bothA ? (r.funnel === 'rental' ? 'Rental' : 'Member') : '');
-  const inner = `<span class="fm-sdot c-${st.color}"></span><span class="fm-snm">${esc(st.label)}</span>${r.auto ? `<span class="fm-lock">${I.lock}auto</span>` : ''}${tag ? `<span class="fm-tag">${esc(tag)}</span>` : ''}`;
-  if (r.auto) return `<div class="fm-stage auto${r.current ? ' current' : ''}">${inner}</div>`;
-  return `<button class="fm-stage pickable${r.current ? ' current' : ''} js-funnel-setstage" data-rec="${esc(c.customerId)}" data-funnel="${r.funnel}" data-val="${esc(r.stage)}">${inner}</button>`;
-}
-function funnelMenuHtml(c) {
-  const aRows = funnelTrackA(c).map((r) => funnelMenuStageRow(c, r)).join('');
-  const equip = funnelTrackEquip(c);
-  const eRows = equip.length ? `<div class="fm-sub">Equipment</div>${equip.map((r) => funnelMenuStageRow(c, r)).join('')}` : '';
-  const stages = (aRows || eRows) ? aRows + eRows : `<div class="fm-empty">Pick a funnel above to see its stages.</div>`;
-  const naOn = !inRental(c) && !inFunnel(c, 'member') && !inFunnel(c, 'equipment');
-  return `<span class="gt-haz"></span><div class="fm-cap">Funnel</div>`
-    + `<div class="fm-na${naOn ? ' on' : ''}">N/A — not in a funnel</div>`
-    + `<div class="fm-sec">Leads</div><div class="fm-leads">${FUNNEL_KEYS.map((k) => funnelMenuChip(c, k)).join('')}</div>`
-    + `<div class="fm-sec">Stages</div><div class="fm-stages">${stages}</div>`;
-}
-function openFunnelMenu(custId, anchorEl) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  openDropdown(anchorEl, funnelMenuHtml(c), { cls: 'funnelmenu' });
-}
-// A chip toggle keeps the menu OPEN (multi-select). The menu lives on document.body and
-// SURVIVES render() (which only rebuilds #app), so rebuild its innerHTML IN PLACE instead of
-// re-anchoring — that keeps its screen position steady (no jump) and works no matter which of
-// several same-customer triggers opened it (the detail ladders, the two empty-state join
-// buttons, or the pipeline board's two funnel pills — all share one data-rec).
-function refreshFunnelMenuInPlace(custId) {
+function setFunnelStage(custId, which, val) {
   const c = IDX.customer.get(custId);
-  const menu = document.querySelector('.dropdown-menu.funnelmenu');
-  if (menu && c) menu.innerHTML = funnelMenuHtml(c);
-}
-function toggleFunnelMembership(custId, funnel) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  if (funnel === 'rental' && hasRentalActivity(c)) { toast('Rental is set by live rentals — it can’t be removed.'); return; }
-  const f = ensureFunnels(c);
-  const field = funnelStageField(funnel);   // Member/Equipment seed 'Lead' on join, reset to 'N/A' on leave; Rental's stage is derived
-  // Guard a completed terminal: leaving would silently wipe a real Signed (agreement) / Paid
-  // (sale) record back to N/A on a single misclick. Block it (mirrors the Rental activity lock).
-  if (f[funnel] && field) {
-    const terminal = FUNNELS[funnel].stages[FUNNELS[funnel].stages.length - 1];
-    if (c[field] === terminal) { toast(`${getStatus('funnelStage', terminal).label} is a completed ${FUNNELS[funnel].label} record — it can’t be removed from the funnel.`); return; }
-  }
-  const now = !f[funnel]; f[funnel] = now;
-  if (field) { if (!now) c[field] = 'N/A'; else if (!c[field] || c[field] === 'N/A') c[field] = 'Lead'; }
-  logAction(c, `${now ? 'Joined' : 'Left'} ${FUNNELS[funnel].label} funnel`);
-  reindex('customers', c);
-  render();
-  refreshFunnelMenuInPlace(custId);
-}
-function pickFunnelStage(custId, funnel, stage) {
-  const c = IDX.customer.get(custId); if (!c) return;
-  if (isAutoStage(funnel, stage)) return;              // auto stages are derived, never a manual pick
-  const field = funnelStageField(funnel); if (!field) return;   // Rental has no manual stage
-  ensureFunnels(c)[funnel] = true;                     // picking a stage implies membership in that funnel
-  if (c[field] !== stage) { c[field] = stage; logAction(c, `${FUNNELS[funnel].label} stage → ${getStatus('funnelStage', stage).label}`); }
+  if (!c) return;
+  if (which === 'membership' && (val === 'Signed' || val === 'Paid')) return;   // F3: membership terminal is auto-set by signing the agreement, never manual
+  const field = which === 'membership' ? 'membershipStage' : 'usedSalesStage';
+  if (c[field] !== val) { c[field] = val; logAction(c, `${which === 'membership' ? 'Membership' : 'Sales'} stage → ${getStatus('funnelStage', val).label}`); }   // audit: funnel moves were unlogged (Jac, Phase 7)
   reindex('customers', c);
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   render();
 }
-/* Quick-add "Lead?" pill (Customers-list inline add) — SINGLE-select: pick one funnel
- * (or N/A) and the new customer is created at that funnel's 'Lead'. No record exists yet,
- * so it writes state.custQuickAdd.funnel (a FUNNEL KEY now, not a stage) and — once
- * first/last/phone are valid — the pick is the 4th field that fires custQuickAddCreate. */
-function openCustQuickAddFunnelMenu(anchorEl) {
-  const cur = state.custQuickAdd.funnel || '';
-  const chip = (key, label) => `<button class="fm-chip${cur === key ? ' on' : ''} js-custqa-funnel-pick" data-val="${esc(key)}"><span class="fm-dot"></span>${esc(label)}</button>`;
-  const html = `<span class="gt-haz"></span><div class="fm-cap">Add to funnel</div>`
-    + `<div class="fm-leads qa">${chip('rental', 'Rental')}${chip('member', 'Member')}${chip('equipment', 'Equipment')}${chip('N/A', 'N/A')}</div>`;
-  openDropdown(anchorEl, html, { cls: 'funnelmenu qa' });
+/* The Customers-list quick-add funnel picker — SAME gate-timeline body as
+ * openFunnelDropdown's membership branch (locks 'Signed', F3 — never a manual pick,
+ * new customer or not), but the pick writes to the in-progress state.custQuickAdd
+ * draft instead of a real customer record (openFunnelDropdown/setFunnelStage require
+ * one to already exist). */
+function openCustQuickAddFunnelDropdown(anchorEl) {
+  const cur = state.custQuickAdd.funnel || 'N/A';
+  const mk = (v, inner, sc) => `<button class="gt-row ${sc} js-custqa-funnel-pick" data-val="${esc(v)}">${inner}</button>`;
+  const html = gateTimeline('funnelStage', cur, 'Rental funnel', mk, { order: MEMBERSHIP_FUNNEL_ORDER, lock: new Set(['Signed']) });
+  openDropdown(anchorEl, html, { cls: 'gt' });
 }
 /* §12.1 interested categories — pick mode died (Wave 2): a plain dropdown now
    attaches a category to the customer (same pattern as the funnel dropdown). */
@@ -16943,15 +16513,12 @@ function render() {
   // scroll position (see the scrollend sync wired in boot()).
   const phone = document.body.classList.contains('is-phone');
   const grid = el('div', 'grid');
-  // §M8 — phone paints the 5-card SWIPE RAIL (Categories·Units·Rentals·Customers·Sales, with
-  // Calendar swapped into the center slot when active); desktop/tablet paint the 3 columns.
-  if (phone) for (const m of mobileRailMembers(session)) grid.appendChild(mobileRailPanelEl(m, session));
-  else for (const col of COLUMNS) grid.appendChild(columnEl(col, session));
+  for (const col of COLUMNS) grid.appendChild(columnEl(col, session));
   if (phone) {
     $('#app').replaceChildren(header, grid, mobileToolbarEl());
-    // Snap the track to the card on screen with NO animation (a state-driven change must land
-    // instantly, not glide). rAF so the flex track has laid out and offsetLeft is real.
-    const target = mobileRailIndex(session);
+    // Snap the track to the active column with NO animation (a state-driven column change must
+    // land instantly, not glide). rAF so the flex track has laid out and offsetLeft is real.
+    const target = Math.max(0, Math.min(COLUMNS.length - 1, state.mobileCol));
     requestAnimationFrame(() => { const c = grid.children[target]; if (c) grid.scrollLeft = c.offsetLeft; });
   } else {
     $('#app').replaceChildren(header, grid, bottomBarEl());
@@ -16975,13 +16542,14 @@ function render() {
     if (!phone) positionDateSearch(fl);
   }
   // §M3 — lock the column scroll behind any open sheet/overlay/dock on phones
-  document.body.classList.toggle('sheet-open', !!(state.overlay || state.datesearch || state.chat.open || (state.wrangler.open && !state.wrangler.min) || (document.body.classList.contains('is-phone') && state.commsRail.cat)));   // a MINIMIZED Wrangler dock is a slim in-flow bar — it must NOT lock the page scroll (Jac, mobile); a phone full-screen comms surface DOES lock the card behind it
+  document.body.classList.toggle('sheet-open', !!(state.overlay || state.datesearch || state.chat.open || (state.wrangler.open && !state.wrangler.min)));   // a MINIMIZED Wrangler dock is a slim in-flow bar — it must NOT lock the page scroll (Jac, mobile)
   syncBackGuard();   // §M3 — keep the Android back-button guard in step with what's open
   // §17/§18 — the team + wrangler DOCKS are PHONE-only bottom sheets now (D9): desktop
   // retired both surfaces onto the comms rail (their machinery is shared, not the shell).
-  // Phone comms is FULL-SCREEN now (mountMobileComms); the old phone-only chat/wrangler bottom-sheet docks are retired.
-  mountCommsPops();   // D8/D9 comms rail — desktop: the session's single open window floats above its own tab
-  mountMobileComms(); // D8/D9 comms — phone: the summoned category renders FULL-SCREEN (Messenger-style)
+  const _phoneDocks = document.body.classList.contains('is-phone');
+  if (_phoneDocks && state.chat.open) { const d = el('div', 'chat-dock', ''); d.dataset.drop = 'chat'; d.innerHTML = chatDockEl(); $('#app').appendChild(d); }
+  if (_phoneDocks && state.wrangler.open) { const d = el('div', 'wrangler-dock' + (state.chat.open ? ' wr-beside-chat' : '') + (state.wrangler.min ? ' wr-min' : '')); d.innerHTML = wranglerDockEl(); $('#app').appendChild(d); }
+  mountCommsPops();   // D8/D9 comms rail — the session's single open window floats above its own tab
   // §18e/§17 — the bell + Requests inbox now live in the bottom comms band (bb-utils),
   // always visible; the docks float above it. (The old floating fab-stack is retired.)
   mountTransportEditor();   // inline transport editor: mount the live map + wire the address field
@@ -18525,14 +18093,14 @@ function onClick(e) {
     return;
   }
   if (closest('.js-mtools')) { e.stopPropagation(); return openOverlay({ kind: 'tools' }); }   // §M1 phone footer → the global tool tray as a sheet
-  if (closest('[data-gocard]')) {   // §M8 — a toggle chip: zip to that card. If it's already the card shown in its column, smooth-scroll the rail to its panel (the nice "zip"); otherwise goToCard re-renders + lands on it (a sub-card swap, incl. the off-rail Calendar into the center slot).
+  if (closest('[data-gocard]')) {   // §M7 — a column-header toggle: zip to that card. If it's already the card shown in its column, smooth-scroll the snap track there (the nice "zip"); if it switches a sub-card, goToCard re-renders + lands on it.
     e.stopPropagation();
     const member = closest('[data-gocard]').dataset.gocard, col = COLUMN_OF[member];
+    const i = COLUMNS.findIndex((c) => c.id === col);
     const s = activeSession(); const grid = document.querySelector('#app > .grid');
-    const railIdx = grid ? mobileRailMembers(s).indexOf(member) : -1;
-    if (grid && railIdx >= 0 && s.cols && s.cols[col] === member && grid.children[railIdx]) {
-      const ci = COLUMNS.findIndex((c) => c.id === col); if (ci >= 0) state.mobileCol = ci;
-      grid.scrollTo({ left: grid.children[railIdx].offsetLeft, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    if (grid && i >= 0 && s.cols && s.cols[col] === member && grid.children[i]) {
+      state.mobileCol = i;
+      grid.scrollTo({ left: grid.children[i].offsetLeft, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
       return;
     }
     return goToCard(member);
@@ -18551,12 +18119,10 @@ function onClick(e) {
   if (closest('.js-chat-end')) { e.stopPropagation(); closeMenus(); return commsEndConv(closest('.js-chat-end').dataset.chat, 'team'); }   // admin ends the chat (phone-safe: cat pinned)
   if (closest('[data-chat-member]')) { e.stopPropagation(); return chatToggleMember(closest('[data-chat-member]').dataset.chatMember); }
   // D8/D9 THE COMMS RAIL — toolbar chips · session tabs · the single window · ALL menu
-  if (closest('.js-comms-chip')) { e.stopPropagation(); const cat = closest('.js-comms-chip').dataset.cat; return cat === 'customer' ? commsToggleCustomer() : commsToggleCat(cat); }
-  if (closest('.js-comms-ch')) { e.stopPropagation(); const ch = closest('.js-comms-ch').dataset.ch; setCommsCustCh(ch); return commsSummonChannel(ch); }
+  if (closest('.js-comms-chip')) { e.stopPropagation(); return commsToggleCat(closest('.js-comms-chip').dataset.cat); }
   if (closest('.js-comms-new')) { e.stopPropagation(); return commsNewChat(); }   // D9 ALL menu: + New chat (team → newChat(), wrangler → wranglerNewChat())
   if (closest('[data-comms-hide]')) { e.stopPropagation(); return commsHideTab(closest('[data-comms-hide]').dataset.commsHide); }   // ✕ hides from the rail only — never ends
-  if (closest('.js-comms-menu-x')) { e.stopPropagation(); const s = commsSess(); if (s) s.menuOpen = false; if (document.body.classList.contains('is-phone')) { commsLeaveCat(state.commsRail.cat); state.commsRail.cat = null; } saveCommsRail(); return render(); }
-  if (closest('.js-mcomms-back')) { e.stopPropagation(); const s = commsSess(); if (s) { s.lastOpen = null; s.menuOpen = true; } saveCommsRail(); return render(); }
+  if (closest('.js-comms-menu-x')) { e.stopPropagation(); const s = commsSess(); if (s) { s.menuOpen = false; saveCommsRail(); } return render(); }
   if (closest('[data-comms-tab]')) { e.stopPropagation(); commsOpenPt = { x: e.clientX }; return commsToggleTab(closest('[data-comms-tab]').dataset.commsTab); }
   if (closest('.js-comms-end')) { e.stopPropagation(); closeMenus(); return commsEndConv(closest('.js-comms-end').dataset.cust); }
   if (closest('.js-comms-mend')) { e.stopPropagation(); return commsEndConv(closest('.js-comms-mend').dataset.cust); }
@@ -18655,12 +18221,11 @@ function onClick(e) {
   if (closest('.js-bv-customize')) { e.stopPropagation(); const o = state.overlay; if (o?.kind === 'boardview') { o.customize = !o.customize; renderOverlay(); } return; }
   if (closest('.js-bv-resetlayout')) { e.stopPropagation(); const card = closest('.js-bv-resetlayout').dataset.card; saveListLayout(card, null); render(); renderOverlay(); return; }
   if (closest('.js-new-cust-search')) { e.stopPropagation(); const cs = activeSession().cards.customers; return startNewCustomer(parseCustomerSearch(cs.search)); }
-  // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched).
-  // The fields are always shown (trunk #704 — no open/collapse), so only the funnel gate needs a
-  // handler; it opens the funnel-KEY picker (js-custqa-funnel-pick lives with the other dropdown
-  // handlers below). Merge note: the funnel-redesign's funnel-KEY model (openCustQuickAddFunnelMenu)
-  // supersedes trunk's stage-based openCustQuickAddFunnelDropdown; #704's always-show UX is kept.
-  if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelMenu(closest('.js-custqa-funnel')); }
+  // Customers-list inline quick-add row (ADDITIVE — the search-bar quick-add above is untouched):
+  // the fields are always shown (no open/collapse — the blue +New Customer button was traded for
+  // them), so only the funnel gate needs a click handler here; the funnel-pick option itself lives
+  // with the other dropdown handlers below (js-custqa-funnel-pick, next to js-setfunnel).
+  if (closest('.js-custqa-funnel')) { e.stopPropagation(); return openCustQuickAddFunnelDropdown(closest('.js-custqa-funnel')); }
   if (closest('.js-new-unit-search')) { e.stopPropagation(); return quickAddUnitFromSearch(activeSession().cards.units.search); }
   if (closest('.js-new-cat-search')) { e.stopPropagation(); return quickAddCategoryFromSearch(activeSession().cards.categories.search); }
   if (closest('.js-coltab')) {
@@ -18708,19 +18273,11 @@ function onClick(e) {
   // status dropdown set
   if (closest('.js-setstatus')) { const b = closest('.js-setstatus'); setRentalStatus(b.dataset.rec, b.dataset.val); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return; }
   if (closest('.js-setunitstatus')) { const b = closest('.js-setunitstatus'); setUnitStatus(b.dataset.rec, b.dataset.unit, b.dataset.val); document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); return; }
-  // funnel — the ONE adaptive menu (redesign 2026-07-17): open it, toggle a Leads chip, pick a manual stage
-  if (closest('.js-funnelmenu')) { const b = closest('.js-funnelmenu'); e.stopPropagation(); return openFunnelMenu(b.dataset.rec, b); }
-  if (closest('.js-funnel-join')) { const b = closest('.js-funnel-join'); return toggleFunnelMembership(b.dataset.rec, b.dataset.funnel); }
-  if (closest('.js-funnel-setstage')) { const b = closest('.js-funnel-setstage'); return pickFunnelStage(b.dataset.rec, b.dataset.funnel, b.dataset.val); }
-  // Dated-action funnel: the two-tab toggle, a layer press (open its action editor), the Member Lead checkbox.
-  if (closest('.js-funnel-tab')) { const b = closest('.js-funnel-tab'); e.stopPropagation(); state.funnelTab = state.funnelTab || {}; state.funnelTab[b.dataset.rec] = b.dataset.tab; return render(); }
-  if (closest('.js-funnel-layer')) {
-    const b = closest('.js-funnel-layer'); e.stopPropagation();
-    return openFunnelLayerEdit(b.dataset.rec, b.dataset.fkey, b.dataset.stage);   // any layer → arm/edit its action (advancing is an explicit button inside)
-  }
-  if (closest('.js-member-lead')) { const b = closest('.js-member-lead'); e.stopPropagation(); return toggleMemberLead(b.dataset.rec); }
-  // Customers-list quick-add draft's funnel pick — writes state.custQuickAdd.funnel a FUNNEL KEY
-  // (no customer record exists yet, so it can't ride js-funnel-setstage/pickFunnelStage above).
+  // funnel stage pill → stage dropdown; set; +Add Category / Record / Schedule
+  if (closest('.js-setfunnel')) { const b = closest('.js-setfunnel'); return setFunnelStage(b.dataset.rec, b.dataset.which, b.dataset.val); }
+  if (closest('.js-funnel')) { const b = closest('.js-funnel'); e.stopPropagation(); return openFunnelDropdown(b.dataset.rec, b.dataset.which, b); }
+  // Customers-list quick-add draft's funnel pick — writes state.custQuickAdd.funnel (no
+  // customer record exists yet, so this can't ride js-setfunnel/setFunnelStage above).
   if (closest('.js-custqa-funnel-pick')) { const b = closest('.js-custqa-funnel-pick'); state.custQuickAdd.funnel = b.dataset.val; document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove()); if (custQuickAddValid()) return custQuickAddCreate(); return render(); }   // the funnel PICK is the 4th selection (any value incl N/A) — with first/last/phone valid → create + open detail; else show the picked funnel
   if (closest('.js-fleet-filter')) {
     const b = closest('.js-fleet-filter'); e.stopPropagation();
@@ -18736,6 +18293,8 @@ function onClick(e) {
   if (closest('.js-addmakecat')) { const b = closest('.js-addmakecat'); e.stopPropagation(); return openInterestDropdown(b.dataset.rec, b); }
   if (closest('.js-setintcat')) { const b = closest('.js-setintcat'); e.stopPropagation(); return addInterestedCategory(b.dataset.rec, b.dataset.val); }
   if (closest('.js-setintmake')) { const b = closest('.js-setintmake'); e.stopPropagation(); return addInterestedMake(b.dataset.rec, b.dataset.val); }
+  // §3.5 funnel toggle — view-local active tab, in-memory, keyed by customer (never persisted)
+  if (closest('.js-funnel-tab')) { const b = closest('.js-funnel-tab'); e.stopPropagation(); state.funnelTab = state.funnelTab || {}; state.funnelTab[b.dataset.rec] = b.dataset.tab; render(); return; }
   // §3.8 per-funnel Action Log — expandable, one open-state per (customer, scope)
   if (closest('.js-actlog-toggle')) { const b = closest('.js-actlog-toggle'); e.stopPropagation(); state.actLogOpen = state.actLogOpen || {}; const k = b.dataset.rec + '|' + b.dataset.scope; state.actLogOpen[k] = !state.actLogOpen[k]; render(); return; }
   // §3.6 Next Actions — ✓ Done / ✕ Cancel MUST be checked before the row's edit hit (they sit inside it)
@@ -18750,9 +18309,6 @@ function onClick(e) {
   if (closest('.js-act-open')) { const b = closest('.js-act-open'); e.stopPropagation(); state.actMode = b.dataset.val; state.actOpen = b.dataset.rec; const rec = b.dataset.rec; render(); document.querySelector(`.js-act-in[data-rec="${rec}"]`)?.focus(); return; }
   if (closest('.js-schedule-save')) { const b = closest('.js-schedule-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup'); const c = IDX.customer.get(b.dataset.rec); const date = o?.when, time = o?.whenTime || '09:00'; const note = (root.querySelector('.js-sch-note')?.value || '').trim(); if (!c || !date) { flashOr('.datefield', 'Pick a date first.'); return; } const scope = (o?.scope === 'usedSales') ? 'usedSales' : 'rental'; const text = `Scheduled: ${note || 'follow-up'} @ ${date} ${to12(time)}`; c.activityLog = c.activityLog || []; if (o?.editIdx != null && c.activityLog[o.editIdx]) { const ent = c.activityLog[o.editIdx]; ent.when = date; ent.text = text; ent.scope = scope; } else { c.activityLog.push({ when: date, text, scope }); } reindex('customers', c); toast(o?.editIdx != null ? 'Next action saved.' : 'Next action added.'); state.datepick = null; closeOverlay(); render(); }
   if (closest('.js-sell-save')) { const b = closest('.js-sell-save'); e.stopPropagation(); const o = state.overlay; const root = b.closest('.popup'); const price = root.querySelector('.js-sell-price')?.value; const date = o?.saleDate; const note = (root.querySelector('.js-sell-note')?.value || '').trim(); if (!date) { flashOr('.datefield', 'Pick a sale date first.'); return; } if (!price || Number(price) <= 0) { flashOr('.js-sell-price', 'Enter a sale price first.'); return; } return sellUnit(b.dataset.rec, price, date, note); }
-  if (closest('.js-fl-done') || closest('.js-fl-cancel')) { e.stopPropagation(); const done = !!closest('.js-fl-done'); const b = closest('.js-fl-done') || closest('.js-fl-cancel'); return completeFunnelAction(b.dataset.rec, done); }   // ✓/✕ the layer's armed action (logs it; never advances)
-  if (closest('.js-fl-advance')) { const b = closest('.js-fl-advance'); e.stopPropagation(); const o = state.overlay; if (o) advanceFunnelLayer(o.custId, o.fkey, o.stage); return; }   // explicit advance — customer actually moved to this stage
-  if (closest('.js-fl-save')) { e.stopPropagation(); return saveFunnelLayer(); }   // save the layer's dated next-action
   // Wave 2 — empty slots on a Quote/invoice: the UNIT slot points you at the
   // Units list (drag IS the link path); the CUSTOMER slot opens quick-add-link.
   if (closest('.js-slot-unit')) {
@@ -20365,9 +19921,6 @@ function completeWOAttempt(woId) {
 }
 
 function onInput(e) {
-  // Funnel-layer action editor: keep the action note synced to overlay state so opening the date
-  // picker (which re-renders the popup from o.actNote) never wipes a typed-but-unsaved note.
-  if (e.target.classList.contains('js-fl-note') && state.overlay?.kind === 'funnelLayer') { state.overlay.actNote = e.target.value; return; }
   if (e.target.id === 'globalsearch') {
     // The state updates on every keystroke; the (debounced) re-render rebuilds ONLY the
     // results grid via renderResults(), leaving THIS input node mounted — so no focus/
@@ -20713,7 +20266,7 @@ function openLogoMenu(anchorEl) {
   const team = `<div class="menu-sep"></div><div class="menu-team"><div class="menu-team-head">Team KPIs</div><div class="menu-team-ring">${ringsSVG(roleScores, ROLES.map((r) => r.color), { size: 104 })}</div><div class="kpi-list"><div class="kpi-line"><span class="k-name">Sulphur Team</span><span class="k-val" style="color:var(--${tbd.color})">${teamScore}%</span></div></div></div>`;
   const userLine = `<div class="menu-user"><span class="mu-name">${esc(currentUser || 'Signed in')}</span>${currentRole ? `<span class="mu-role">${esc(currentRole)}</span>` : ''}</div>
     <button class="dd-item js-switch-user"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.back}</span>Switch user</button>
-    <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${adminUnlocked() ? '' : ' <span class="muted" style="font-size:10px;margin-left:2px">Admin</span>'}</button>
+    <button class="dd-item js-open-settings"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.grid}</span>Settings${adminUnlocked() ? '' : ' <span class="muted" style="font-size:0.5882rem;margin-left:2px">Admin</span>'}</button>
     <button class="dd-item js-ru-open"><span class="mi-ico" style="display:inline-flex;color:var(--accent)">${I.graph}</span>Reports</button>
     <div class="menu-sep"></div>`;
   openDropdown(anchorEl, userLine + boards + team);
@@ -20815,7 +20368,7 @@ function parseQuickCustomer(q) {
 function quickAddCustomerFromSearch(value) {
   const p = parseQuickCustomer(value); if (!p) return false;
   const id = nextCustomerId();
-  const c = { customerId: id, firstName: p.firstName, lastName: p.lastName, name: `${p.firstName} ${p.lastName}`.trim(), company: '', phone: p.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', funnels: blankFunnels(), _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName: p.firstName, lastName: p.lastName, name: `${p.firstName} ${p.lastName}`.trim(), company: '', phone: p.phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
   logAction(c, 'Customer quick-added');
   const s = activeSession();
@@ -20843,23 +20396,20 @@ function resetCustQuickAdd() {
     state.custQuickAdd = { first: '', last: '', phone: '', funnel: 'N/A' };
   }
 }
-/* Create + open — mirrors quickAddCustomerFromSearch's field set, and applies the draft's
- * single funnel pick (a FUNNEL KEY now, funnel redesign 2026-07-17): Member/Equipment join
- * that funnel at its 'Lead' stage; Rental just joins (its stage is derived from live rentals);
- * N/A / unset creates in no funnel. Always opens the new customer in Standard view (openStandard),
- * same "unlinked — drag it where it goes" landing as the search-bar path. */
+/* Create + open — mirrors quickAddCustomerFromSearch's create-object field set verbatim,
+ * except membershipStage comes from the draft's own funnel picker (set DIRECTLY, never
+ * via setFunnelStage — it hard-rejects a manual 'Signed'/'Paid', and the funnel picker
+ * itself already locks 'Signed' the same way openFunnelDropdown does, F3) and usedSalesStage
+ * stays its ordinary 'N/A' default. Always opens the new customer in Standard view
+ * (openStandard), same "unlinked — drag it where it goes" landing as the search-bar path. */
 function custQuickAddCreate() {
   if (!custQuickAddValid()) return;
   const d = state.custQuickAdd;
   const firstName = d.first.trim(), lastName = d.last.trim(), phone = d.phone.trim();
-  const key = FUNNELS[d.funnel] ? d.funnel : null;   // 'rental' | 'member' | 'equipment' — else no funnel
-  const funnels = blankFunnels(); if (key) funnels[key] = true;
-  const membershipStage = key === 'member' ? 'Lead' : 'N/A';
-  const usedSalesStage = key === 'equipment' ? 'Lead' : 'N/A';
   const id = nextCustomerId();
-  const c = { customerId: id, firstName, lastName, name: `${firstName} ${lastName}`.trim(), company: '', phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage, membershipStage, funnels, _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
+  const c = { customerId: id, firstName, lastName, name: `${firstName} ${lastName}`.trim(), company: '', phone, email: '', address: '', industry: '', accountType: 'Non-Business', payStatus: 'New Customer', requiresPO: false, rentalProtection: false, accountNotes: '', stripeId: '', selfie: '', signature: '', agreementType: '', agreementSignedAt: '', interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: d.funnel || 'N/A', _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' } };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
-  logAction(c, key ? `Customer quick-added → ${FUNNELS[key].label} funnel` : 'Customer quick-added');
+  logAction(c, 'Customer quick-added');
   resetCustQuickAdd();
   openStandard('customers', id);
 }
@@ -20955,7 +20505,7 @@ function quickSaveCustomer(o) {
     requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
     idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
-    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', funnels: blankFunnels(),
+    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
   };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
@@ -21026,7 +20576,7 @@ function saveNewCustomer() {
     requiresPO: !!d.requiresPO, rentalProtection: !!d.rentalProtection, accountNotes: d.accountNotes, stripeId: '', selfie: d.selfie || '', signature: d.signature || '',
     idNumber: d.idNumber || '', netDays: normNetDays(d.netDays), custom: d.custom || {},
     agreementType: d.agreementType || '', agreementSignedAt: d.agreementSignedAt || '',
-    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A', funnels: blankFunnels(),
+    interestedCategoryIds: [], interestedMakes: [], desiredAge: '', desiredHours: '', activityLog: [], usedSalesStage: 'N/A', membershipStage: 'N/A',
     _digest: { activePct: 0, totalPaid: 0, visits: 0, years: 0, avgFrequencyDays: 0, firstInvoice: '', lastInvoice: '' },
   };
   DATA.customers.push(c); IDX.customer.set(id, c); reindex('customers', c);
@@ -25973,20 +25523,12 @@ function boot() {
     const grid = document.querySelector('#app > .grid');
     if (!grid || !document.body.classList.contains('is-phone')) return;
     const w = grid.clientWidth || 1;
-    const session = activeSession();
-    const members = mobileRailMembers(session);
-    // §M8 — the track is the 5-card rail; read the snapped RAIL index (0–4) and fold it back to
-    // the COLUMN index (0–2) that everything downstream is keyed to. The active member of that
-    // column follows the swipe, so landing on Categories/Units/Customers/Sales updates cols[] —
-    // the chip highlight, cross-column links, the footer jog, and session sync all stay honest.
-    const railIdx = Math.max(0, Math.min(members.length - 1, Math.round(grid.scrollLeft / w)));
-    if (railIdx === mcolLast) return;
-    mcolLast = railIdx;
-    const member = members[railIdx], col = COLUMN_OF[member], colIdx = COLUMNS.findIndex((c) => c.id === col);
-    if (colIdx >= 0) state.mobileCol = colIdx;
-    if (session.cols && col) session.cols[col] = member;
-    upSyncSession();   // §cross-device-sync — remember where you left off (resume there)
-    // The footer jog (R32) is a GLOBAL bar reflecting the ACTIVE card, so repaint it on any step.
+    const idx = Math.max(0, Math.min(COLUMNS.length - 1, Math.round(grid.scrollLeft / w)));
+    if (idx === mcolLast) return;
+    mcolLast = idx; state.mobileCol = idx;
+    upSyncSession();   // §cross-device-sync — remember the top-level column (resume where you left off)
+    // Each column's own toggle header highlights that column's card statically. The footer jog
+    // (R32), though, is a GLOBAL bar reflecting the ACTIVE card, so repaint it on column change.
     const fj = document.querySelector('.mobile-toolbar .mfoot-jog');
     if (fj) fj.innerHTML = footerJogInner();
   }
@@ -26005,7 +25547,7 @@ function boot() {
   // menu itself and the comms chip that hosts it, so the chip's own click toggles instead of double-firing.
   document.addEventListener('mousedown', (e) => {
     const s = commsSess(); if (!s || !s.menuOpen) return;
-    if (e.target.closest && e.target.closest('.comms-pop.comms-menu, .mcomms, .js-comms-chip')) return;   // .mcomms = phone full-screen comms; taps inside it must never self-dismiss (it IS the menu)
+    if (e.target.closest && e.target.closest('.comms-pop.comms-menu, .js-comms-chip')) return;
     s.menuOpen = false; saveCommsRail(); render();
   });
   document.addEventListener('input', onInput);
@@ -26408,7 +25950,7 @@ function exposeTestApi() {
       dataCache, cacheValid, cacheDeviceOk, cacheTokenTag, cacheAppVer, cacheSnapshotEnvelope, CACHE_SCHEMA_VER, FEATURES,   // §instant-cache (spec 2026-07-16)
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, pickFunnelStage, toggleFunnelMembership, rentalFunnelStage, funnelStageOf, inFunnel, inRental, hasRentalActivity, funnelTrackA, funnelTrackEquip, ensureFunnels, funnelMenuHtml, reachFunnelStage, toggleMemberLead, funnelCurrentStage, funnelLayerDate, funnelLayerNote, ensureFunnelLog, markMembershipSigned, funnelLayerAction, funnelScope, naUrgency, naOpenList, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, setFunnelStage, markMembershipSigned, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
       tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend
@@ -26549,10 +26091,6 @@ const COMMS_CAT_META = {
   team:     { label: 'Team',        icon: () => I.users,         channel: null,    tip: 'Team — the shop-floor chat' },
   text:     { label: 'Texts',       icon: () => I.messageSquare, channel: 'sms',   tip: 'Texts — customer SMS threads' },
   email:    { label: 'Email',       icon: () => I.mail,          channel: 'email', tip: 'Email — customer email threads' },
-  // D8 merged Customer chip — one button for texts + emails; the channel toggle lives in its
-  // menu. icon() follows the current channel (commsCustCh). Never used as a rail `cat` — the chip
-  // delegates to the real 'text'/'email' cats via commsToggleCustomer/commsSummonChannel.
-  customer: { label: 'Customers',   icon: () => (commsCustCh === 'email' ? I.mail : I.messageSquare), channel: null, tip: 'Customers — texts & emails in one place (toggle inside)' },
   wrangler: { label: 'Mr. Wrangler', icon: () => I.lasso,        channel: null,    tip: 'Mr. Wrangler — ask the yard AI, or report a bug' },
 };
 const commsOnline = () => typeof backendPassword !== 'undefined' && !!backendPassword;
@@ -26604,17 +26142,6 @@ function commsCatWorst(cat) {
   list.forEach((t) => { const s = commsConvStatus(t, COMMS_CAT_META[cat].channel); if (!worst || COMMS_ST_RANK[s] < COMMS_ST_RANK[worst]) worst = s; });
   return (!worst || worst === 'gray') ? 'green' : worst;   // nothing waiting = green (quiet line)
 }
-/* ── merged Customer chip (Jac 2026-07-17): Texts + Email collapse into ONE comms button;
-   a Text/Email toggle in its menu picks the channel. The underlying 'text'/'email' categories,
-   their sessions, threads and sends are UNCHANGED — this is a chip-row + menu presentation over
-   them. commsCustCh = which channel the merged chip currently wears (a per-device view pref). ── */
-const COMMS_CUSTCH_LS = 'jactec.commsCustCh';
-let commsCustCh = 'text';
-try { if (localStorage.getItem(COMMS_CUSTCH_LS) === 'email') commsCustCh = 'email'; } catch (e) {}
-const commsCustCat = () => (commsCustCh === 'email' ? 'email' : 'text');
-function setCommsCustCh(ch) { commsCustCh = ch === 'email' ? 'email' : 'text'; try { localStorage.setItem(COMMS_CUSTCH_LS, commsCustCh); } catch (e) {} }
-const commsCustActive = () => (state.commsRail.cat === 'text' || state.commsRail.cat === 'email');
-function commsCustWorst() { return [commsCatWorst('text'), commsCatWorst('email')].sort((a, b) => COMMS_ST_RANK[a] - COMMS_ST_RANK[b])[0]; }
 /* ── Team category (D9) — conversations derive from the APP-23 chat store ── */
 const commsChatLastAt = (c) => Math.max(0, ...(c.messages || []).map((m) => m.at || 0));
 function commsTeamChats() {   // every un-ended team chat, newest first (End resurrects on a newer message)
@@ -26693,17 +26220,18 @@ function commsAliasesEnsure() {     // lazy one-shot alias fetch for the email F
   commsAliasList().then((a) => { if (a && a.length) render(); });
 }
 /* ── the four toolbar chips (bottom-left, before the tool buttons) ────────── */
-const COMMS_CHIP_CATS = ['team', 'customer', 'wrangler'];   // D8 merged row — Texts+Email fold into 'customer'
 function commsChipsHtml() {
   const phone = document.body.classList.contains('is-phone');
   const chip = (cat) => {
     const meta = COMMS_CAT_META[cat];
-    // 'customer' is on whenever a customer channel (text OR email) is summoned; its dot rolls up both.
-    const on = cat === 'customer' ? commsCustActive() : state.commsRail.cat === cat;
-    const worst = cat === 'customer' ? commsCustWorst() : commsCatWorst(cat);
+    // phones have no rail — the team/wrangler chips still bridge to their bottom-sheet docks there
+    const on = phone
+      ? (cat === 'team' ? state.chat.open : cat === 'wrangler' ? (state.wrangler.open && !state.wrangler.min) : state.commsRail.cat === cat)
+      : state.commsRail.cat === cat;
+    const worst = commsCatWorst(cat);
     return `<button class="iconbtn comms-chip js-comms-chip${on ? ' on' : ''}" data-cat="${cat}" data-tip="${esc(meta.tip)}" aria-pressed="${on}">${meta.icon()}${worst ? `<span class="cc-dot c-${worst}" aria-hidden="true"></span>` : ''}</button>`;
   };
-  return `<span class="comms-chips" role="group" aria-label="Comms — Team, Customers, Mr. Wrangler">${COMMS_CHIP_CATS.map(chip).join('')}</span><span class="bb-sep bb-stitch" aria-hidden="true"></span>`;
+  return `<span class="comms-chips" role="group" aria-label="Comms — Team, Texts, Email, Mr. Wrangler">${COMMS_CATS.map(chip).join('')}</span><span class="bb-sep bb-stitch" aria-hidden="true"></span>`;
 }
 /* ── the summoned session's tabs on the rail (ALL first, then conversations).
    D9: one builder, four categories — a tab's is-active means "this is THE open
@@ -26796,11 +26324,9 @@ function commsWranglerPopupHtml() {
 }
 /* ── the ALL menu: every un-ended conversation, Open / End per row (D9: Team and
    Mr. Wrangler list their chats too, with a + New chat at the foot) ────────── */
-function commsMenuHtml(cat, opts = {}) {
+function commsMenuHtml(cat) {
   const meta = COMMS_CAT_META[cat];
-  const row = (id, name, st, snip) => opts.readonly
-    ? `<div class="cm-row cm-ro"><span class="cp-dot c-${st}" aria-hidden="true"></span><span class="cm-who">${esc(name)}</span><span class="cm-snip">${esc(snip)}</span></div>`
-    : `<div class="cm-row js-comms-mrow" data-cust="${esc(id)}" data-tip="Open"><span class="cp-dot c-${st}" aria-hidden="true"></span><span class="cm-who">${esc(name)}</span><span class="cm-snip">${esc(snip)}</span>${ghostPill('End', { js: 'js-comms-mend', data: { cust: id }, tip: cat === 'team' || cat === 'wrangler' ? 'End it — the history stays stored' : 'End it — the history stays on the profile' })}</div>`;
+  const row = (id, name, st, snip) => `<div class="cm-row js-comms-mrow" data-cust="${esc(id)}" data-tip="Open"><span class="cp-dot c-${st}" aria-hidden="true"></span><span class="cm-who">${esc(name)}</span><span class="cm-snip">${esc(snip)}</span>${ghostPill('End', { js: 'js-comms-mend', data: { cust: id }, tip: cat === 'team' || cat === 'wrangler' ? 'End it — the history stays stored' : 'End it — the history stays on the profile' })}</div>`;
   let rows = '', empty = 'Nothing on the line — right-click a customer to start one.', newRow = '';
   if (cat === 'team') {
     rows = commsTeamChats().map((c) => {
@@ -26824,16 +26350,8 @@ function commsMenuHtml(cat, opts = {}) {
       return row(id, (c && fullName(c)) || id, commsConvStatus(t, meta.channel), (ch.lastDirection === 'inbound' ? 'them: ' : 'you: ') + (ch.lastSnippet || ''));
     }).join('');
   }
-  const isCust = cat === 'text' || cat === 'email';
-  const chanToggle = isCust ? `<div class="comms-chan" role="tablist" aria-label="Channel — text or email">
-      <button class="comms-chan-b js-comms-ch${commsCustCh === 'text' ? ' on' : ''}" data-ch="text" role="tab" aria-selected="${commsCustCh === 'text'}">${I.messageSquare}<span>Text</span></button>
-      <button class="comms-chan-b js-comms-ch${commsCustCh === 'email' ? ' on' : ''}" data-ch="email" role="tab" aria-selected="${commsCustCh === 'email'}">${I.mail}<span>Email</span></button>
-    </div>` : '';
-  const title = isCust ? 'Customers' : esc(meta.label);
-  const sub = isCust ? (commsCustCh === 'email' ? 'Emailing customers' : 'Texting customers') : 'Open &amp; un-ended';
   return `<div class="cp-cap" aria-hidden="true"></div>
-    <div class="cp-head"><span class="cp-cat">${title}</span><span class="cp-who">${sub}</span><span class="spacer"></span><button class="cp-x js-comms-menu-x" aria-label="Tuck the list away" data-tip="Tuck away — nothing ends">${I.x}</button></div>
-    ${chanToggle}
+    <div class="cp-head"><span class="cp-cat">${esc(meta.label)}</span><span class="cp-who">Open &amp; un-ended</span><span class="spacer"></span><button class="cp-x js-comms-menu-x" aria-label="Tuck the list away" data-tip="Tuck away — nothing ends">${I.x}</button></div>
     <div class="cp-feed cp-list">${rows || `<div class="cp-empty">${empty}</div>`}${newRow}</div>`;
 }
 /* Mount THE open window ABOVE its own tab (Messenger metaphor, D9 single-open: at
@@ -26893,79 +26411,27 @@ function mountCommsPops() {
     }
   }
   if (sess.menuOpen && (!COMMS_CAT_META[cat].channel || commsOnline())) {
-    const at = document.querySelector(`.js-comms-chip[data-cat="${cat}"]`) || document.querySelector('.js-comms-chip[data-cat="customer"]') || document.querySelector('.comms-rail');
+    const at = document.querySelector(`.js-comms-chip[data-cat="${cat}"]`) || document.querySelector('.comms-rail');
     if (at) { const node = el('div', 'comms-pop comms-menu'); node.innerHTML = commsMenuHtml(cat); host.appendChild(node); place(node, at, 340); }
   }
   commsOpenPt = null;   // one render-cycle scope — consumed by the window mount above
-}
-// D8/D9 PHONE comms — the summoned category fills the screen (Messenger metaphor): the INBOX
-// (conversation list + the Text/Email toggle for customers) until a conversation is opened, then
-// the THREAD itself with a Back-to-inbox chevron. Reuses the exact builders desktop mounts on the
-// rail (commsMenuHtml / commsPopupHtml / commsTeamPopupHtml / commsWranglerPopupHtml), so composing,
-// sending, End, drafts and the toggle all keep working through their existing selectors.
-function mountMobileComms() {
-  if (!document.body.classList.contains('is-phone')) return;
-  const cat = state.commsRail.cat;
-  if (!cat) return;
-  const sess = state.commsRail.sessions[cat];
-  const openId = sess ? sess.lastOpen : null;
-  let inner = '';
-  if (openId != null) {
-    if (cat === 'team') inner = chatById(String(openId)) ? commsTeamPopupHtml(String(openId)) : '';
-    else if (cat === 'wrangler') inner = state.wrangler.open ? commsWranglerPopupHtml() : '';
-    else {
-      const t = commsThreadsFor(cat).find((x) => String(x.customerId) === String(openId)) || null;
-      inner = commsPopupHtml(cat, t, String(openId));
-    }
-  }
-  const host = el('div', 'mcomms');
-  if (inner) {
-    // the wrangler thread wrapper must wear .wrangler-dock — mountWranglerDock() (called each
-    // render) keys off it to hydrate image blobs + wire paste/drag-drop (parity with desktop).
-    const dockCls = cat === 'wrangler' ? ' wrangler-dock' : '';
-    host.innerHTML = `<div class="mcomms-sheet mcomms-thread${dockCls}"><button class="mcomms-back js-mcomms-back" aria-label="Back to the list">${I.chevL}<span>Back</span></button>${inner}</div>`;
-  } else {
-    host.innerHTML = `<div class="mcomms-sheet mcomms-inbox">${commsMenuHtml(cat)}</div>`;
-  }
-  $('#app').appendChild(host);
-  const feed = host.querySelector('.cp-feed:not(.cp-list), .chat-feed, .wr-feed');
-  if (feed) feed.scrollTop = feed.scrollHeight;
 }
 /* ── actions ─────────────────────────────────────────────────────────────── */
 /* Sweep a category's window off the rail when the rail leaves it (chip re-click,
    sibling chip, or any cross-category open — the single-open law's broom). */
 function commsLeaveCat(cat) {
-  // Phone routes Mr. Wrangler through the rail full-screen now (not the old dock), so leaving the
-  // category must snapshot + close it on EVERY device — else state.wrangler.open never resets on
-  // phone and body.sheet-open locks the page scroll for the rest of the session.
-  if (cat === 'wrangler' && state.wrangler.open) {
+  if (cat === 'wrangler' && state.wrangler.open && !document.body.classList.contains('is-phone')) {
     wranglerRailSnapshot(); state.wrangler.open = false; state.wrangler.min = false;
   }
 }
-// D8 merged Customer chip — summon a customer CHANNEL ('text'|'email') onto the rail and land
-// on its menu (the Text/Email toggle rides the menu head). One thin funnel over commsToggleCat's
-// summon logic so text/email keep behaving exactly as before.
-function commsSummonChannel(ch) {
-  const cat = ch === 'email' ? 'email' : 'text';
-  const rail = state.commsRail, prev = rail.cat;
-  if (prev && prev !== cat) commsLeaveCat(prev);
-  rail.cat = cat;
-  refreshCommsThreads();
-  const s = rail.sessions[cat];
-  s.menuOpen = true; s.lastOpen = null;   // show the list + toggle; no auto-opened window
-  saveCommsRail(); render();
-}
-// The Customer chip click: reveal the channel menu (with the toggle); a second tap sweeps it shut.
-function commsToggleCustomer() {
-  const rail = state.commsRail, cur = rail.cat, curSess = cur ? rail.sessions[cur] : null;
-  if (commsCustActive() && curSess && curSess.menuOpen) {   // open menu → close
-    rail.cat = null; curSess.menuOpen = false; commsLeaveCat(cur); saveCommsRail(); return render();
-  }
-  commsSummonChannel(commsCustCat());
-}
 function commsToggleCat(cat) {
-  // Phone routes team/wrangler through the SAME rail as customer comms now (mountMobileComms
-  // renders it full-screen) — the old phone-only docks are retired.
+  const phone = document.body.classList.contains('is-phone');
+  if (phone && (cat === 'team' || cat === 'wrangler')) {
+    // phones have no rail — these chips keep bridging to the bottom-sheet docks (mobile reflow rides later)
+    if (cat === 'team') { state.chat.open = !state.chat.open; return render(); }
+    if (state.wrangler.open) { wranglerRailSnapshot(); state.wrangler.open = false; return render(); }
+    return wranglerNewChat();
+  }
   const rail = state.commsRail;
   if (rail.cat === cat) {                                // active icon: reveal the un-ended list first (replaces the old All chip), then a further click sweeps the rail clean
     const sc = rail.sessions[cat];
