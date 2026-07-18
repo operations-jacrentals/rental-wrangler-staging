@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "sig-sheet-back-dismiss-1",
+      "label": "Mobile signature sheet: join the hardware-back dismiss chain",
+      "feature": "sig-sheet-back-dismiss",
+      "branch": "claude/sig-sheet-back-dismiss",
+      "sha": "37cfd2a",
+      "when": "2026-07-18T13:39:17.027Z"
+    },
+    {
       "id": "work-queue-92oeso-1",
       "label": "Deck link restore #2 (funnel + deck)",
       "feature": "work-queue-92oeso",
