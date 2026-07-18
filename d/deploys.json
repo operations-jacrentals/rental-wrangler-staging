@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "thread-rounding-performance-k4ea8y-1",
+      "label": "comms instant-open (Texts/Email)",
+      "feature": "thread-rounding-performance-k4ea8y",
+      "branch": "claude/thread-rounding-performance-k4ea8y",
+      "sha": "95c8019",
+      "when": "2026-07-18T04:58:57.023Z"
+    },
+    {
       "id": "calendar-map-scroll-2cmufu-1",
       "label": "Trips: map scrolls with the run, not frozen above the rows",
       "feature": "calendar-map-scroll-2cmufu",
