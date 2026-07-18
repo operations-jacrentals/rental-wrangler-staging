@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "toggle-section-swiping-ipu032-1",
+      "label": "Merge remote-tracking branch 'origin/trunk' into claude/toggle-section-s",
+      "feature": "toggle-section-swiping-ipu032",
+      "branch": "claude/toggle-section-swiping-ipu032",
+      "sha": "a4b5e93",
+      "when": "2026-07-18T15:04:06.838Z"
+    },
+    {
       "id": "work-queue-92oeso-1",
       "label": "deck auto-restore (watchdog)",
       "feature": "work-queue-92oeso",
