@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "mobile-signature-modal-srob3x-2",
+      "label": "Merge remote-tracking branch 'origin/trunk' into claude/mobile-signature",
+      "feature": "mobile-signature-modal-srob3x",
+      "branch": "claude/mobile-signature-modal-srob3x",
+      "sha": "9949e02",
+      "when": "2026-07-18T13:24:10.597Z"
+    },
+    {
       "id": "mobile-swipe-navigation-dc9dw4-1",
       "label": "Merge remote-tracking branch 'origin/trunk' into claude/mobile-swipe-nav",
       "feature": "mobile-swipe-navigation-dc9dw4",
