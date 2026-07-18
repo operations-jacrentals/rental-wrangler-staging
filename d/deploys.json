@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "deploys": [
+    {
+      "id": "mobile-signature-modal-srob3x-1",
+      "label": "Fix signature-sheet issues from code review",
+      "feature": "mobile-signature-modal-srob3x",
+      "branch": "claude/mobile-signature-modal-srob3x",
+      "sha": "8508296",
+      "when": "2026-07-18T05:11:01.856Z"
+    }
+  ]
+}
