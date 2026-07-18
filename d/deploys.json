@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "work-queue-92oeso-3",
+      "label": "Cache-bypass re-deploy (GitHub edge cached a 5xx)",
+      "feature": "work-queue-92oeso",
+      "branch": "claude/work-queue-92oeso",
+      "sha": "dbbf822",
+      "when": "2026-07-18T19:47:54.135Z"
+    },
+    {
       "id": "work-queue-92oeso-2",
       "label": "Staging chrome: switcher bottom-left, badge dropped",
       "feature": "work-queue-92oeso",
