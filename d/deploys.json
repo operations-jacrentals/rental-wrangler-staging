@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "thread-rounding-performance-k4ea8y-1",
+      "label": "comms instant-open (merged to trunk)",
+      "feature": "thread-rounding-performance-k4ea8y",
+      "branch": "claude/thread-rounding-performance-k4ea8y",
+      "sha": "2da1e43",
+      "when": "2026-07-18T13:43:12.729Z"
+    },
+    {
       "id": "sig-sheet-back-dismiss-1",
       "label": "Mobile signature sheet: join the hardware-back dismiss chain",
       "feature": "sig-sheet-back-dismiss",
