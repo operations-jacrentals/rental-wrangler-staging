@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "work-queue-92oeso-4",
+      "label": "Iframe launcher: bookmarkable /d/ (Jac)",
+      "feature": "work-queue-92oeso",
+      "branch": "claude/work-queue-92oeso",
+      "sha": "1c54330",
+      "when": "2026-07-18T20:37:42.517Z"
+    },
+    {
       "id": "work-queue-92oeso-3",
       "label": "Cache-bypass re-deploy (GitHub edge cached a 5xx)",
       "feature": "work-queue-92oeso",
