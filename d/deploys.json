@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "work-queue-92oeso-4",
+      "label": "switcher: two-line labels (no truncation)",
+      "feature": "work-queue-92oeso",
+      "branch": "claude/work-queue-92oeso",
+      "sha": "5e2b756",
+      "when": "2026-07-18T04:13:19.527Z"
+    },
+    {
       "id": "work-queue-92oeso-3",
       "label": "deck launcher + stable bookmark",
       "feature": "work-queue-92oeso",
