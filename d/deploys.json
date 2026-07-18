@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "work-queue-92oeso-2",
+      "label": "Staging chrome: switcher bottom-left, badge dropped",
+      "feature": "work-queue-92oeso",
+      "branch": "claude/work-queue-92oeso",
+      "sha": "51751b0",
+      "when": "2026-07-18T19:31:42.223Z"
+    },
+    {
       "id": "toggle-section-swiping-ipu032-1",
       "label": "Merge remote-tracking branch 'origin/trunk' into claude/toggle-section-s",
       "feature": "toggle-section-swiping-ipu032",
