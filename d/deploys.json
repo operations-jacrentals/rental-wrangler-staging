@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "calendar-map-scroll-2cmufu-1",
+      "label": "Trips: map scrolls with the run, not frozen above the rows",
+      "feature": "calendar-map-scroll-2cmufu",
+      "branch": "claude/calendar-map-scroll-2cmufu",
+      "sha": "4853988",
+      "when": "2026-07-18T04:57:38.445Z"
+    },
+    {
       "id": "work-queue-92oeso-1",
       "label": "Deck + funnel, merged w/ trunk (a11y + swipe)",
       "feature": "work-queue-92oeso",
