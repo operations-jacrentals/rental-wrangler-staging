@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "mobile-signature-modal-srob3x-1",
+      "label": "Merge remote-tracking branch 'origin/trunk' into claude/mobile-signature",
+      "feature": "mobile-signature-modal-srob3x",
+      "branch": "claude/mobile-signature-modal-srob3x",
+      "sha": "9dd46e6",
+      "when": "2026-07-18T05:03:33.558Z"
+    },
+    {
       "id": "thread-rounding-performance-k4ea8y-1",
       "label": "comms instant-open (Texts/Email)",
       "feature": "thread-rounding-performance-k4ea8y",
