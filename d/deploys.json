@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "thread-rounding-performance-k4ea8y-2",
+      "label": "cache-bust ?v=20260718g for the jank fix",
+      "feature": "thread-rounding-performance-k4ea8y",
+      "branch": "claude/thread-rounding-performance-k4ea8y",
+      "sha": "5b6cde9",
+      "when": "2026-07-18T14:42:52.420Z"
+    },
+    {
       "id": "thread-rounding-performance-k4ea8y-1",
       "label": "comms jank fix (merged to trunk)",
       "feature": "thread-rounding-performance-k4ea8y",
