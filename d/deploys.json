@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "categories-derivation-fixes-2",
+      "label": "Categories audit: derivation fixes + Off Fleet + ROI gate + member rate + B12/B13",
+      "feature": "categories-derivation-fixes",
+      "branch": "claude/categories-derivation-fixes",
+      "sha": "93befbc",
+      "when": "2026-07-19T04:43:05.384Z"
+    },
+    {
       "id": "calendar-badge-and-map-2",
       "label": "Badge counts overdue + map collapsed for drivers (resynced)",
       "feature": "calendar-badge-and-map",
