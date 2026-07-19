@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "calendar-badge-and-map-2",
+      "label": "Badge counts overdue + map collapsed for drivers (resynced)",
+      "feature": "calendar-badge-and-map",
+      "branch": "wrangler-fix/calendar-badge-and-map",
+      "sha": "2c25c1f",
+      "when": "2026-07-19T03:48:01.937Z"
+    },
+    {
       "id": "trips-pickup-time-1",
       "label": "Pickup reads rental return time + named EOD deadline",
       "feature": "trips-pickup-time",
