@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "calendar-audit-safe-bugs-1",
+      "label": "Trips scroll-position fix (Dewey audit)",
+      "feature": "calendar-audit-safe-bugs",
+      "branch": "wrangler-fix/calendar-audit-safe-bugs",
+      "sha": "1e243bb",
+      "when": "2026-07-19T03:32:24.326Z"
+    },
+    {
       "id": "categories-derivation-fixes-1",
       "label": "Categories derivation fixes + Off Fleet + member rate (PR #743)",
       "feature": "categories-derivation-fixes",
