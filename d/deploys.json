@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "rentals-dispatcher-audit-k977x2-1",
+      "label": "Four RENTALS dispatch bug fixes (#740)",
+      "feature": "rentals-dispatcher-audit-k977x2",
+      "branch": "claude/rentals-dispatcher-audit-k977x2",
+      "sha": "d8035fd",
+      "when": "2026-07-19T02:53:38.422Z"
+    },
+    {
       "id": "work-queue-92oeso-4",
       "label": "Iframe launcher: bookmarkable /d/ (Jac)",
       "feature": "work-queue-92oeso",
