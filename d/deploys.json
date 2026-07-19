@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "calendar-badge-and-map-1",
+      "label": "Trips badge counts overdue + map collapsed for drivers",
+      "feature": "calendar-badge-and-map",
+      "branch": "wrangler-fix/calendar-badge-and-map",
+      "sha": "9cf2f1a",
+      "when": "2026-07-19T03:35:27.218Z"
+    },
+    {
       "id": "calendar-audit-safe-bugs-1",
       "label": "Trips scroll-position fix (Dewey audit)",
       "feature": "calendar-audit-safe-bugs",
