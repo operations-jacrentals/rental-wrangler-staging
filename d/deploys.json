@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "trips-pickup-time-1",
+      "label": "Pickup reads rental return time + named EOD deadline",
+      "feature": "trips-pickup-time",
+      "branch": "wrangler-fix/trips-pickup-time",
+      "sha": "5c68252",
+      "when": "2026-07-19T03:36:09.794Z"
+    },
+    {
       "id": "calendar-badge-and-map-1",
       "label": "Trips badge counts overdue + map collapsed for drivers",
       "feature": "calendar-badge-and-map",
