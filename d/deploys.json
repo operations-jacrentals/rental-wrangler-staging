@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "categories-derivation-fixes-3",
+      "label": "B4/B8/B9 filter-trust: consistent Back + per-card clear-all + explicit chip remove",
+      "feature": "categories-derivation-fixes",
+      "branch": "claude/categories-derivation-fixes",
+      "sha": "c9c4624",
+      "when": "2026-07-19T05:10:38.174Z"
+    },
+    {
       "id": "drag-autoscroll-cal-scroll-1",
       "label": "Cache-bust: bump ?v= to 20260719c (served files changed vs trunk)",
       "feature": "drag-autoscroll-cal-scroll",
