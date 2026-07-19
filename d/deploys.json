@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "drag-autoscroll-cal-scroll-1",
+      "label": "Cache-bust: bump ?v= to 20260719c (served files changed vs trunk)",
+      "feature": "drag-autoscroll-cal-scroll",
+      "branch": "wrangler-fix/drag-autoscroll-cal-scroll",
+      "sha": "ef4bd35",
+      "when": "2026-07-19T04:55:53.866Z"
+    },
+    {
       "id": "categories-derivation-fixes-2",
       "label": "Categories audit: derivation fixes + Off Fleet + ROI gate + member rate + B12/B13",
       "feature": "categories-derivation-fixes",
