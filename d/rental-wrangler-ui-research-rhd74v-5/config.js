@@ -416,7 +416,7 @@ export const BACKOFFICE_BOARDS = [
  * can reveal it. (Shop retirement 2026-07-07: the left column holds Units +
  * Categories only — WO/service/inspection references reveal 'units'.) */
 export const COLUMNS = [
-  { id: 'left',   default: 'units',     members: ['units', 'categories'] },
+  { id: 'left',   default: 'units',     members: ['categories', 'units'] },   // Categories LEFT of Units — matches the mobile swipe rail (Jac 2026-07-18); `default` (the shown card) stays 'units'
   { id: 'middle', default: 'rentals',   members: ['rentals', 'calendar'] },
   { id: 'right',  default: 'customers', members: ['customers', 'sales'] },   // invoices retired (embedded in Customer Details); 2nd slot reserved for the upcoming 'sales' card ("coming soon" placeholder until PR 2)
 ];
@@ -636,6 +636,12 @@ export const PERF_SAMPLE_RATE = 1;          // fraction of sessions that flush a
  * disables EXECUTION, not VISIBILITY — flagged code still ships readable in
  * the public bundle. Never gate a secret or a security/auth check on this. */
 export const FEATURES = {
+  // Phase-2 wrangler-style redesign (spec 2026-07-20 list-views-inline-expand + plan
+  // 2026-07-21-list-detail-views-build-plan). ON = the redesigned steel-canon look/surfaces
+  // (`html.dv2`), landing beside the old rendering. Ships OFF so production keeps today's look;
+  // the redesign shows AUTOMATICALLY on non-production (staging/local) for review — see the
+  // `dv2` toggle in app.js. Flip this true only when Jac approves promoting the new look live.
+  designV2: false,
   // Card-search global mode — a globe toggle inside each grid-card search bar flips
   // between per-card and whole-yard search, replacing the giant #globalsearch bar.
   // Flag ON = the globe path (old bar removed); OFF = the old #globalsearch bar.
