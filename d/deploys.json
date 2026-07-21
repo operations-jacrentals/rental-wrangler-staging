@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "rental-wrangler-ui-research-rhd74v-3",
+      "label": "slice 2b: unit names via unitPill + Ref icon plate",
+      "feature": "rental-wrangler-ui-research-rhd74v",
+      "branch": "claude/rental-wrangler-ui-research-rhd74v",
+      "sha": "32e298f",
+      "when": "2026-07-21T15:57:31.694Z"
+    },
+    {
       "id": "rental-wrangler-ui-research-rhd74v-2",
       "label": "Redesign slice 2 · List Views element reshape",
       "feature": "rental-wrangler-ui-research-rhd74v",
