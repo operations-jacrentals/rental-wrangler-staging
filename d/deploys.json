@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "rental-wrangler-ui-research-rhd74v-1",
+      "label": "Redesign slice 1 · palette on dv2",
+      "feature": "rental-wrangler-ui-research-rhd74v",
+      "branch": "claude/rental-wrangler-ui-research-rhd74v",
+      "sha": "dad8606",
+      "when": "2026-07-21T08:30:10.666Z"
+    },
+    {
       "id": "design-mockups-preview-1",
       "label": "Phase-2 design mockups",
       "feature": "design-mockups-preview",
