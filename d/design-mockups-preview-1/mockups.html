@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rental Wrangler — Phase-2 Design Mockups</title>
+<style>
+:root{
+  --bg:#0a0d11; --card:#12171e; --cardh:#1a212b; --line:#2c343f; --lineSoft:#212834;
+  --txt:#eef2f7; --txt2:#aab4c1; --txt3:#838e9c; --accent:#ff7e1f; --onAcc:#1a1205;
+  --font:-apple-system,"Segoe UI",Roboto,system-ui,sans-serif;
+  --stamp:ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;} html,body{margin:0;padding:0;}
+body{background:var(--bg);color:var(--txt);font-family:var(--font);line-height:1.45;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:960px;margin:0 auto;padding:40px 22px 90px;}
+.eyebrow{font:800 10.5px/1 var(--stamp);letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:10px;}
+h1{font:800 26px/1.1 var(--stamp);letter-spacing:.02em;text-transform:uppercase;margin:0 0 8px;}
+.lede{font-size:13.5px;color:var(--txt3);max-width:66ch;margin:0 0 6px;}
+.lede b{color:var(--txt2);font-weight:600;}
+.note{font:600 10.5px/1.4 var(--stamp);letter-spacing:.03em;text-transform:uppercase;color:var(--txt3);margin:18px 0 26px;padding:9px 13px;border:1px dashed var(--line);border-radius:8px;display:inline-block;}
+.note b{color:var(--accent);}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;}
+a.tile{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 17px;transition:border-color .12s,background .12s;}
+a.tile:hover{border-color:var(--accent);background:var(--cardh);}
+.tile .k{font:800 9px/1 var(--stamp);letter-spacing:.09em;text-transform:uppercase;color:var(--txt3);margin-bottom:8px;}
+.tile h2{font:700 16px/1.2 var(--font);margin:0 0 5px;color:var(--txt);}
+.tile p{font-size:12px;color:var(--txt3);margin:0;}
+.tile .go{display:inline-flex;align-items:center;gap:5px;margin-top:11px;font:800 9.5px/1 var(--stamp);letter-spacing:.06em;text-transform:uppercase;color:var(--accent);}
+.foot{margin-top:34px;padding-top:16px;border-top:1px solid var(--lineSoft);font-size:11.5px;color:var(--txt3);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Staging preview · design only</div>
+  <h1>Rental Wrangler — Phase-2 Mockups</h1>
+  <p class="lede">The redesigned surfaces from this design session, rendered on the locked wrangler-style
+  system (steel palette, Signal · Gate · Stamp · Ref · Door, dark-only). These are <b>static design
+  mockups</b> — not the live app, not wired to any backend.</p>
+  <div class="note">Preview only · <b>production untouched</b> · no backend</div>
+
+  <div class="grid">
+    <a class="tile" href="trips-ledger.html">
+      <div class="k">Dispatch</div><h2>Trips · ETA Tracker</h2>
+      <p>The dispatch-book ledger — numbered spine outside the card, gate state-machine, +MIN=ETA line, departure-clock colour.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="list-views.html">
+      <div class="k">Cards</div><h2>List Views</h2>
+      <p>Spot-what's-on-fire cards — plate grammar, groups, rollup colour, inline-expand.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="detail-views.html">
+      <div class="k">Records</div><h2>Detail Views</h2>
+      <p>Units · Rentals · Customers open-card bodies on the locked element system.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="inbox-card.html">
+      <div class="k">Comms</div><h2>Inbox (v3)</h2>
+      <p>Unified-triage / native-conversation inbox — Gmail-grade, with the channel toggle + Mr. Wrangler.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="get-told.html">
+      <div class="k">Comms</div><h2>Get-Told · Notifications</h2>
+      <p>The three-altitude alert model — bell / footer dock / inbox.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="compose-dock.html">
+      <div class="k">Comms</div><h2>Compose Dock</h2>
+      <p>The footer compose / quick-reply dock that never teleports.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="dashboard-card.html">
+      <div class="k">Role</div><h2>Dashboard Card</h2>
+      <p>The role dashboard — chart-as-control, drill = filter.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="funnel.html">
+      <div class="k">Sales</div><h2>Funnel</h2>
+      <p>Who's worth chasing and the next touch.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="inspection.html">
+      <div class="k">Field</div><h2>Inspection</h2>
+      <p>The live-checklist inspection surface.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="tile" href="yard-journey.html">
+      <div class="k">Unit</div><h2>Yard Journey</h2>
+      <p>Know my next move on this machine.</p>
+      <span class="go">Open →</span>
+    </a>
+  </div>
+
+  <div class="foot">Rental Wrangler · Phase-2 design session · static mockups on staging for review. The live app at app.jacrentals.com is unchanged.</div>
+</div>
+</body>
+</html>

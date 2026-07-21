@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "design-mockups-preview-1",
+      "label": "Phase-2 design mockups",
+      "feature": "design-mockups-preview",
+      "branch": "claude/design-mockups-preview",
+      "sha": "3d12de0",
+      "when": "2026-07-21T08:08:13.146Z"
+    },
+    {
       "id": "staging-mockups-review-1",
       "label": "Phase-2 mockups: list-views v2 · yard-journey · funnel",
       "feature": "staging-mockups-review",
