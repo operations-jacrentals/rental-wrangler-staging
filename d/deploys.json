@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "rental-wrangler-ui-research-rhd74v-4",
+      "label": "Step 1: inline-expand (reveal in list, height-capped)",
+      "feature": "rental-wrangler-ui-research-rhd74v",
+      "branch": "claude/rental-wrangler-ui-research-rhd74v",
+      "sha": "e8bbaa3",
+      "when": "2026-07-21T21:12:05.807Z"
+    },
+    {
       "id": "rental-wrangler-ui-research-rhd74v-3",
       "label": "slice 2b: unit names via unitPill + Ref icon plate",
       "feature": "rental-wrangler-ui-research-rhd74v",
