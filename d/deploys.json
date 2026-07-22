@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "rental-wrangler-ui-research-rhd74v-6",
+      "label": "Step 2: plate-stack reshape + Jac's 4 fixes (drop X, header-close, collapsed inspection+history, swipe reveal)",
+      "feature": "rental-wrangler-ui-research-rhd74v",
+      "branch": "claude/rental-wrangler-ui-research-rhd74v",
+      "sha": "42d5c7b",
+      "when": "2026-07-22T03:43:17.212Z"
+    },
+    {
       "id": "rental-wrangler-ui-research-rhd74v-5",
       "label": "Step 1 fix: expanded item breaks out to full grid row",
       "feature": "rental-wrangler-ui-research-rhd74v",
@@ -152,14 +160,6 @@
       "branch": "claude/work-queue-92oeso",
       "sha": "51751b0",
       "when": "2026-07-18T19:31:42.223Z"
-    },
-    {
-      "id": "toggle-section-swiping-ipu032-1",
-      "label": "Merge remote-tracking branch 'origin/trunk' into claude/toggle-section-s",
-      "feature": "toggle-section-swiping-ipu032",
-      "branch": "claude/toggle-section-swiping-ipu032",
-      "sha": "a4b5e93",
-      "when": "2026-07-18T15:04:06.838Z"
     }
   ]
 }
