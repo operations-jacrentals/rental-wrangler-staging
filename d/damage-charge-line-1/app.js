@@ -2502,6 +2502,7 @@ const state = {
   tripsSyncStatus: null,       // §2.3 Phase 4 — null until a push/pull to the backend succeeds this session; 'synced' after either does (footer falls back to "Offline — cached" otherwise — honest either way, since the local cache is the only thing on screen in both cases)
   woPartForm: null,           // woId whose "+ Add Part/Labor" inline form is open
   invLineForm: null,          // invoiceId whose "+ Add Custom" inline form is open
+  invDamageForm: null,        // invoiceId whose "+ Add Damage Charge" inline form is open (a manual, money-affecting charge — reopens a paid invoice's balance via derivation, never a stored status flip)
   invMergePick: null,         // invoiceId whose "Merge invoice" picker is open (consolidate unpaid bills)
   dashboard: false,           // §5.3/§11 Office Dispatch Time Grid (grid-swap mode)
   seq: 1,
@@ -2934,7 +2935,7 @@ function cardFwd(card) {
 // → stays at 0. (Fresh opens don't call this, so they still start at the top.)
 function restoreJogScroll(card) {
   const c = document.querySelector(`.card[data-card="${card}"]:not([data-clone])`);   // §M8 wrap — the REAL card, never an edge clone
-  const b = c && c.querySelector('.card-body'); if (!b) return;
+  const b = scrollHostOf(c); if (!b) return;
   const y = scrollMemo[card + '|' + (c.dataset.view || 'list')];
   if (y) b.scrollTop = y;
 }
@@ -8953,11 +8954,13 @@ const DETAIL = {
     // line item: R7 hyperlink + amount + unlink ✕ — the redundant kind badge is GONE.
     const lines = (i.lineItems || []).map((li, idx) => {
       const ref = li.kind === 'rental' ? `data-pill-card="rentals" data-pill-rec="${esc(li.ref)}"`
-        : li.kind === 'WO' ? `data-pill-card="workOrders" data-pill-rec="${esc(li.ref)}"` : '';
+        : li.kind === 'WO' ? `data-pill-card="workOrders" data-pill-rec="${esc(li.ref)}"`
+        : (li.kind === 'damages' && li.unitId) ? `data-pill-card="units" data-pill-rec="${esc(li.unitId)}"` : '';   // a damage charge links to the damaged unit when one was tagged
+      const dmg = li.kind === 'damages' ? badge('Damage', 'red') : '';   // distinct marker — a manual damage charge, not a pricing-engine line
       const x = (!locked && li.kind !== 'transport' && itemPaid(i, li, idx) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
       const bal = itemPaid(i, li, idx);   // partial-payment item balance (when assigned)
       const refd = itemRefunded(i, li), fullyR = lineFullyRefunded(i, li);   // §19b per-line refund — strike a fully-refunded line, show the ↩ tally
-      return `<div class="hitem inv-line${fullyR ? ' line-refunded' : ''}"><span ${ref} class="inv-line-link${fullyR ? ' struck' : ''}" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 && !fullyR ? `<span class="dvd c-green derived" data-r="R4" data-tip="paid on this line">${money2(bal)}✓</span>` : ''}${refd > 0.005 ? `<span class="dvd derived refund-chip" data-r="R4" data-tip="refunded on this line">↩${money2(refd)}</span>` : ''}<b class="derived${fullyR ? ' struck' : ''}">${money2(li.amount)}</b>${x}</div>`;
+      return `<div class="hitem inv-line${fullyR ? ' line-refunded' : ''}">${dmg}<span ${ref} class="inv-line-link${fullyR ? ' struck' : ''}" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 && !fullyR ? `<span class="dvd c-green derived" data-r="R4" data-tip="paid on this line">${money2(bal)}✓</span>` : ''}${refd > 0.005 ? `<span class="dvd derived refund-chip" data-r="R4" data-tip="refunded on this line">↩${money2(refd)}</span>` : ''}<b class="derived${fullyR ? ' struck' : ''}">${money2(li.amount)}</b>${x}</div>`;
     }).join('');
     const ledgerRow = (label, val, cls) => `<div class="hitem inv-tot${cls ? ' ' + cls : ''}"><span class="muted">${esc(label)}</span><span class="spacer"></span><b class="derived">${val}</b></div>`;
     const kinds = ['rental', 'transport', 'parts', 'labor'].filter((k) => subBy(k) > 0);
@@ -8994,15 +8997,22 @@ const DETAIL = {
         : (t.paid > 0.005 && !i.refunded && !i.voided ? `<span class="muted" style="font-size:0.6471rem" data-tip="A payment is assigned — refund it first, then you can void this invoice.">Refund to void</span>` : '')
       : '');
     const lineForm = `<div class="lineform"><input class="lf-in js-lf-label" placeholder="Custom line description" /><div class="lineform-row"><input class="lf-in js-lf-amt" type="number" min="0" placeholder="Amount $" /></div><div class="pillrow" style="justify-content:flex-end">${ghostPill('Cancel', { js: 'js-line-cancel' })}${actionPill('commit', 'Add line', { js: 'js-line-save', data: { rec: i.invoiceId } })}</div></div>`;
+    // Damage charge (approved plan, #754): a manual money-affecting line on ANY invoice (open or fully paid).
+    // Required note (blocks save if blank) + amount + an optional link to the damaged unit (scoped to this
+    // invoice's own units). No card is charged — the raised total reopens a paid invoice's balance via the
+    // invoiceTotals() derivation, so it collects through the normal Pay-balance flow.
+    const dmgUnits = invoiceUnitIds(i).map((uid) => { const u = IDX.unit.get(uid); return u ? `<option value="${esc(uid)}">${esc(u.name)}</option>` : ''; }).join('');
+    const damageForm = `<div class="lineform"><input class="lf-in js-df-note" placeholder="Damage description (required)" /><div class="lineform-row"><input class="lf-in js-df-amt" type="number" min="0" placeholder="Amount $" /></div>${dmgUnits ? `<div class="lineform-row"><select class="lf-in js-df-unit"><option value="">Link damaged unit (optional)</option>${dmgUnits}</select></div>` : ''}<div class="pillrow" style="justify-content:flex-end">${ghostPill('Cancel', { js: 'js-df-cancel' })}${actionPill('commit', 'Add damage charge', { js: 'js-df-save', data: { rec: i.invoiceId } })}</div></div>`;
     // Merge (#64): a customer's other UNPAID invoices can fold into this one. Money-safe
     // by construction — only $0-paid, unlocked, un-refunded bills qualify (invoiceMergeable).
     const mergeables = (canMoney() && invoiceMergeable(i)) ? DATA.invoices.filter((o) => o.invoiceId !== i.invoiceId && o.customerId === i.customerId && invoiceMergeable(o)) : [];
     const mergePicker = `<div class="lineform mergeform"><div class="muted" style="font-size:0.7059rem;margin-bottom:7px">Fold another unpaid invoice for ${esc(cust ? cust.name : 'this customer')} into ${esc(i.invoiceId)} — its lines move over and the original is removed.</div>${mergeables.map((o) => { const ot = invoiceTotals(o); const n = (o.lineItems || []).length; return `<div class="hitem"><b class="derived">${esc(invoiceShort(o.invoiceId))}</b><span class="muted" style="font-size:0.6471rem">${n} line${n === 1 ? '' : 's'} · ${money2(ot.total)}</span><span class="spacer"></span>${actionPill('commit', 'Merge in', { js: 'js-merge-pick', h: 24, data: { keep: i.invoiceId, rec: o.invoiceId } })}</div>`; }).join('')}<div class="pillrow" style="justify-content:flex-end;margin-top:7px">${ghostPill('Done', { js: 'js-merge-cancel' })}</div></div>`;
     const manageRow = state.invLineForm === i.invoiceId ? lineForm
+      : state.invDamageForm === i.invoiceId ? damageForm
       : (state.invMergePick === i.invoiceId && mergeables.length) ? mergePicker
       : locked
         ? `<div class="pillrow"><span class="muted" style="font-size:0.7059rem">🔒 Pricing locked.</span>${canMoney() ? actionPill('commit', 'Unlock to edit', { js: 'js-unlock-invoice', data: { rec: i.invoiceId } }) : ''}</div>`
-        : `<div class="pillrow pillcol">${addBtn('Rental', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Rental' } })}${addBtn('WO', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'WO' } })}${addBtn('Custom', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Custom' } })}</div>${canMoney() && (i.lineItems || []).length ? `<div class="pillrow pillcol">${actionPill('commit', '🔒 Lock price', { js: 'js-lock-invoice', data: { rec: i.invoiceId } })}</div>` : ''}${mergeables.length ? `<div class="pillrow pillcol">${addBtn('Merge invoice', { line: true, js: 'js-merge-open', h: 26, data: { rec: i.invoiceId } })}</div>` : ''}`;
+        : `<div class="pillrow pillcol">${addBtn('Rental', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Rental' } })}${addBtn('WO', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'WO' } })}${addBtn('Custom', { line: true, js: 'js-add-line', h: 26, data: { rec: i.invoiceId, kind: 'Custom' } })}${addBtn('Damage Charge', { line: true, js: 'js-add-damage', h: 26, data: { rec: i.invoiceId } })}</div>${canMoney() && (i.lineItems || []).length ? `<div class="pillrow pillcol">${actionPill('commit', '🔒 Lock price', { js: 'js-lock-invoice', data: { rec: i.invoiceId } })}</div>` : ''}${mergeables.length ? `<div class="pillrow pillcol">${addBtn('Merge invoice', { line: true, js: 'js-merge-open', h: 26, data: { rec: i.invoiceId } })}</div>` : ''}`;
     const invoiceSec = `<div class="section"><h4>Invoice</h4>
       <div class="inv-split">
         <div class="inv-actions">
@@ -9468,8 +9478,13 @@ const memberIcon = (m) => (m === 'calendar' ? I.truck : m === 'sales' ? RING_ICO
 // Tab row count for a member (search-aware; mirrors the card's own count chip).
 function memberCount(member, session) {
   if (member === 'sales') return null;   // "coming soon" placeholder — no count chip
-  // Trips: upcoming not-done only — a done or past run is history, not a pending count.
-  if (member === 'calendar') return dispatchEvents().filter((ev) => ev.date >= TODAY_ISO && !stopDone(ev)).length;
+  // Trips: every not-done TRIP, any date (Jac 2026-07-18). Two deliberate choices here:
+  //   • no date floor — an undone run from a past day is the MOST overdue work on the board, not
+  //     history. The old `ev.date >= TODAY_ISO` filter hid it: a yard with four never-logged runs
+  //     (oldest 78 days) still showed a badge of 4, counting only today-forward.
+  //   • counts trips, not raw stops — the card body renders tripsFor(), so once two stops are
+  //     doubled into one run the badge stays equal to the rows underneath it.
+  if (member === 'calendar') return tripsFor().filter((t) => !t.done).length;
   try { let r = listFor(member, session); if (member === 'units') r = unitsVisible(r, session.cards.units); if (member === 'rentals') r = rentalsVisible(r, session, session.cards.rentals); return r.length; } catch { return 0; }
 }
 /** How many units NEED the crew — drives the red alert on the Units tab (the
@@ -11795,7 +11810,7 @@ function dispatchFocusStop(stopId) {
 function tripTownGo(stopId, day) {
   if (day) state.dispatchDay = day;
   state.dispFocusId = stopId;
-  if (!tripsMapOpen()) { tripsMapSetOpen(true); _dispMapFailed = false; }   // a collapsed panel opens (and retries a failed load)
+  if (!tripsMapOpen()) { _mapOpenSession = true; _dispMapFailed = false; }   // a collapsed panel opens for THIS session only (and retries a failed load) — never rewrites the remembered preference
   render();
   dispatchFocusStop(stopId);
 }
@@ -11809,8 +11824,24 @@ function tripTownGo(stopId, day) {
    (the key has Places, not Geocoding) and cached. Phase 2 (spec §2.1): the map rides a
    collapsible ~260px panel at the top of the Trips card — open by default everywhere,
    remembered per device; offline/#local shows the stamped MAP OFFLINE plate instead. */
-const tripsMapOpen = () => { try { const v = localStorage.getItem('jactec.tripsMap'); return v == null ? true : v === '1'; } catch (e) { return true; } };
-const tripsMapSetOpen = (on) => { try { localStorage.setItem('jactec.tripsMap', on ? '1' : '0'); } catch (e) {} };
+/* §2.1 map-panel state, in precedence order:
+   1. _mapOpenSession — a SESSION-ONLY override. Focusing a stop (tripTownGo) has to surface the
+      map, but that is a side effect of "show me this stop", not the driver saying "I want the map
+      open from now on". It used to call tripsMapSetOpen(true), which WROTE localStorage and
+      silently destroyed a deliberate collapse — one tap on a town undid it permanently (Jac
+      2026-07-18). The override lives for this page only; the explicit toggle button clears it.
+   2. the remembered per-device preference.
+   3. the default: open for everyone EXCEPT the driver role, whose landing card this is. The panel
+      is a fixed 260px inside a ~333px scroll region, so opening it by default left a driver
+      looking at one trip out of four; collapsed, three fit above the fold. Office/sales/mechanic
+      land on other cards and keep the map open as before. Read inside the try so a TDZ or storage
+      failure falls back to the old always-open behaviour. */
+let _mapOpenSession = null;
+const tripsMapOpen = () => {
+  if (_mapOpenSession !== null) return _mapOpenSession;
+  try { const v = localStorage.getItem('jactec.tripsMap'); return v == null ? currentRole !== 'driver' : v === '1'; } catch (e) { return true; }
+};
+const tripsMapSetOpen = (on) => { _mapOpenSession = null; try { localStorage.setItem('jactec.tripsMap', on ? '1' : '0'); } catch (e) {} };
 const isLocalDemo = () => (location.hash || '').toLowerCase().includes('local');
 let _dispMapFailed = false;   // a genuine Maps load failure → the panel flips to the plate (re-opening the panel retries)
 let _dispMap = null, _dispView = null, _dispMarkers = [], _dispRoute = null, _dispGeo = {}, _dispGeoPending = {};
@@ -17164,6 +17195,12 @@ function setFocusedCard(cardId) {
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
 const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list vs which record)
+/* The element that ACTUALLY scrolls for a card. Trips/calendar nests its real scroll region
+   (.cal-scroll) inside a .card-body that is itself `overflow:hidden` (style.css §2.1), so
+   reading/writing scrollTop on .card-body was a silent no-op there — the card snapped back to
+   the top of the map on every render (e.g. after assigning a driver). Every other card has no
+   .cal-scroll and still resolves to .card-body exactly as before. */
+const scrollHostOf = (c) => (c && (c.querySelector('.cal-scroll') || c.querySelector('.card-body'))) || null;
 // §M6 — phone chrome reflow (Jac 2026-07-11): the global "Search everything…" bar is dropped
 // (CSS-hidden); the phone reads top→bottom as HEADER (logo/rings · card toggles · per-card
 // search) then a bottom DOCK stacking the item-tab rail ABOVE the tool bar:
@@ -17184,7 +17221,7 @@ function render() {
   // or editing a field doesn't dump you back at the top of a scrolled card (§0.6).
   const scrollOld = {};
   document.querySelectorAll('.card[data-card]:not([data-clone])').forEach((c) => {   // §M8 wrap — skip the edge clones (they'd clobber the memo with their scrollTop 0)
-    const b = c.querySelector('.card-body'); if (!b) return;
+    const b = scrollHostOf(c); if (!b) return;
     const v = c.dataset.view || 'list'; scrollOld[c.dataset.card] = v;
     scrollMemo[c.dataset.card + '|' + v] = b.scrollTop;   // remember where THIS view was scrolled
   });
@@ -17227,7 +17264,7 @@ function render() {
   // restore scroll by VIEW: same view → keep your spot; back to a list → return to the
   // row you left; opened a record → top of Standard view (a targeted link scrolls itself after).
   document.querySelectorAll('.card[data-card]:not([data-clone])').forEach((c) => {   // §M8 wrap — skip the edge clones
-    const b = c.querySelector('.card-body'); if (!b) return;
+    const b = scrollHostOf(c); if (!b) return;
     const cardId = c.dataset.card, v = c.dataset.view || 'list', key = cardId + '|' + v;
     if (v === scrollOld[cardId] || v === 'list') b.scrollTop = scrollMemo[key] || 0;
     else b.scrollTop = 0;
@@ -17293,7 +17330,7 @@ function renderResults() {
   refreshToday();
   const scrollOld = {};
   document.querySelectorAll('.card[data-card]').forEach((c) => {
-    const b = c.querySelector('.card-body'); if (!b) return;
+    const b = scrollHostOf(c); if (!b) return;
     const v = c.dataset.view || 'list'; scrollOld[c.dataset.card] = v;
     scrollMemo[c.dataset.card + '|' + v] = b.scrollTop;
   });
@@ -17323,7 +17360,7 @@ function renderResults() {
     if (bb) bb.replaceWith(bottomBarEl());
   }
   document.querySelectorAll('.card[data-card]').forEach((c) => {   // restore scroll by view (mirrors render())
-    const b = c.querySelector('.card-body'); if (!b) return;
+    const b = scrollHostOf(c); if (!b) return;
     const cardId = c.dataset.card, v = c.dataset.view || 'list', key = cardId + '|' + v;
     if (v === scrollOld[cardId] || v === 'list') b.scrollTop = scrollMemo[key] || 0;
     else b.scrollTop = 0;
@@ -18085,7 +18122,13 @@ function dragFrameLoop() {
     if (!DRAG.active) return;
     const n = document.elementFromPoint(DRAG.point.x, DRAG.point.y);
     updateHot(n);
-    const body = n && n.closest ? n.closest('.card-body') : null;
+    // Resolve the card-body under the pointer, then hand off to the element that ACTUALLY
+    // scrolls — same .cal-scroll-before-.card-body precedence as scrollHostOf(). Trips/calendar
+    // keeps its real scroll region nested inside a `overflow:hidden` .card-body (style.css §2.1),
+    // so writing scrollTop straight onto the .card-body silently auto-scrolled nothing there.
+    // Anchoring on .card-body (not .card) keeps every other card's behaviour bit-for-bit.
+    const host = n && n.closest ? n.closest('.card-body') : null;
+    const body = host && (host.querySelector('.cal-scroll') || host);
     if (body) {
       const r = body.getBoundingClientRect();
       if (DRAG.point.y < r.top + EDGE) body.scrollTop -= Math.ceil((r.top + EDGE - DRAG.point.y) / 3);
@@ -19043,7 +19086,8 @@ function onClick(e) {
     e.stopPropagation();
     const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list';
     render(); attnFlash('.card[data-card="units"] .list');   // R19 — point AT the list
-    toast('Drag a unit from the Units card onto this rental.');
+    // §M3 — drag-to-link is retired on phones (long-press → R20 menu is the link path); phrase to match the device
+    toast(document.body.classList.contains('is-phone') ? 'Long-press a unit in the Units card to link it to this rental.' : 'Drag a unit from the Units card onto this rental.');
     return;
   }
   if (closest('.js-quickadd-cust')) {   // §quick-add hint — point AT the Customers search bar (no popup, Jac 2026-06-16)
@@ -19051,7 +19095,7 @@ function onClick(e) {
     const s = activeSession(); if (s.cols) s.cols.right = 'customers';
     const ccs = s.cards.customers; ccs.mode = 'list'; ccs.recId = null;
     render(); attnFlash('.card[data-card="customers"] .mini-searchwrap');   // R19 — guide them to the search
-    toast('Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
+    toast(document.body.classList.contains('is-phone') ? 'Type a name + phone in the Customers search and press Enter — then long-press the new customer to link it here.' : 'Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
     return;
   }
   if (closest('.js-create-invoice')) { e.stopPropagation(); return createInvoiceForRental(closest('.js-create-invoice').dataset.rec); }
@@ -19077,9 +19121,9 @@ function onClick(e) {
     const b = closest('.js-add-line'); e.stopPropagation();
     const inv = IDX.invoice.get(b.dataset.rec);
     if (b.dataset.kind === 'Rental') {
-      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
+      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', document.body.classList.contains('is-phone') ? 'The invoice needs a customer first (§7.5) — long-press to link, or quick-add one.' : 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
       const s = activeSession(); if (s.cols) s.cols.middle = 'rentals'; s.cards.rentals.mode = 'list';
-      render(); attnFlash('.card[data-card="rentals"] .list'); toast('Drag a rental onto this invoice.'); return;
+      render(); attnFlash('.card[data-card="rentals"] .list'); toast(document.body.classList.contains('is-phone') ? 'Long-press a rental to link it to this invoice.' : 'Drag a rental onto this invoice.'); return;
     }
     if (b.dataset.kind === 'WO') {
       // Phase 4 (Jac) — open the invoice's LINKED unit(s) in a filtered Units list; the
@@ -19095,6 +19139,10 @@ function onClick(e) {
   }
   if (closest('.js-line-save')) { const b = closest('.js-line-save'); e.stopPropagation(); const root = b.closest('.lineform'); const label = root.querySelector('.js-lf-label')?.value; const amt = Number(root.querySelector('.js-lf-amt')?.value) || 0; state.invLineForm = null; return addCustomLine(b.dataset.rec, label || 'Custom', amt); }
   if (closest('.js-line-cancel')) { e.stopPropagation(); state.invLineForm = null; return render(); }
+  // Damage charge (#754) — a manual money-affecting line on any invoice (open or paid). Note is REQUIRED.
+  if (closest('.js-add-damage')) { const b = closest('.js-add-damage'); e.stopPropagation(); state.invDamageForm = b.dataset.rec; state.invLineForm = null; state.invMergePick = null; return render(); }
+  if (closest('.js-df-cancel')) { e.stopPropagation(); state.invDamageForm = null; return render(); }
+  if (closest('.js-df-save')) { const b = closest('.js-df-save'); e.stopPropagation(); const root = b.closest('.lineform'); const note = (root.querySelector('.js-df-note')?.value || '').trim(); if (!note) { flashOr('.js-df-note', 'A damage description is required.'); return; } const amt = Number(root.querySelector('.js-df-amt')?.value) || 0; const unitId = root.querySelector('.js-df-unit')?.value || ''; state.invDamageForm = null; return addDamageLine(b.dataset.rec, note, amt, unitId); }
   if (closest('.js-merge-open')) { e.stopPropagation(); state.invMergePick = closest('.js-merge-open').dataset.rec; state.invLineForm = null; return render(); }   // #64 open the merge-invoice picker
   if (closest('.js-merge-pick')) { const b = closest('.js-merge-pick'); e.stopPropagation(); return mergeInvoiceInto(b.dataset.keep, b.dataset.rec); }
   if (closest('.js-merge-cancel')) { e.stopPropagation(); state.invMergePick = null; return render(); }
@@ -19967,7 +20015,9 @@ function setUnitStatus(rentalId, unitId, val, opts = {}) {
   else if (wasVoided && r.invoiceId) { syncRentalLines(r); syncTransportLine(r); }   // un-void → restore the unit's billing (was silently un-billed)
   syncRentalPrimary(r);            // mirror the aggregate back onto r.status for back-compat readers
   reindex('rentals', r);
-  logAction(r, `${IDX.unit.get(unitId)?.name || unitId} → ${getStatus('rentalStatus', val).label}`);
+  const unitLabel = IDX.unit.get(unitId)?.name || unitId;
+  logAction(r, `${unitLabel} → ${getStatus('rentalStatus', val).label}`);
+  toast(`${unitLabel} → ${getStatus('rentalStatus', val).label}`);   // confirm the per-unit move (mirrors setRentalStatus)
   render();
   if (val === 'Returned') maybePromptReturnRating(r);   // all units back → rate the customer's experience
 }
@@ -20000,13 +20050,15 @@ function openUnitStatusDropdown(rentalId, unitId, anchorEl) {
 }
 /* §9 Field Call — a unit breaks mid-rental: flag the rental (red FC), fail the unit,
    and auto-open a Field-Call work order so the M.Tech can dispatch parts/swap. */
-function markFieldCall(rentalId) {
-  const r = IDX.rental.get(rentalId); if (!r || !r.unitId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
+function markFieldCall(rentalId, unitId) {
+  const r = IDX.rental.get(rentalId); if (!r) return;
+  const targetId = unitId || r.unitId;   // the unit that actually broke; primary is only the fallback (§20 multi-unit)
+  if (!targetId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
   r.fieldCall = true; reindex('rentals', r);
-  const u = IDX.unit.get(r.unitId);
+  const u = IDX.unit.get(targetId);
   if (u) { u.inspectionStatus = 'Failed'; reindex('units', u); logAction(u, `Field Call on rental ${r.rentalName || rentalId}`); }
   const id = 'WO-FC' + (state.seq++);
-  const wo = { woId: id, unitId: r.unitId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  const wo = { woId: id, unitId: targetId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(wo); IDX.wo.set(id, wo); reindex('workOrders', wo);
   logAction(r, 'Field Call marked — unit failed, work order opened');
   toast('Field Call logged — unit → Failed, work order opened.');
@@ -20042,7 +20094,7 @@ function setUnitCondition(unitId, val) {
   if (val === 'Fail') {
     u.condAt = TODAY_ISO; u.condClock = nowClock();   // stamp the condition change on either path
     const ar = activeRentalForUnit(unitId);
-    if (ar) return markFieldCall(ar.rentalId);        // on-rent breakdown → field call (truck roll + dispatch)
+    if (ar) return markFieldCall(ar.rentalId, unitId);   // on-rent breakdown → field call on THIS unit (truck roll + dispatch)
     const n = newInspectionForUnit(u); n.wash = n.wash || 'No';
     return setInspResult(n.inspectionId, 'Fail');     // yard bench fail: auto-WO + §12.8 photo/notes popup
   }
@@ -20261,7 +20313,7 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
     setUnitCapture(r, eu, 'endCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}End/Recovery video ${replace ? 're-captured' : 'captured'}`);
   } else if (cap === 'fc') {
     setUnitCapture(r, eu, 'fcCapture', stamp);
-    if (!replace) markFieldCall(rentalId);
+    if (!replace) markFieldCall(rentalId, unitId);   // flag the captured unit, not just the primary (§20 multi-unit)
   }
   uploadCaptureMedia(r, eu, cap, dataUrl);
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -21006,8 +21058,8 @@ function openLogoMenu(anchorEl) {
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   try { flushUserPrefsNow(); } catch (e) {}   // §cross-device-sync — push a pending prefs edit before the token is dropped
-  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person
-  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
+  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true; devPwMode = false;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person. §dev-login: also drop dev-mode so the next user on a shared device returns to the default login, not the team-password screen.
+  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role'); sessionStorage.removeItem('jactec.devpw');
   renderLogin();
 }
 // Settings (Admin-tier): loads the live config, then opens the editor. Below-Admin with
@@ -22674,6 +22726,9 @@ function winPickSave() {
       const newN = ext.newInvoices ? ` · ${ext.newInvoices} new invoice${ext.newInvoices > 1 ? 's' : ''}` : '';
       logAction(r, `Extension ${up ? 'billed' : 're-priced −'} (${basis}) — ${up ? '+' : '−'}${amt}${newN}`);
       toast(`Extension ${up ? 'billed +' : 're-priced − '}${amt} (${basis})${ext.newInvoices ? ` — opened ${ext.newInvoices} continuation invoice${ext.newInvoices > 1 ? 's' : ''} (28-day cap)` : ''}.`);
+    } else {
+      // a shrink or move (no billable extension) saved silently before — confirm it too
+      toast(`Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}.`);
     }
   }
   state.winEdit = null; render();
@@ -23022,6 +23077,39 @@ function addCustomLine(invoiceId, label, amount) {
   // reset every non-anchored card's recId), kicking you off the invoice. Matches addPartToWO.
   render();
 }
+/* Add a manual DAMAGE charge line to an invoice (approved plan #754) — allowed on an
+   open OR a fully paid invoice. MONEY-SAFE BY CONSTRUCTION: it ONLY appends a line item
+   and audit-logs — it touches NO payment field (amountPaid/paid/paidAt) and makes NO
+   Stripe call. On a paid invoice the raised total flows through invoiceTotals() so the
+   balance reopens and the derived status drops off "Paid" automatically (status is
+   derived, never stored — the code-map data-flow law). The required note becomes the
+   line label shown on the invoice; an optional unitId links the damaged unit. */
+function addDamageLine(invoiceId, note, amount, unitId) {
+  const inv = IDX.invoice.get(invoiceId); if (!inv) return;
+  note = (note || '').trim(); if (!note) return;   // note is required — double-guard behind the UI check
+  amount = Number(amount) || 0;
+  inv.lineItems = inv.lineItems || [];
+  // Reopening a FULLY-PAID invoice: itemPaid() marks its lines paid only via the "balance<=0"
+  // shortcut when no per-line allocations exist. The raised total makes balance>0 and breaks that
+  // shortcut, which would wrongly re-expose the already-paid lines as unpaid (removable ✕, unlinkable
+  // rental). Materialize the existing full payment into explicit per-line allocations FIRST, so the
+  // reopened balance lands ONLY on the new damage line and the paid lines stay paid + locked.
+  const t = invoiceTotals(inv);
+  const hasAlloc = inv.allocations && Object.keys(inv.allocations).length;
+  if (amount > 0.005 && t.paid > 0.005 && t.balance <= 0.005 && !hasAlloc) {
+    inv.allocations = {};
+    inv.lineItems.forEach((li) => { const a = Number(li.amount) || 0; if (a > 0) inv.allocations[lineKey(li)] = a; });   // pre-tax dollars per line = fully covered
+  }
+  const li = { kind: 'damages', ref: null, lid: lineLid(), label: note, amount };
+  if (unitId && IDX.unit.get(unitId)) li.unitId = unitId;
+  inv.lineItems.push(li);
+  const uName = li.unitId ? ` · ${IDX.unit.get(li.unitId).name}` : '';
+  logAction(inv, `Damage charge added: ${note}${uName} (${money(amount)})`);   // who + when captured by logAction (by/clock) — a manual, money-affecting entry
+  toast(`Damage charge added (${money(amount)}).`);
+  // plain render() — a damages line (ref null) adds no cascade edge, so it must NOT
+  // re-anchor (which would collapse the open invoice back to the list). Matches addCustomLine.
+  render();
+}
 /* Add a part / labor line to a work order; advances the WO phase sensibly. */
 function addPartToWO(woId, part, cost, hours, phase) {
   const w = IDX.wo.get(woId); if (!w) return;
@@ -23350,6 +23438,7 @@ function mergeInvoiceInto(keepId, absorbId) {
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzHahzgJqOYe9o4GKlRVGh-A7USRn1k4Dvyy4ajLh8EYCqVxofouM28qs8trNlObZw/exec';
 const PERSIST_KEYS = ['categories', 'units', 'customers', 'invoices', 'rentals', 'workOrders', 'inspections', 'vendors', 'parts', 'companyFiles', 'expenses', 'models'];
 let backendPassword = sessionStorage.getItem('jactec.pw') || '';
+let devPwMode = false;                    // §dev-login: Ctrl+Alt+P revealed the legacy team-password screen (NON-PROD hosts only). Never hardcodes a password — the value is typed at runtime. Restored from sessionStorage in the APP_ENV setup block; also tells backendCall to authenticate with the plain team `password` (legacy path) instead of a per-person sessionToken.
 let booting = true;                       // suppresses saves during initial load
 let saveTimer = null, saving = false, savePending = false;
 
@@ -23363,7 +23452,7 @@ function driveViewUrl(res) {
 async function backendCall(action, extra) {
   // text/plain avoids a CORS preflight that GAS web apps can't answer
   const payload = Object.assign({ action, password: backendPassword }, extra || {});
-  if (flagOn('phoneIdentity') && backendPassword) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF
+  if (flagOn('phoneIdentity') && backendPassword && !devPwMode) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF. §dev-login: devPwMode skips the token and authenticates with the plain team `password` (the legacy path the backend still honors)
   const res = await fetch(BACKEND_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
   // A backend error page (GAS 500/quota/auth HTML) is NOT JSON — res.json() throws, callers
   // catch it, and a real card/charge failure gets masked as a generic "Network error". Parse
@@ -25517,13 +25606,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { try { flushUserPrefsNow(); } catch (e) {} });
 function renderLogin(msg) {
   resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
-  if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
+  if (flagOn('phoneIdentity') && !devPwMode) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path — OR the §dev-login reveal (Ctrl+Alt+P, non-prod only) even while the flag is ON
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
       <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
       <div class="login-title">Rental Wrangler</div>
-      <div class="login-sub">JacRentals · Sulphur, LA</div>
+      <div class="login-sub">${devPwMode ? 'Dev sign-in · ' + esc(APP_ENV) : 'JacRentals · Sulphur, LA'}</div>
       <div class="login-field">
         <label class="login-lbl" for="login-name">Operator</label>
         <input id="login-name" class="login-input" placeholder="Your name" autocomplete="name" value="${esc(currentUser)}" />
@@ -25965,6 +26054,25 @@ const APP_SLOT = (() => {
 if (APP_ENV !== 'production') {
   document.title = (APP_SLOT ? 'Staging ' + APP_SLOT
     : APP_ENV === 'local' ? 'Local' : 'Staging') + ' · Rental Wrangler';
+}
+// ── §dev-login — Ctrl+Alt+P reveals the legacy team-password login on LOCALHOST ONLY (the dev /
+//    automation host), so a dev or an automated session can sign in without the SMS phone-identity
+//    flow. Gated by an ALLOWLIST (APP_ENV === 'local') — a security-review tightening: production
+//    AND the public staging mirror both stay phone + SMS only, and the listener isn't even
+//    registered off localhost (no fail-open on an unknown/future hostname). The password is TYPED at
+//    runtime — nothing is ever stored in the repo. devPwMode also flips backendCall to the plain
+//    `password` (legacy) auth the backend still honors, instead of a per-person sessionToken.
+//    e.code === 'KeyP' (not e.key) so macOS Option+P — which types 'π' — still triggers it. ──
+if (APP_ENV === 'local') {
+  try { if (sessionStorage.getItem('jactec.devpw') === '1') devPwMode = true; } catch (e) {}
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey && e.altKey) || e.code !== 'KeyP') return;
+    if (backendPassword) return;                    // already signed in — never flip the auth mode mid-session
+    e.preventDefault();
+    devPwMode = !devPwMode;
+    try { devPwMode ? sessionStorage.setItem('jactec.devpw', '1') : sessionStorage.removeItem('jactec.devpw'); } catch (e2) {}
+    renderLogin();                                  // we're on the login screen (not signed in) → re-render in the chosen mode
+  });
 }
 // The slot's identity color (theme-invariant --slot-N / --tan), read from the stylesheet so the
 // tokens stay the single source of truth for the runtime-drawn favicon.
@@ -26765,7 +26873,7 @@ function exposeTestApi() {
       allUnitsTerminal, unitTerminal, unitVoided, rentalCleared, rentalLineItems, transportLineItems, extensionPreview, billExtension, unitBilledRental, unitBilledSeries, retroPricingOn, rentalInvoices, rentalActiveInvoice, invoiceChunks, createInvoiceForRental, syncRentalPrimary,
       nextInvoiceId, maxInvoiceSeq, mintedInvoiceIds, isInvoiceIdCollision, healInvoiceIdCollision, reindex,
       CFG, invoiceShort,
-      addUnitToRental, removeUnitFromRental, removeUnitInvoiceLine, unitLinePaid, invoiceTotals, allocLines,
+      addUnitToRental, removeUnitFromRental, removeUnitInvoiceLine, addCustomLine, addDamageLine, unitLinePaid, invoiceTotals, allocLines,
       rentalAllocated, itemRefunded, itemRefundable, lineRefunded, lineFullyRefunded, refundLines, rentalLineRefund, applyPayment, unitRentalPrice, rentalPrice, rentalDisplayName, setWoLinePhase, setWoPhase, woBottleneck, billWOToInvoice, billWOToInvoiceExplicit, activeRentalForUnit,
       cleanUnitName, planUnitMigration, applyUnitMigration, openMigrationPreview,
       computeTransportPrice, isFueledType, unitTransport, rentalTransport,

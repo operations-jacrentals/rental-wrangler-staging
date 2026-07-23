@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "damage-charge-line-1",
+      "label": "Wrangler fix: Add Damage Charge line item on invoices (open & paid) (#75",
+      "feature": "damage-charge-line",
+      "branch": "claude/damage-charge-line",
+      "sha": "44acc6f",
+      "when": "2026-07-23T13:03:43.254Z"
+    },
+    {
       "id": "rental-wrangler-ui-research-rhd74v-6",
       "label": "Step 2: plate-stack reshape + Jac's 4 fixes (drop X, header-close, collapsed inspection+history, swipe reveal)",
       "feature": "rental-wrangler-ui-research-rhd74v",
@@ -152,14 +160,6 @@
       "branch": "claude/work-queue-92oeso",
       "sha": "dbbf822",
       "when": "2026-07-18T19:47:54.135Z"
-    },
-    {
-      "id": "work-queue-92oeso-2",
-      "label": "Staging chrome: switcher bottom-left, badge dropped",
-      "feature": "work-queue-92oeso",
-      "branch": "claude/work-queue-92oeso",
-      "sha": "51751b0",
-      "when": "2026-07-18T19:31:42.223Z"
     }
   ]
 }
