@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "split-app-js-1",
+      "label": "split app.js into src/ modules",
+      "feature": "split-app-js",
+      "branch": "claude/split-app-js",
+      "sha": "3add956",
+      "when": "2026-07-24T20:00:01.712Z"
+    },
+    {
       "id": "damage-charge-line-1",
       "label": "Wrangler fix: Add Damage Charge line item on invoices (open & paid) (#75",
       "feature": "damage-charge-line",
@@ -152,14 +160,6 @@
       "branch": "claude/work-queue-92oeso",
       "sha": "1c54330",
       "when": "2026-07-18T20:37:42.517Z"
-    },
-    {
-      "id": "work-queue-92oeso-3",
-      "label": "Cache-bypass re-deploy (GitHub edge cached a 5xx)",
-      "feature": "work-queue-92oeso",
-      "branch": "claude/work-queue-92oeso",
-      "sha": "dbbf822",
-      "when": "2026-07-18T19:47:54.135Z"
     }
   ]
 }
