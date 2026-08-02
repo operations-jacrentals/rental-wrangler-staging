@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "rental-wrangler-cleanup-7db0sh-1",
+      "label": "trunk verification for promote (cleanup session)",
+      "feature": "rental-wrangler-cleanup-7db0sh",
+      "branch": "claude/rental-wrangler-cleanup-7db0sh",
+      "sha": "4466d83",
+      "when": "2026-08-02T23:49:30.673Z"
+    },
+    {
       "id": "split-app-js-1",
       "label": "split app.js into src/ modules",
       "feature": "split-app-js",
@@ -152,14 +160,6 @@
       "branch": "claude/rentals-dispatcher-audit-k977x2",
       "sha": "d8035fd",
       "when": "2026-07-19T02:53:38.422Z"
-    },
-    {
-      "id": "work-queue-92oeso-4",
-      "label": "Iframe launcher: bookmarkable /d/ (Jac)",
-      "feature": "work-queue-92oeso",
-      "branch": "claude/work-queue-92oeso",
-      "sha": "1c54330",
-      "when": "2026-07-18T20:37:42.517Z"
     }
   ]
 }
