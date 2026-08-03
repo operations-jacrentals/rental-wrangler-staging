@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "production-deployment-breakage-9lkj4k-1",
+      "label": "revert production to 0fac006",
+      "feature": "production-deployment-breakage-9lkj4k",
+      "branch": "claude/production-deployment-breakage-9lkj4k",
+      "sha": "9465eac",
+      "when": "2026-08-03T17:26:51.735Z"
+    },
+    {
       "id": "rental-wrangler-cleanup-7db0sh-1",
       "label": "trunk verification for promote (cleanup session)",
       "feature": "rental-wrangler-cleanup-7db0sh",
@@ -152,14 +160,6 @@
       "branch": "claude/categories-derivation-fixes",
       "sha": "5b43086",
       "when": "2026-07-19T03:29:37.319Z"
-    },
-    {
-      "id": "rentals-dispatcher-audit-k977x2-1",
-      "label": "Four RENTALS dispatch bug fixes (#740)",
-      "feature": "rentals-dispatcher-audit-k977x2",
-      "branch": "claude/rentals-dispatcher-audit-k977x2",
-      "sha": "d8035fd",
-      "when": "2026-07-19T02:53:38.422Z"
     }
   ]
 }

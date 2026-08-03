@@ -19043,8 +19043,7 @@ function onClick(e) {
     e.stopPropagation();
     const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list';
     render(); attnFlash('.card[data-card="units"] .list');   // R19 — point AT the list
-    // §M3 — drag-to-link is retired on phones (long-press → R20 menu is the link path); phrase to match the device
-    toast(document.body.classList.contains('is-phone') ? 'Long-press a unit in the Units card to link it to this rental.' : 'Drag a unit from the Units card onto this rental.');
+    toast('Drag a unit from the Units card onto this rental.');
     return;
   }
   if (closest('.js-quickadd-cust')) {   // §quick-add hint — point AT the Customers search bar (no popup, Jac 2026-06-16)
@@ -19052,7 +19051,7 @@ function onClick(e) {
     const s = activeSession(); if (s.cols) s.cols.right = 'customers';
     const ccs = s.cards.customers; ccs.mode = 'list'; ccs.recId = null;
     render(); attnFlash('.card[data-card="customers"] .mini-searchwrap');   // R19 — guide them to the search
-    toast(document.body.classList.contains('is-phone') ? 'Type a name + phone in the Customers search and press Enter — then long-press the new customer to link it here.' : 'Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
+    toast('Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
     return;
   }
   if (closest('.js-create-invoice')) { e.stopPropagation(); return createInvoiceForRental(closest('.js-create-invoice').dataset.rec); }
@@ -19078,9 +19077,9 @@ function onClick(e) {
     const b = closest('.js-add-line'); e.stopPropagation();
     const inv = IDX.invoice.get(b.dataset.rec);
     if (b.dataset.kind === 'Rental') {
-      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', document.body.classList.contains('is-phone') ? 'The invoice needs a customer first (§7.5) — long-press to link, or quick-add one.' : 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
+      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
       const s = activeSession(); if (s.cols) s.cols.middle = 'rentals'; s.cards.rentals.mode = 'list';
-      render(); attnFlash('.card[data-card="rentals"] .list'); toast(document.body.classList.contains('is-phone') ? 'Long-press a rental to link it to this invoice.' : 'Drag a rental onto this invoice.'); return;
+      render(); attnFlash('.card[data-card="rentals"] .list'); toast('Drag a rental onto this invoice.'); return;
     }
     if (b.dataset.kind === 'WO') {
       // Phase 4 (Jac) — open the invoice's LINKED unit(s) in a filtered Units list; the
@@ -19968,9 +19967,7 @@ function setUnitStatus(rentalId, unitId, val, opts = {}) {
   else if (wasVoided && r.invoiceId) { syncRentalLines(r); syncTransportLine(r); }   // un-void → restore the unit's billing (was silently un-billed)
   syncRentalPrimary(r);            // mirror the aggregate back onto r.status for back-compat readers
   reindex('rentals', r);
-  const unitLabel = IDX.unit.get(unitId)?.name || unitId;
-  logAction(r, `${unitLabel} → ${getStatus('rentalStatus', val).label}`);
-  toast(`${unitLabel} → ${getStatus('rentalStatus', val).label}`);   // confirm the per-unit move (mirrors setRentalStatus)
+  logAction(r, `${IDX.unit.get(unitId)?.name || unitId} → ${getStatus('rentalStatus', val).label}`);
   render();
   if (val === 'Returned') maybePromptReturnRating(r);   // all units back → rate the customer's experience
 }
@@ -20003,15 +20000,13 @@ function openUnitStatusDropdown(rentalId, unitId, anchorEl) {
 }
 /* §9 Field Call — a unit breaks mid-rental: flag the rental (red FC), fail the unit,
    and auto-open a Field-Call work order so the M.Tech can dispatch parts/swap. */
-function markFieldCall(rentalId, unitId) {
-  const r = IDX.rental.get(rentalId); if (!r) return;
-  const targetId = unitId || r.unitId;   // the unit that actually broke; primary is only the fallback (§20 multi-unit)
-  if (!targetId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
+function markFieldCall(rentalId) {
+  const r = IDX.rental.get(rentalId); if (!r || !r.unitId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
   r.fieldCall = true; reindex('rentals', r);
-  const u = IDX.unit.get(targetId);
+  const u = IDX.unit.get(r.unitId);
   if (u) { u.inspectionStatus = 'Failed'; reindex('units', u); logAction(u, `Field Call on rental ${r.rentalName || rentalId}`); }
   const id = 'WO-FC' + (state.seq++);
-  const wo = { woId: id, unitId: targetId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  const wo = { woId: id, unitId: r.unitId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(wo); IDX.wo.set(id, wo); reindex('workOrders', wo);
   logAction(r, 'Field Call marked — unit failed, work order opened');
   toast('Field Call logged — unit → Failed, work order opened.');
@@ -20047,7 +20042,7 @@ function setUnitCondition(unitId, val) {
   if (val === 'Fail') {
     u.condAt = TODAY_ISO; u.condClock = nowClock();   // stamp the condition change on either path
     const ar = activeRentalForUnit(unitId);
-    if (ar) return markFieldCall(ar.rentalId, unitId);   // on-rent breakdown → field call on THIS unit (truck roll + dispatch)
+    if (ar) return markFieldCall(ar.rentalId);        // on-rent breakdown → field call (truck roll + dispatch)
     const n = newInspectionForUnit(u); n.wash = n.wash || 'No';
     return setInspResult(n.inspectionId, 'Fail');     // yard bench fail: auto-WO + §12.8 photo/notes popup
   }
@@ -20266,7 +20261,7 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
     setUnitCapture(r, eu, 'endCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}End/Recovery video ${replace ? 're-captured' : 'captured'}`);
   } else if (cap === 'fc') {
     setUnitCapture(r, eu, 'fcCapture', stamp);
-    if (!replace) markFieldCall(rentalId, unitId);   // flag the captured unit, not just the primary (§20 multi-unit)
+    if (!replace) markFieldCall(rentalId);
   }
   uploadCaptureMedia(r, eu, cap, dataUrl);
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -21011,8 +21006,8 @@ function openLogoMenu(anchorEl) {
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   try { flushUserPrefsNow(); } catch (e) {}   // §cross-device-sync — push a pending prefs edit before the token is dropped
-  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true; devPwMode = false;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person. §dev-login: also drop dev-mode so the next user on a shared device returns to the default login, not the team-password screen.
-  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role'); sessionStorage.removeItem('jactec.devpw');
+  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person
+  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
 }
 // Settings (Admin-tier): loads the live config, then opens the editor. Below-Admin with
@@ -22679,9 +22674,6 @@ function winPickSave() {
       const newN = ext.newInvoices ? ` · ${ext.newInvoices} new invoice${ext.newInvoices > 1 ? 's' : ''}` : '';
       logAction(r, `Extension ${up ? 'billed' : 're-priced −'} (${basis}) — ${up ? '+' : '−'}${amt}${newN}`);
       toast(`Extension ${up ? 'billed +' : 're-priced − '}${amt} (${basis})${ext.newInvoices ? ` — opened ${ext.newInvoices} continuation invoice${ext.newInvoices > 1 ? 's' : ''} (28-day cap)` : ''}.`);
-    } else {
-      // a shrink or move (no billable extension) saved silently before — confirm it too
-      toast(`Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}.`);
     }
   }
   state.winEdit = null; render();
@@ -23358,7 +23350,6 @@ function mergeInvoiceInto(keepId, absorbId) {
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzHahzgJqOYe9o4GKlRVGh-A7USRn1k4Dvyy4ajLh8EYCqVxofouM28qs8trNlObZw/exec';
 const PERSIST_KEYS = ['categories', 'units', 'customers', 'invoices', 'rentals', 'workOrders', 'inspections', 'vendors', 'parts', 'companyFiles', 'expenses', 'models'];
 let backendPassword = sessionStorage.getItem('jactec.pw') || '';
-let devPwMode = false;                    // §dev-login: Ctrl+Alt+P revealed the legacy team-password screen (NON-PROD hosts only). Never hardcodes a password — the value is typed at runtime. Restored from sessionStorage in the APP_ENV setup block; also tells backendCall to authenticate with the plain team `password` (legacy path) instead of a per-person sessionToken.
 let booting = true;                       // suppresses saves during initial load
 let saveTimer = null, saving = false, savePending = false;
 
@@ -23372,7 +23363,7 @@ function driveViewUrl(res) {
 async function backendCall(action, extra) {
   // text/plain avoids a CORS preflight that GAS web apps can't answer
   const payload = Object.assign({ action, password: backendPassword }, extra || {});
-  if (flagOn('phoneIdentity') && backendPassword && !devPwMode) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF. §dev-login: devPwMode skips the token and authenticates with the plain team `password` (the legacy path the backend still honors)
+  if (flagOn('phoneIdentity') && backendPassword) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF
   const res = await fetch(BACKEND_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
   // A backend error page (GAS 500/quota/auth HTML) is NOT JSON — res.json() throws, callers
   // catch it, and a real card/charge failure gets masked as a generic "Network error". Parse
@@ -25526,13 +25517,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { try { flushUserPrefsNow(); } catch (e) {} });
 function renderLogin(msg) {
   resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
-  if (flagOn('phoneIdentity') && !devPwMode) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path — OR the §dev-login reveal (Ctrl+Alt+P, non-prod only) even while the flag is ON
+  if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
       <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
       <div class="login-title">Rental Wrangler</div>
-      <div class="login-sub">${devPwMode ? 'Dev sign-in · ' + esc(APP_ENV) : 'JacRentals · Sulphur, LA'}</div>
+      <div class="login-sub">JacRentals · Sulphur, LA</div>
       <div class="login-field">
         <label class="login-lbl" for="login-name">Operator</label>
         <input id="login-name" class="login-input" placeholder="Your name" autocomplete="name" value="${esc(currentUser)}" />
@@ -25974,25 +25965,6 @@ const APP_SLOT = (() => {
 if (APP_ENV !== 'production') {
   document.title = (APP_SLOT ? 'Staging ' + APP_SLOT
     : APP_ENV === 'local' ? 'Local' : 'Staging') + ' · Rental Wrangler';
-}
-// ── §dev-login — Ctrl+Alt+P reveals the legacy team-password login on LOCALHOST ONLY (the dev /
-//    automation host), so a dev or an automated session can sign in without the SMS phone-identity
-//    flow. Gated by an ALLOWLIST (APP_ENV === 'local') — a security-review tightening: production
-//    AND the public staging mirror both stay phone + SMS only, and the listener isn't even
-//    registered off localhost (no fail-open on an unknown/future hostname). The password is TYPED at
-//    runtime — nothing is ever stored in the repo. devPwMode also flips backendCall to the plain
-//    `password` (legacy) auth the backend still honors, instead of a per-person sessionToken.
-//    e.code === 'KeyP' (not e.key) so macOS Option+P — which types 'π' — still triggers it. ──
-if (APP_ENV === 'local') {
-  try { if (sessionStorage.getItem('jactec.devpw') === '1') devPwMode = true; } catch (e) {}
-  document.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey && e.altKey) || e.code !== 'KeyP') return;
-    if (backendPassword) return;                    // already signed in — never flip the auth mode mid-session
-    e.preventDefault();
-    devPwMode = !devPwMode;
-    try { devPwMode ? sessionStorage.setItem('jactec.devpw', '1') : sessionStorage.removeItem('jactec.devpw'); } catch (e2) {}
-    renderLogin();                                  // we're on the login screen (not signed in) → re-render in the chosen mode
-  });
 }
 // The slot's identity color (theme-invariant --slot-N / --tan), read from the stylesheet so the
 // tokens stay the single source of truth for the runtime-drawn favicon.
