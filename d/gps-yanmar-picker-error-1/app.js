@@ -2207,13 +2207,9 @@ function topServiceForUnit(unit) {
   const active = rows.filter((s) => s.status !== 'ok' && !svcSnoozedUntil(unit, s.taskId));
   return active[0] || null;
 }
-/** Total repair cost for a unit = Σ its WO line-item costs (SPEC §12.4).
- *  §void-work — a CANCELLED work order was never performed and never billed, so its line
- *  items are not a repair cost. ruCatMoney's expense loop already skipped cancelled WOs;
- *  this one did not, so the same category's ROI denominator and its Expenses graph used two
- *  different definitions of "expense" and could visibly disagree (audit 2026-07-18). */
+/** Total repair cost for a unit = Σ its WO line-item costs (SPEC §12.4). */
 function unitRepairCost(unitId) {
-  return rmemo('unitRepair', unitId, () => DATA.workOrders.filter((w) => w.unitId === unitId && !w.cancelled)
+  return rmemo('unitRepair', unitId, () => DATA.workOrders.filter((w) => w.unitId === unitId)
     .reduce((a, w) => a + (w.lineItems || []).reduce((s, li) => s + (Number(li.cost) || 0), 0), 0));
 }
 /** §7.6 WO "Price if billed": tiered parts markup (by each part's cost) + $150/hr labor.
@@ -2226,17 +2222,9 @@ function woBillable(w) {
   const labor = items.reduce((a, li) => a + (Number(li.hours) || 0), 0) || w.laborHours || 0;
   return Math.round(parts + labor * LABOR_RATE);
 }
-/* §void-rental — a rental that was Cancelled, No-Showed, or is still an unaccepted Quote
-   never happened: the void path strips its invoice line, so the ledger already disagrees with
-   any rollup that counts its derived price. ruCatUtilProxy excluded exactly these three
-   statuses; unitTotalRevenue and ruCatMoney did not, so revenue and ROI were inflated by
-   money never collected (audit 2026-07-18). ONE shared predicate so the sites can't drift
-   apart again — rentalDisplayStatus is a hoisted declaration, safe to call from here. */
-const VOID_RENTAL_STATUS = new Set(['Cancelled', 'No Show', 'Quote']);
-const rentalOccurred = (r) => !VOID_RENTAL_STATUS.has(rentalDisplayStatus(r));
 /** Total revenue a unit has earned = Σ its rentals' derived prices (SPEC §12.4). */
 function unitTotalRevenue(unitId) {
-  return rmemo('unitRev', unitId, () => DATA.rentals.filter((r) => rentalHasUnit(r, unitId) && rentalOccurred(r))
+  return rmemo('unitRev', unitId, () => DATA.rentals.filter((r) => rentalHasUnit(r, unitId))
     .reduce((a, r) => { const p = unitRentalPrice(r, unitId); return a + (p ? p.price : 0); }, 0));   // §20 this unit's own line
 }
 
@@ -2310,22 +2298,13 @@ function categoryUnavailReason(categoryId) {
 }
 /** A unit's current rental bucket (mirrors §12.4 Rental Status into 3 buckets). */
 function unitRentalBucket(u) {
-  /* §off-fleet — Sold / For Sale / Inactive (RENTABLE_SKIP_FLEET) have permanently left
-     rentable inventory, so they are NOT "Available". They simply have no open rental, which
-     the old `if (!r) return 'Available'` below read as free-to-rent — which is why a category
-     detail could advertise "9 Available" while its own mini-card correctly showed none free
-     (Jac 2026-07-18: Sold, For Sale and Inactive are ALL Off Fleet). Tested BEFORE the rental
-     lookup, because off-fleet is a property of the UNIT, not of whether it happens to be out.
-     This function also backs the §A1 `__fleet` segment filter, so the bar and its click-through
-     stay in step for free. */
-  if (RENTABLE_SKIP_FLEET.has(u.fleetStatus)) return 'Off Fleet';
   const r = activeRentalForUnit(u.unitId);
   if (!r) return 'Available';
   const eu = unitEntry(r, u.unitId);   // §20 this unit's OWN status, not the rental roll-up
   return eu ? unitStatus(r, eu) : rentalDisplayStatus(r);
 }
 /** The order rental-status segments appear in the §12.3 second bar (birds-eye renting). */
-const RENTAL_BAR_ORDER = ['Available', 'Tomorrow', 'Today', 'Reserved', 'On Rent', 'End Rent', 'Off Rent', 'Returned', 'Cancelled', 'No Show', 'Off Fleet'];   // §off-fleet last — it is the only bucket that can never come back into play
+const RENTAL_BAR_ORDER = ['Available', 'Tomorrow', 'Today', 'Reserved', 'On Rent', 'End Rent', 'Off Rent', 'Returned', 'Cancelled', 'No Show'];
 /** Category proportional RENTAL mix by actual display status, plus which buckets
    involve transport (truck icon). Same proportional pattern as categoryMix. */
 function categoryRentalMix(categoryId) {
@@ -7289,16 +7268,11 @@ const ROWS = {
     }${
       tally('Fail', mix.Failed, 'red', 'Failed', `${mix.Failed} failed inspection — tap to filter Units`)
     }`;
-    const rate = (label, v, cls) => `<div class="catr-rate${cls ? ' ' + cls : ''}"><span class="catr-rk">${label}</span><span class="catr-rv${v ? '' : ' none'}">${v ? money(v) : '—'}</span></div>`;
+    const rate = (label, v) => `<div class="catr-rate"><span class="catr-rk">${label}</span><span class="catr-rv${v ? '' : ' none'}">${v ? money(v) : '—'}</span></div>`;
     return `<div class="catr" style="--catr-hl:var(--${hl})">
       <div class="catr-head"><span class="catr-cat">${categoryIconFor(c.name)}</span><span class="r-title catr-name${hl === 'red' ? ' ec-red' : ''}" style="color:${nameColor}" data-tip="${esc(c.name)}">${esc(c.name)}</span></div>
       <div class="catr-pills">${lead}<div class="catr-tally-row">${tallyRow}</div></div>
-      <!-- §member-rate — memberDaily LEADS the stack because it is not a peer of the four
-           duration tiers: rentalPrice() short-circuits on membership and bills days × memberDaily,
-           ignoring all four. It was previously visible only after opening the detail, so the
-           surface a counter rep actually reads to quote a member showed four numbers none of which
-           would be charged (audit 2026-07-18). Order matches the detail view's Pricing section. -->
-      <div class="catr-rates">${rate('Member/Day', c.memberDaily, 'member')}${rate('1-Day', c.rate1Day)}${rate('7-Day', c.rate7Day)}${rate('4-Week', c.rate4Wk)}${rate('Weekend', c.weekend)}</div>
+      <div class="catr-rates">${rate('1-Day', c.rate1Day)}${rate('7-Day', c.rate7Day)}${rate('4-Week', c.rate4Wk)}${rate('Weekend', c.weekend)}</div>
     </div>`;
   },
 
@@ -7510,13 +7484,7 @@ const CARD_COLUMNS = {
     C('rate4', '4-Week', 'money', (c) => c.rate4Wk ?? null),
     C('avgHours', 'Avg hours', 'num', (c) => categoryStats(c).avgHours ?? null, { agg: 'avg' }),
     C('units', 'Units', 'num', (c) => DATA.units.filter((u) => u.categoryId === c.categoryId).length, { agg: 'sum' }),
-    /* §roi-gate — ROI is MARGIN. The detail view already hides it behind canMoney() (the
-       Investment section renders it only `if (st.roi != null && canMoney())`), but the same
-       value was published here as an ungated list column — in the card's DEFAULT layout — and
-       as an ungated sort key, so a below-money-tier reader could read margin off a coloured
-       pill or infer the whole ranking just by sorting on it. Gated at the accessor AND the
-       cell so the value is withheld and any sort on it carries no ordering signal. */
-    C('roi', 'ROI', 'pct', (c) => { if (!canMoney()) return null; const s = categoryStats(c); return s.roi != null ? s.roi : null; }, { pill: true, cell: (c) => { if (!canMoney()) return '—'; const s = categoryStats(c); return s.roi == null ? '—' : pillS(s.roi >= 0 ? 'green' : 'red', s.roi + '% ROI'); } }),
+    C('roi', 'ROI', 'pct', (c) => { const s = categoryStats(c); return s.roi != null ? s.roi : null; }, { pill: true, cell: (c) => { const s = categoryStats(c); return s.roi == null ? '—' : pillS(s.roi >= 0 ? 'green' : 'red', s.roi + '% ROI'); } }),
   ],
   invoices: [
     C('id', 'Invoice', 'text', (i) => i.invoiceId),
@@ -8900,12 +8868,7 @@ const DETAIL = {
     const mixBar = mix.total ? `<div class="mixbar tall">${mixSeg(mix.Ready, mix.total, 'Ready', 'green', 'Ready', 'inspection')}${mixSeg(mix['Not Ready'], mix.total, 'Not Ready', 'yellow', 'Not Ready', 'inspection')}${mixSeg(mix.Failed, mix.total, 'Failed', 'red', 'Failed', 'inspection')}</div>` : '';
     // §12.3 second bar — birds-eye RENTAL status: Available + each active status
     // (Tomorrow/Today/Reserved/On Rent/…) in order, with a truck icon for transport.
-    const rentSegs = RENTAL_BAR_ORDER.map((stt) => { const ct = rmix.counts[stt] || 0; if (!ct) return ''; // §off-fleet — 'Off Fleet' is not a rentalStatus, so getStatus() would return undefined and
-// throw on .color; it needs the same explicit mapping 'Available' already has. --navy is an
-// existing, fully-themed token (dark + light/ranch both defined) that no rentalStatus value
-// uses, so nothing collides and none of the six registry meanings is repurposed — it reads as
-// recessive "not in play", which is exactly what an off-fleet machine is.
-const color = stt === 'Available' ? 'gray' : stt === 'Off Fleet' ? 'navy' : getStatus('rentalStatus', stt).color; return mixSeg(ct, rmix.total, stt, color, stt, 'rental', !!rmix.truck[stt]); }).join('');
+    const rentSegs = RENTAL_BAR_ORDER.map((stt) => { const ct = rmix.counts[stt] || 0; if (!ct) return ''; const color = stt === 'Available' ? 'gray' : getStatus('rentalStatus', stt).color; return mixSeg(ct, rmix.total, stt, color, stt, 'rental', !!rmix.truck[stt]); }).join('');
     const rentBar = rmix.total ? `<div class="mixbar tall">${rentSegs}</div>` : '';
     const bars = (mixBar || rentBar) ? `<div class="mixbars">${mixBar}${rentBar}</div>` : '';
     // Pricing is Admin-gated (Jac 2026-06-22): anyone can read the rates, but changing
@@ -9775,10 +9738,7 @@ function listView(cardDef, session) {
   gvSyncClosed(card, cs);   // §13.4 — graph closed but g-terms linger (record open / invoice surface) → save + drop them before the bar's pills render
   const wrap = el('div');
   // sort/search bar
-  // §roi-gate — drop ROI from the offered sort keys below the money tier, so the margin
-  // ranking can't be inferred by sorting on a value the detail view deliberately hides.
-  // `curField` already falls back to sf[0] when the saved field isn't in the list.
-  const sf = SORT_FIELDS[card].filter((f) => f.field !== 'roi' || canMoney());
+  const sf = SORT_FIELDS[card];
   const curField = sf.find((f) => f.field === cs.sort.field) || sf[0];
   const av = activeView(card, cs);   // §5.5 the View button shows the active view's name, else the sort field
   const bar = el('div', 'listbar');
@@ -12434,7 +12394,6 @@ function ruNavigate(card, col, value, seg) {
 function ruCatMoney(rg) {
   const rev = {}, exp = {}, basis = {};
   DATA.rentals.forEach((rr) => {
-    if (!rentalOccurred(rr)) return;   // §void-rental — Cancelled / No Show / Quote earned nothing; matches ruCatUtilProxy
     if (ruBounded(rg) && !ruIn(rr.startDate, rg)) return;
     const us = rentalUnits(rr).map((eu) => IDX.unit.get(eu.unitId)).filter((u) => u && u.categoryId);
     if (!us.length) return;
@@ -12771,7 +12730,7 @@ function ruCatUtilProxy(rg) {
   const days = Math.max(1, Math.round((parseISO(b) - parseISO(a)) / 86400000));
   const rented = {};   // categoryId → Σ on-rent days inside [a,b)
   DATA.rentals.forEach((r2) => {
-    if (!rentalOccurred(r2)) return;   // §void-rental — was an inline triple-compare here; now the shared predicate
+    const s = rentalDisplayStatus(r2); if (s === 'Cancelled' || s === 'No Show' || s === 'Quote') return;
     const rs = (r2.startDate || '').slice(0, 10), re = (r2.endDate || r2.startDate || '').slice(0, 10);
     if (!rs) return;
     const lo = rs > a ? rs : a, hi = re < b ? re : b; if (lo >= hi) return;
@@ -12779,12 +12738,7 @@ function ruCatUtilProxy(rg) {
     rentalUnits(r2).forEach((eu) => { const u = IDX.unit.get(eu.unitId); if (u && u.categoryId) rented[u.categoryId] = (rented[u.categoryId] || 0) + d; });
   });
   const fleet = {};   // categoryId → unit count (available days = units × window days)
-  /* §dead-fleet — the denominator is "unit-days we COULD have rented", so a Sold / For Sale /
-     Inactive unit does not belong in it: it can never go out again. Counting it permanently
-     depressed utilization for any category that has retired anything, making a busy class read
-     as idle (audit 2026-07-18). RENTABLE_SKIP_FLEET is the same set the mini-card's availability
-     already uses; the numerator above was already filtered, only this side was not. */
-  DATA.units.forEach((u) => { if (u.categoryId && !RENTABLE_SKIP_FLEET.has(u.fleetStatus)) fleet[u.categoryId] = (fleet[u.categoryId] || 0) + 1; });
+  DATA.units.forEach((u) => { if (u.categoryId) fleet[u.categoryId] = (fleet[u.categoryId] || 0) + 1; });
   return { days, note, rented, fleet };
 }
 function ruTimeUtil(rg) {   // proxy: days on rent ÷ available days per category — swaps to (Δhours ÷ expected)×100 once M4 history exists
@@ -19089,8 +19043,7 @@ function onClick(e) {
     e.stopPropagation();
     const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list';
     render(); attnFlash('.card[data-card="units"] .list');   // R19 — point AT the list
-    // §M3 — drag-to-link is retired on phones (long-press → R20 menu is the link path); phrase to match the device
-    toast(document.body.classList.contains('is-phone') ? 'Long-press a unit in the Units card to link it to this rental.' : 'Drag a unit from the Units card onto this rental.');
+    toast('Drag a unit from the Units card onto this rental.');
     return;
   }
   if (closest('.js-quickadd-cust')) {   // §quick-add hint — point AT the Customers search bar (no popup, Jac 2026-06-16)
@@ -19098,7 +19051,7 @@ function onClick(e) {
     const s = activeSession(); if (s.cols) s.cols.right = 'customers';
     const ccs = s.cards.customers; ccs.mode = 'list'; ccs.recId = null;
     render(); attnFlash('.card[data-card="customers"] .mini-searchwrap');   // R19 — guide them to the search
-    toast(document.body.classList.contains('is-phone') ? 'Type a name + phone in the Customers search and press Enter — then long-press the new customer to link it here.' : 'Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
+    toast('Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
     return;
   }
   if (closest('.js-create-invoice')) { e.stopPropagation(); return createInvoiceForRental(closest('.js-create-invoice').dataset.rec); }
@@ -19124,9 +19077,9 @@ function onClick(e) {
     const b = closest('.js-add-line'); e.stopPropagation();
     const inv = IDX.invoice.get(b.dataset.rec);
     if (b.dataset.kind === 'Rental') {
-      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', document.body.classList.contains('is-phone') ? 'The invoice needs a customer first (§7.5) — long-press to link, or quick-add one.' : 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
+      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
       const s = activeSession(); if (s.cols) s.cols.middle = 'rentals'; s.cards.rentals.mode = 'list';
-      render(); attnFlash('.card[data-card="rentals"] .list'); toast(document.body.classList.contains('is-phone') ? 'Long-press a rental to link it to this invoice.' : 'Drag a rental onto this invoice.'); return;
+      render(); attnFlash('.card[data-card="rentals"] .list'); toast('Drag a rental onto this invoice.'); return;
     }
     if (b.dataset.kind === 'WO') {
       // Phase 4 (Jac) — open the invoice's LINKED unit(s) in a filtered Units list; the
@@ -20014,9 +19967,7 @@ function setUnitStatus(rentalId, unitId, val, opts = {}) {
   else if (wasVoided && r.invoiceId) { syncRentalLines(r); syncTransportLine(r); }   // un-void → restore the unit's billing (was silently un-billed)
   syncRentalPrimary(r);            // mirror the aggregate back onto r.status for back-compat readers
   reindex('rentals', r);
-  const unitLabel = IDX.unit.get(unitId)?.name || unitId;
-  logAction(r, `${unitLabel} → ${getStatus('rentalStatus', val).label}`);
-  toast(`${unitLabel} → ${getStatus('rentalStatus', val).label}`);   // confirm the per-unit move (mirrors setRentalStatus)
+  logAction(r, `${IDX.unit.get(unitId)?.name || unitId} → ${getStatus('rentalStatus', val).label}`);
   render();
   if (val === 'Returned') maybePromptReturnRating(r);   // all units back → rate the customer's experience
 }
@@ -20049,15 +20000,13 @@ function openUnitStatusDropdown(rentalId, unitId, anchorEl) {
 }
 /* §9 Field Call — a unit breaks mid-rental: flag the rental (red FC), fail the unit,
    and auto-open a Field-Call work order so the M.Tech can dispatch parts/swap. */
-function markFieldCall(rentalId, unitId) {
-  const r = IDX.rental.get(rentalId); if (!r) return;
-  const targetId = unitId || r.unitId;   // the unit that actually broke; primary is only the fallback (§20 multi-unit)
-  if (!targetId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
+function markFieldCall(rentalId) {
+  const r = IDX.rental.get(rentalId); if (!r || !r.unitId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
   r.fieldCall = true; reindex('rentals', r);
-  const u = IDX.unit.get(targetId);
+  const u = IDX.unit.get(r.unitId);
   if (u) { u.inspectionStatus = 'Failed'; reindex('units', u); logAction(u, `Field Call on rental ${r.rentalName || rentalId}`); }
   const id = 'WO-FC' + (state.seq++);
-  const wo = { woId: id, unitId: targetId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  const wo = { woId: id, unitId: r.unitId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(wo); IDX.wo.set(id, wo); reindex('workOrders', wo);
   logAction(r, 'Field Call marked — unit failed, work order opened');
   toast('Field Call logged — unit → Failed, work order opened.');
@@ -20093,7 +20042,7 @@ function setUnitCondition(unitId, val) {
   if (val === 'Fail') {
     u.condAt = TODAY_ISO; u.condClock = nowClock();   // stamp the condition change on either path
     const ar = activeRentalForUnit(unitId);
-    if (ar) return markFieldCall(ar.rentalId, unitId);   // on-rent breakdown → field call on THIS unit (truck roll + dispatch)
+    if (ar) return markFieldCall(ar.rentalId);        // on-rent breakdown → field call (truck roll + dispatch)
     const n = newInspectionForUnit(u); n.wash = n.wash || 'No';
     return setInspResult(n.inspectionId, 'Fail');     // yard bench fail: auto-WO + §12.8 photo/notes popup
   }
@@ -20312,7 +20261,7 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
     setUnitCapture(r, eu, 'endCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}End/Recovery video ${replace ? 're-captured' : 'captured'}`);
   } else if (cap === 'fc') {
     setUnitCapture(r, eu, 'fcCapture', stamp);
-    if (!replace) markFieldCall(rentalId, unitId);   // flag the captured unit, not just the primary (§20 multi-unit)
+    if (!replace) markFieldCall(rentalId);
   }
   uploadCaptureMedia(r, eu, cap, dataUrl);
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -21057,8 +21006,8 @@ function openLogoMenu(anchorEl) {
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   try { flushUserPrefsNow(); } catch (e) {}   // §cross-device-sync — push a pending prefs edit before the token is dropped
-  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true; devPwMode = false;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person. §dev-login: also drop dev-mode so the next user on a shared device returns to the default login, not the team-password screen.
-  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role'); sessionStorage.removeItem('jactec.devpw');
+  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person
+  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
 }
 // Settings (Admin-tier): loads the live config, then opens the editor. Below-Admin with
@@ -22725,9 +22674,6 @@ function winPickSave() {
       const newN = ext.newInvoices ? ` · ${ext.newInvoices} new invoice${ext.newInvoices > 1 ? 's' : ''}` : '';
       logAction(r, `Extension ${up ? 'billed' : 're-priced −'} (${basis}) — ${up ? '+' : '−'}${amt}${newN}`);
       toast(`Extension ${up ? 'billed +' : 're-priced − '}${amt} (${basis})${ext.newInvoices ? ` — opened ${ext.newInvoices} continuation invoice${ext.newInvoices > 1 ? 's' : ''} (28-day cap)` : ''}.`);
-    } else {
-      // a shrink or move (no billable extension) saved silently before — confirm it too
-      toast(`Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}.`);
     }
   }
   state.winEdit = null; render();
@@ -23404,7 +23350,6 @@ function mergeInvoiceInto(keepId, absorbId) {
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzHahzgJqOYe9o4GKlRVGh-A7USRn1k4Dvyy4ajLh8EYCqVxofouM28qs8trNlObZw/exec';
 const PERSIST_KEYS = ['categories', 'units', 'customers', 'invoices', 'rentals', 'workOrders', 'inspections', 'vendors', 'parts', 'companyFiles', 'expenses', 'models'];
 let backendPassword = sessionStorage.getItem('jactec.pw') || '';
-let devPwMode = false;                    // §dev-login: Ctrl+Alt+P revealed the legacy team-password screen (NON-PROD hosts only). Never hardcodes a password — the value is typed at runtime. Restored from sessionStorage in the APP_ENV setup block; also tells backendCall to authenticate with the plain team `password` (legacy path) instead of a per-person sessionToken.
 let booting = true;                       // suppresses saves during initial load
 let saveTimer = null, saving = false, savePending = false;
 
@@ -23418,7 +23363,7 @@ function driveViewUrl(res) {
 async function backendCall(action, extra) {
   // text/plain avoids a CORS preflight that GAS web apps can't answer
   const payload = Object.assign({ action, password: backendPassword }, extra || {});
-  if (flagOn('phoneIdentity') && backendPassword && !devPwMode) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF. §dev-login: devPwMode skips the token and authenticates with the plain team `password` (the legacy path the backend still honors)
+  if (flagOn('phoneIdentity') && backendPassword) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF
   const res = await fetch(BACKEND_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
   // A backend error page (GAS 500/quota/auth HTML) is NOT JSON — res.json() throws, callers
   // catch it, and a real card/charge failure gets masked as a generic "Network error". Parse
@@ -23645,6 +23590,31 @@ async function gpsProviderDevices(provider) {
     case 'bouncie': return (await gpsFetch('/api/bouncie/vehicles'))?.vehicles || [];
     default: return [];
   }
+}
+
+/* Is ONE provider's own account link live on the GPS backend? Deere/Yanmar/Bouncie each
+   authenticate against the PROVIDER (Deere/Bouncie OAuth, Yanmar a session login — backend
+   handoff §1) and expose an `/api/<p>/status` probe carrying `authenticated`; Hapn is
+   server-to-server client-credentials with no such probe, so it answers null = unknown.
+   This is the same probe gpsFleetStatus already makes before its phase-2 machine lists —
+   pulled out here so the connect-wizard picker can tell a LAPSED PROVIDER LINK apart from
+   an unreachable backend instead of blaming both on the connection.
+   Returns true = linked · false = link lapsed · null = couldn't tell. */
+async function gpsProviderAuthed(provider) {
+  const p = String(provider || '').toLowerCase();
+  if (p !== 'deere' && p !== 'yanmar' && p !== 'bouncie') return null;
+  try { return (await gpsFetch(`/api/${p}/status`))?.authenticated === true; }
+  catch { return null; }   // the probe itself failed → genuinely a reachability problem
+}
+/* Pick the honest picker-load error off that probe (PURE — exposed on window.__rw). A
+   provider whose account link has lapsed IS reachable; saying "check the connection"
+   sends the operator to their router when the real fix is relinking that account on the
+   GPS service. Anything else (probe unknown, provider linked but the list call failed)
+   keeps the original reachability wording. */
+function gpsPickerError(provider, linked) {
+  return linked === false
+    ? `${provider} isn’t linked to the GPS backend right now — that account needs reconnecting on the GPS service. Not a connection problem on your end.`
+    : 'Couldn’t reach the GPS backend — check the connection and try again.';
 }
 
 /* ── BOUNCIE TRUCKS → UNITS (design note docs/superpowers/specs/2026-07-09-bouncie-
@@ -23879,11 +23849,19 @@ function gpsRawDeviceSub(provider, raw) {
    popup state. */
 async function gpsConnectLoadDevices(o) {
   o.devicesLoading = true; o.devicesError = ''; o.devices = null; renderOverlay();
+  const p = String(o.provider || '').toLowerCase();
   let list = [];
-  try { list = await gpsProviderDevices(String(o.provider || '').toLowerCase()); }
+  try { list = await gpsProviderDevices(p); }
   catch (e) {
     if (state.overlay !== o) return;
-    o.devicesLoading = false; o.devicesError = 'Couldn’t reach the GPS backend — check the connection and try again.';
+    // §two-phase — gpsFleetStatus probes /api/<p>/status and only pulls a machine list once
+    // it reports `authenticated`; this picker skipped that probe, so a provider whose OWN
+    // account link had lapsed (Yanmar's parked SmartAssist re-auth) surfaced as "couldn't
+    // reach the GPS backend" even while the very same gpsFetch was serving Hapn's list in
+    // this dialog. Ask the probe what actually broke before naming a cause.
+    const linked = await gpsProviderAuthed(p);
+    if (state.overlay !== o) return;
+    o.devicesLoading = false; o.devicesError = gpsPickerError(o.provider, linked);
     return renderOverlay();
   }
   if (state.overlay !== o) return;
@@ -25572,13 +25550,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { try { flushUserPrefsNow(); } catch (e) {} });
 function renderLogin(msg) {
   resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
-  if (flagOn('phoneIdentity') && !devPwMode) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path — OR the §dev-login reveal (Ctrl+Alt+P, non-prod only) even while the flag is ON
+  if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
       <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
       <div class="login-title">Rental Wrangler</div>
-      <div class="login-sub">${devPwMode ? 'Dev sign-in · ' + esc(APP_ENV) : 'JacRentals · Sulphur, LA'}</div>
+      <div class="login-sub">JacRentals · Sulphur, LA</div>
       <div class="login-field">
         <label class="login-lbl" for="login-name">Operator</label>
         <input id="login-name" class="login-input" placeholder="Your name" autocomplete="name" value="${esc(currentUser)}" />
@@ -26020,25 +25998,6 @@ const APP_SLOT = (() => {
 if (APP_ENV !== 'production') {
   document.title = (APP_SLOT ? 'Staging ' + APP_SLOT
     : APP_ENV === 'local' ? 'Local' : 'Staging') + ' · Rental Wrangler';
-}
-// ── §dev-login — Ctrl+Alt+P reveals the legacy team-password login on LOCALHOST ONLY (the dev /
-//    automation host), so a dev or an automated session can sign in without the SMS phone-identity
-//    flow. Gated by an ALLOWLIST (APP_ENV === 'local') — a security-review tightening: production
-//    AND the public staging mirror both stay phone + SMS only, and the listener isn't even
-//    registered off localhost (no fail-open on an unknown/future hostname). The password is TYPED at
-//    runtime — nothing is ever stored in the repo. devPwMode also flips backendCall to the plain
-//    `password` (legacy) auth the backend still honors, instead of a per-person sessionToken.
-//    e.code === 'KeyP' (not e.key) so macOS Option+P — which types 'π' — still triggers it. ──
-if (APP_ENV === 'local') {
-  try { if (sessionStorage.getItem('jactec.devpw') === '1') devPwMode = true; } catch (e) {}
-  document.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey && e.altKey) || e.code !== 'KeyP') return;
-    if (backendPassword) return;                    // already signed in — never flip the auth mode mid-session
-    e.preventDefault();
-    devPwMode = !devPwMode;
-    try { devPwMode ? sessionStorage.setItem('jactec.devpw', '1') : sessionStorage.removeItem('jactec.devpw'); } catch (e2) {}
-    renderLogin();                                  // we're on the login screen (not signed in) → re-render in the chosen mode
-  });
 }
 // The slot's identity color (theme-invariant --slot-N / --tan), read from the stylesheet so the
 // tokens stay the single source of truth for the runtime-drawn favicon.
@@ -26633,14 +26592,7 @@ function boot() {
     if (e.target.classList.contains('js-comms-in') && e.key === 'Enter') { e.preventDefault(); return commsSend(e.target.dataset.cust); }   // D8 — Enter fires the ignition Send
     // §M3 — one predictable back/dismiss chain (shared with the Android back button):
     // winpicker → overlay → Mr. Wrangler dock → team chat dock.
-    // §esc-menus — an open .dropdown-menu is the TOPMOST surface, so Esc closes it FIRST and
-    // stops there; only with no menu open does Esc walk the sheet chain above. closeMenus() was
-    // wired into ~30 click paths but never the keyboard, so a menu sat open through Esc — over
-    // the values underneath it — until you clicked elsewhere (audit 2026-07-18).
-    if (e.key === 'Escape') {
-      if (document.querySelector('.dropdown-menu')) { closeMenus(); return; }
-      dismissTopSheet();
-    }
+    if (e.key === 'Escape') dismissTopSheet();
   });
   // mouse hotkeys (§0.1): double-click a row = anchor; right-click = Back
   // #10b — `state.winEdit` is NOT a modal flag (comment at its declaration: "NOT a
@@ -26855,7 +26807,7 @@ function exposeTestApi() {
       dataCache, cacheValid, cacheDeviceOk, cacheTokenTag, cacheAppVer, cacheSnapshotEnvelope, CACHE_SCHEMA_VER, FEATURES,   // §instant-cache (spec 2026-07-16)
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, pickFunnelStage, toggleFunnelMembership, rentalFunnelStage, funnelStageOf, inFunnel, inRental, hasRentalActivity, funnelTrackA, funnelTrackEquip, ensureFunnels, funnelMenuHtml, reachFunnelStage, toggleMemberLead, funnelCurrentStage, funnelLayerDate, funnelLayerNote, ensureFunnelLog, markMembershipSigned, funnelLayerAction, funnelScope, naUrgency, naOpenList, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, pickFunnelStage, toggleFunnelMembership, rentalFunnelStage, funnelStageOf, inFunnel, inRental, hasRentalActivity, funnelTrackA, funnelTrackEquip, ensureFunnels, funnelMenuHtml, reachFunnelStage, toggleMemberLead, funnelCurrentStage, funnelLayerDate, funnelLayerNote, ensureFunnelLog, markMembershipSigned, funnelLayerAction, funnelScope, naUrgency, naOpenList, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsPickerError, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
       tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend

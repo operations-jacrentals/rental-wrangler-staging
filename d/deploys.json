@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "gps-yanmar-picker-error-1",
+      "label": "gps picker: lapsed provider link vs unreachable backend (#803)",
+      "feature": "gps-yanmar-picker-error",
+      "branch": "claude/gps-yanmar-picker-error",
+      "sha": "e197286",
+      "when": "2026-08-07T13:42:10.249Z"
+    },
+    {
       "id": "production-deployment-breakage-9lkj4k-1",
       "label": "revert production to 0fac006",
       "feature": "production-deployment-breakage-9lkj4k",
@@ -152,14 +160,6 @@
       "branch": "wrangler-fix/calendar-audit-safe-bugs",
       "sha": "1e243bb",
       "when": "2026-07-19T03:32:24.326Z"
-    },
-    {
-      "id": "categories-derivation-fixes-1",
-      "label": "Categories derivation fixes + Off Fleet + member rate (PR #743)",
-      "feature": "categories-derivation-fixes",
-      "branch": "claude/categories-derivation-fixes",
-      "sha": "5b43086",
-      "when": "2026-07-19T03:29:37.319Z"
     }
   ]
 }
