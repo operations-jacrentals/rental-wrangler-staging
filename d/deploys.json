@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "breaker-inspection-split-1",
+      "label": "breaker inspection split (#812)",
+      "feature": "breaker-inspection-split",
+      "branch": "claude/breaker-inspection-split",
+      "sha": "0ba7330",
+      "when": "2026-08-11T17:50:12.243Z"
+    },
+    {
       "id": "wrangler-810-continuation-double-bill-1",
       "label": "wrangler-fix #810 continuation double-bill",
       "feature": "wrangler-810-continuation-double-bill",
@@ -152,14 +160,6 @@
       "branch": "wrangler-fix/trips-pickup-time",
       "sha": "5c68252",
       "when": "2026-07-19T03:36:09.794Z"
-    },
-    {
-      "id": "calendar-badge-and-map-1",
-      "label": "Trips badge counts overdue + map collapsed for drivers",
-      "feature": "calendar-badge-and-map",
-      "branch": "wrangler-fix/calendar-badge-and-map",
-      "sha": "9cf2f1a",
-      "when": "2026-07-19T03:35:27.218Z"
     }
   ]
 }
