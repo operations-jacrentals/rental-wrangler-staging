@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "immobilizer-field-1",
+      "label": "Immobilizer field in unit card GPS section (#820)",
+      "feature": "immobilizer-field",
+      "branch": "claude/immobilizer-field",
+      "sha": "0561efc",
+      "when": "2026-08-20T19:34:47.345Z"
+    },
+    {
       "id": "wf-816-sync-latch-1",
       "label": "816 sync-latch: bounded save round-trip",
       "feature": "wf-816-sync-latch",
@@ -152,14 +160,6 @@
       "branch": "wrangler-fix/drag-autoscroll-cal-scroll",
       "sha": "ef4bd35",
       "when": "2026-07-19T04:55:53.866Z"
-    },
-    {
-      "id": "categories-derivation-fixes-2",
-      "label": "Categories audit: derivation fixes + Off Fleet + ROI gate + member rate + B12/B13",
-      "feature": "categories-derivation-fixes",
-      "branch": "claude/categories-derivation-fixes",
-      "sha": "93befbc",
-      "when": "2026-07-19T04:43:05.384Z"
     }
   ]
 }
