@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "membership-activate-1",
+      "label": "822 membership cash activation",
+      "feature": "membership-activate",
+      "branch": "claude/membership-activate",
+      "sha": "3018780",
+      "when": "2026-08-25T16:54:20.889Z"
+    },
+    {
       "id": "immobilizer-field-1",
       "label": "Immobilizer field in unit card GPS section (#820)",
       "feature": "immobilizer-field",
@@ -152,14 +160,6 @@
       "branch": "claude/categories-derivation-fixes",
       "sha": "c9c4624",
       "when": "2026-07-19T05:10:38.174Z"
-    },
-    {
-      "id": "drag-autoscroll-cal-scroll-1",
-      "label": "Cache-bust: bump ?v= to 20260719c (served files changed vs trunk)",
-      "feature": "drag-autoscroll-cal-scroll",
-      "branch": "wrangler-fix/drag-autoscroll-cal-scroll",
-      "sha": "ef4bd35",
-      "when": "2026-07-19T04:55:53.866Z"
     }
   ]
 }
