@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "fix-blacklist-any-customer-1",
+      "label": "Fix Blacklist action for automatically blocked customers",
+      "feature": "fix-blacklist-any-customer",
+      "branch": "claude/fix-blacklist-any-customer",
+      "sha": "2864a24",
+      "when": "2026-08-26T23:37:13.164Z"
+    },
+    {
       "id": "membership-activate-1",
       "label": "822 membership cash activation",
       "feature": "membership-activate",
@@ -152,14 +160,6 @@
       "branch": "claude/staging-mockups-review",
       "sha": "e90ca9f",
       "when": "2026-07-20T12:03:07.309Z"
-    },
-    {
-      "id": "categories-derivation-fixes-3",
-      "label": "B4/B8/B9 filter-trust: consistent Back + per-card clear-all + explicit chip remove",
-      "feature": "categories-derivation-fixes",
-      "branch": "claude/categories-derivation-fixes",
-      "sha": "c9c4624",
-      "when": "2026-07-19T05:10:38.174Z"
     }
   ]
 }
