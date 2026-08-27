@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "fix-829-sync-1",
+      "label": "829 boot-window save fix",
+      "feature": "fix-829-sync",
+      "branch": "claude/fix-829-sync",
+      "sha": "6464a8c",
+      "when": "2026-08-27T15:31:23.507Z"
+    },
+    {
       "id": "insp-sheet-bounce-1",
       "label": "Insp card bounce fix (#828)",
       "feature": "insp-sheet-bounce",
@@ -152,14 +160,6 @@
       "branch": "claude/rental-wrangler-ui-research-rhd74v",
       "sha": "dad8606",
       "when": "2026-07-21T08:30:10.666Z"
-    },
-    {
-      "id": "design-mockups-preview-1",
-      "label": "Phase-2 design mockups",
-      "feature": "design-mockups-preview",
-      "branch": "claude/design-mockups-preview",
-      "sha": "3d12de0",
-      "when": "2026-07-21T08:08:13.146Z"
     }
   ]
 }
