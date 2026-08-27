@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "insp-sheet-bounce-1",
+      "label": "Insp card bounce fix (#828)",
+      "feature": "insp-sheet-bounce",
+      "branch": "claude/insp-sheet-bounce",
+      "sha": "0a91405",
+      "when": "2026-08-27T15:03:10.389Z"
+    },
+    {
       "id": "fix-blacklist-any-customer-1",
       "label": "Fix Blacklist action for automatically blocked customers",
       "feature": "fix-blacklist-any-customer",
@@ -152,14 +160,6 @@
       "branch": "claude/design-mockups-preview",
       "sha": "3d12de0",
       "when": "2026-07-21T08:08:13.146Z"
-    },
-    {
-      "id": "staging-mockups-review-1",
-      "label": "Phase-2 mockups: list-views v2 · yard-journey · funnel",
-      "feature": "staging-mockups-review",
-      "branch": "claude/staging-mockups-review",
-      "sha": "e90ca9f",
-      "when": "2026-07-20T12:03:07.309Z"
     }
   ]
 }

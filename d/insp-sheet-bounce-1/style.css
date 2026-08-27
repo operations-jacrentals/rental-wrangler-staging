@@ -437,8 +437,13 @@ body.is-phone { touch-action: manipulation; }
 .is-phone .overlay:has(.popup + .popup) .popup:last-child { border-radius: 18px 18px 0 0; }
 .sheet-backdrop { position: fixed; inset: 0; z-index: 9490; background: rgba(0,0,0,.5); }   /* §M3 winpicker phone backdrop */
 .is-phone .winpicker-float, .is-phone .datesearch-float { left: 0; right: 0; top: auto; bottom: 0; width: 100%; z-index: 9500; }
+/* #828 sibling — the sheetUp entry animation is GONE from here. It was written for the FLOATING
+   phone picker, but R16 retired that popup (2026-06-25) and .winpicker-float is no longer emitted,
+   so today `.winpicker` is only the INLINE in-detail rental calendar — which render() rebuilds on
+   every day tap, replaying the slide-up on each one. Nothing "enters" inline; the animation is
+   dead weight and a visible bounce. Layout below is unchanged. */
 .is-phone .winpicker { border-radius: 18px 18px 0 0; max-height: 92dvh; overflow: auto;
-  padding-bottom: max(10px, env(safe-area-inset-bottom)); animation: sheetUp .2s cubic-bezier(.2,.7,.2,1); }
+  padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 .is-phone.sheet-open .card-body { overflow: hidden; }   /* §M3 lock the column scroll behind an open sheet */
 /* §M — MOBILE SIGNATURE SHEET. On a phone the "Open Window" pop-out is meaningless
    (a phone has one screen — nothing to "escape" to) and rendered as a full tab with its
@@ -470,7 +475,7 @@ body.sig-sheet-open { overflow: hidden; }   /* lock the page behind the sheet (�
 .is-phone .winpicker .wp-nav button { min-width: 40px; min-height: 40px; }
 .is-phone .winpicker .wp-time input[type="time"] { height: 40px; }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
-@media (prefers-reduced-motion: reduce) { .is-phone .popup, .is-phone .winpicker { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .is-phone .popup { animation: none; } }   /* .winpicker dropped — it no longer animates at all (#828) */
 /* ── §M4 — phone header: logo + ALL FIVE KPI rings share the TOP row (rings shrunk to
    fit), and the global search wraps to its own full-width row underneath. ── */
 .is-phone .header { flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 12px 0; }   /* unified to the 8/12 rhythm (Jac 2026-06-23) */
@@ -2109,6 +2114,11 @@ select.inline-input:focus-visible { outline: 2px solid var(--accent); outline-of
 .pill.ignition:hover { filter: brightness(1.05); }
 .pill.ignition:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: no-preference) { .popup { animation: plateIn .15s ease-out; } }
+/* #828 — the entry animation plays on OPEN only. renderOverlay() rebuilds the popup element on
+   every re-render, so without this a tap inside an open popup (a checklist Pass/Fail) re-ran
+   sheetUp/plateIn and the sheet visibly dropped away and slid back up. Beats both .is-phone .popup
+   and .popup on specificity, so it holds on phone sheets and desktop plates alike. */
+.overlay.is-rerender .popup { animation: none; }
 
 /* back-office board popups (§0.4 / §7.9–7.12) — simple spreadsheet */
 .board-popup { width: 86vw; height: 80vh; }

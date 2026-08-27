@@ -559,6 +559,144 @@ function accountBlock(c) {
   if (!hasValidCard(c)) return { type: 'no-card', reason: 'No valid card on file' };
   return null;
 }
+/* The July-09 manual path persisted this exact marker PAIR. Its lift path deleted
+   _prevAccountType but historically left blacklistedAt behind, so the date alone is
+   not an active blacklist and must never resurrect an already-lifted customer. */
+function customerHasLegacyManualBlacklist(c) {
+  return !!c && !!c.blacklistedAt && Object.prototype.hasOwnProperty.call(c, '_prevAccountType');
+}
+/* One read predicate for every blacklist representation. Manual account blocks use
+   c.block; older records use accountType or the persisted marker pair; an active
+   Collections placement remains a blacklist even if another account workflow
+   rewrites accountType before Recall. */
+function isCustomerBlacklisted(c) {
+  return !!c && ((c.block && c.block.type === 'blacklist') || /Blacklist/i.test(c.accountType || '') || customerHasLegacyManualBlacklist(c) || customerHasActiveCollections(c));
+}
+function customerHasActiveCollections(c) {
+  return !!c && (DATA.invoices || []).some((inv) => inv.customerId === c.customerId && invoiceCollectionsActive(inv));
+}
+/* Defensive owner resolution for old/inconsistent rentals: a rental's direct customer
+   is normally authoritative, but a linked invoice can still carry the account after a
+   stale UI/multi-user clear. Prefer ANY blacklisted owner so missing/mismatched links
+   fail closed instead of turning into a rental bypass. `omitInvoiceIds` lets detach
+   guards evaluate the ownership that would remain AFTER a proposed unlink. */
+function rentalAccountCustomers(r, omitInvoiceIds = null) {
+  if (!r) return null;
+  const omitted = omitInvoiceIds instanceof Set ? omitInvoiceIds : new Set((omitInvoiceIds || []).map(String));
+  const seen = new Set(), owners = [];
+  const add = (id) => { const key = id == null ? '' : String(id); if (!key || seen.has(key)) return; seen.add(key); const c = IDX.customer.get(id); if (c) owners.push(c); };
+  add(r.customerId);
+  const legacyInv = r.invoiceId ? IDX.invoice.get(r.invoiceId) : null;
+  if (legacyInv && !omitted.has(String(legacyInv.invoiceId))) add(legacyInv.customerId);
+  (DATA.invoices || []).forEach((inv) => { if (!omitted.has(String(inv.invoiceId)) && (inv.rentalIds || []).includes(r.rentalId)) add(inv.customerId); });
+  return owners;
+}
+function rentalAccountCustomer(r) {
+  const owners = rentalAccountCustomers(r) || [];
+  return owners.find((c) => isCustomerBlacklisted(c)) || owners[0] || null;
+}
+/* Every invoice↔rental representation, including old records that have only the
+   rental-side pointer. Void/merge must reason over both sides or they can erase a
+   supported legacy link while appearing to handle the modern rentalIds list. */
+function invoiceLinkedRentalIds(inv) {
+  if (!inv) return [];
+  const ids = new Set((inv.rentalIds || []).map(String));
+  (DATA.rentals || []).forEach((r) => { if (String(r.invoiceId || '') === String(inv.invoiceId)) ids.add(String(r.rentalId)); });
+  return [...ids];
+}
+function invoiceLinkedRentals(inv) {
+  return invoiceLinkedRentalIds(inv).map((id) => IDX.rental.get(id)).filter(Boolean);
+}
+/* Removing an invoice is forbidden only when it would erase the LAST surviving
+   blacklisted owner edge. A direct blacklisted customer or another blacklisted invoice
+   keeps the gate intact, so ordinary invoice repair remains available. Status is
+   deliberately irrelevant: after an already-out edge is erased, the timeline can move
+   backward to Reserved and reallocate the same units under a clean customer. Recovery
+   itself remains legal; only destroying its sole owner is frozen until Lift/Recall. */
+function blacklistedOwnerEdgeWouldDisappear(r, removeInvoiceIds) {
+  const owner = rentalAccountCustomer(r);
+  if (!isCustomerBlacklisted(owner)) return false;
+  const removed = new Set((removeInvoiceIds || []).map((id) => String(id)));
+  return !(rentalAccountCustomers(r, removed) || []).some((c) => isCustomerBlacklisted(c));
+}
+/* Attaching billing must not create a new allocation for a blacklisted account, but
+   it also must not strand equipment that was already physically out when the account
+   was blacklisted. Every unit must be on the forward recovery/return side or terminally
+   voided, and at least one must be physical-forward; an all-voided rental has no lines. */
+function blacklistBlocksInvoiceLink(r, owner) {
+  if (!isCustomerBlacklisted(owner)) return false;
+  const eus = rentalUnits(r);
+  if (!eus.length) return true;
+  const statuses = eus.map((eu) => unitStatus(r, eu));
+  const physicalForward = ['On Rent', 'End Rent', 'Off Rent', 'Returned'];
+  const terminalVoided = ['Cancelled', 'No Show'];
+  return statuses.some((status) => !physicalForward.includes(status) && !terminalVoided.includes(status))
+    || !statuses.some((status) => physicalForward.includes(status));
+}
+/* A blacklisted unit already out may need its end extended for recovery. Returned or
+   explicitly voided siblings do not erase that physical need; a derived No Show does,
+   because its stored Reserved status is still a prospective allocation. A safe change
+   preserves the occupied start, requires a real end, and never shortens the window. */
+function blacklistBlocksRentalAllocation(r, change = null) {
+  if (!isCustomerBlacklisted(rentalAccountCustomer(r))) return false;
+  const eus = rentalUnits(r);
+  if (!eus.length) return true;
+  const statuses = eus.map((eu) => unitStatus(r, eu));
+  const recovering = ['On Rent', 'End Rent', 'Off Rent'];
+  const hasRecovering = statuses.some((status) => recovering.includes(status));
+  const hasUnsafeSibling = statuses.some((status, i) => {
+    if (recovering.includes(status) || status === 'Returned' || status === 'Cancelled') return false;
+    const stored = (eus[i] && eus[i].status) || r.status || 'Reserved';
+    return status !== 'No Show' || stored !== 'No Show';
+  });
+  if (!hasRecovering || hasUnsafeSibling) return true;
+  if (!change) return false;   // render/stage the recovery calendar; commit is checked below
+  if (change.kind === 'time') return false;
+  if (change.kind !== 'window') return true;
+  const oldEnd = parseISO(r.endDate), nextEnd = parseISO(change.endDate);
+  return change.startDate !== r.startDate || !oldEnd || !nextEnd || nextEnd < oldEnd;
+}
+function refuseBlacklistedRentalAllocation(r, change = null) {
+  if (!blacklistBlocksRentalAllocation(r, change)) return false;
+  const owner = rentalAccountCustomer(r);
+  toast(`Blocked: ${owner?.name || 'the customer'} is blacklisted — Lift or Recall before rebooking or releasing this allocation (§9).`);
+  return true;
+}
+function blacklistBlocksUnitRemoval(r, unitId) {
+  if (!isCustomerBlacklisted(rentalAccountCustomer(r))) return false;
+  const eu = unitEntry(r, unitId) || rentalUnits(r).find((u) => u.unitId === unitId) || null;
+  return !!eu && ['On Rent', 'End Rent', 'Off Rent'].includes(unitStatus(r, eu));
+}
+function clearRentalCustomer(r) {
+  if (!r) return false;
+  const owner = rentalAccountCustomer(r);
+  if (isCustomerBlacklisted(owner)) { toast(`Blocked: ${owner.name || 'this customer'} is blacklisted (§9). Lift or Recall the blacklist before changing the rental customer.`); return false; }
+  r.customerId = null;
+  return true;
+}
+/* A rental line is also an ownership edge. Freeze only the LAST line for that rental
+   when removing its invoice would erase the final blacklisted owner; sibling lines or a
+   direct blacklisted customer keep ordinary line repair available. */
+function invoiceRentalLinkFrozen(inv, line) {
+  if (!inv || !line || line.kind !== 'rental') return false;
+  const r = IDX.rental.get(line.ref); if (!r) return false;
+  const hasSibling = (inv.lineItems || []).some((li) => li !== line && li.kind === 'rental' && li.ref === line.ref);
+  return !hasSibling && blacklistedOwnerEdgeWouldDisappear(r, [inv.invoiceId]);
+}
+function liftCustomerBlacklist(c, approver = '') {
+  if (!isCustomerBlacklisted(c)) return { ok: false, reason: 'not-blacklisted' };
+  // Collections owns its legacy blacklist until every active placement is recalled.
+  if (customerHasActiveCollections(c)) return { ok: false, reason: 'collections' };
+  if (c.block && c.block.type === 'blacklist') delete c.block;
+  if (/Blacklist/i.test(c.accountType || '')) {
+    c.accountType = c._prevAccountType || 'Non-Business';
+  }
+  delete c._prevAccountType;
+  delete c.blacklistedAt;
+  reindex('customers', c);
+  logAction(c, `Blacklist lifted (Admin approval${approver ? ' — ' + approver : ''})`);
+  return { ok: true };
+}
 /* Phase 3 (T3.2) — mark a REAL decline on a rental (non-membership) invoice charge. Call ONLY from a
    definite backend/Stripe decline response — NEVER from a network/timeout/ambiguous path (spec §5.5:
    those are UNKNOWN, never assumed a failure). CUSTOMER-level, not per-invoice, per Jac's call
@@ -1009,7 +1147,7 @@ function searchBlob(card, rec) {
       break;
     case 'units':
       p = [rec.name, rec.assignedMechanic, rec.serial, rec.year, rec.make, rec.model, rec.weight,
-        rec.gpsType, rec.gpsPlacement, rec.notes,
+        rec.gpsType, rec.gpsPlacement, rec.immobilizer ? 'Immobilizer' : '', rec.immobilizerNote, rec.notes,
         rec.inspectionStatus, L('unitInspectionStatus', rec.inspectionStatus),
         rec.fleetStatus, L('unitFleetStatus', rec.fleetStatus),
         rec.gpsStatus, L('gpsStatus', rec.gpsStatus), ca(rec.categoryId)?.name,
@@ -1258,10 +1396,11 @@ function createContinuationInvoice(r, covStart, covEnd) {
  *  full-window − billedSeries), so an already-billed — even PAID — sub-tier day counts toward
  *  the blended rate instead of being re-billed. Positive only (refund-first: a paid chunk is
  *  never reduced). Without fullWin the added segment is priced standalone (OFF path, #444). */
-function billChunkUnits(inv, r, ns, ne, prevEnd, retro, kind, contInvId, fullWin, emitZero) {
+function billChunkUnits(inv, r, ns, ne, prevEnd, retro, kind, contInvId, fullWin, emitZero, onlyUnitIds) {
   let delta = 0, count = 0;
   rentalUnits(r).forEach((eu) => {
     if (unitVoided(r, eu)) return;
+    if (onlyUnitIds && !onlyUnitIds.has(eu.unitId)) return;   // #810 — restrict to the units the caller asked for (syncRentalLines bills only what's MISSING)
     const u = IDX.unit.get(eu.unitId); if (!u) return;
     let amount, rate;
     if (retro && fullWin) {
@@ -1530,12 +1669,17 @@ function syncRentalLines(r) {
   if (series.length > 1) {
     // >28-day CHUNKED series (#552-r4): a re-added (un-voided) unit must bill PER CHUNK — the
     // same path the initial build takes (createInvoiceForRental → billChunkUnits) — not a single
-    // full-window line dumped on chunk #1. billChunkUnits with emitZero=false prices each chunk's
-    // own window and skips units already billed on that chunk (delta ≈ 0), so ONLY genuinely
-    // missing lines get added, correctly split across the series.
+    // full-window line dumped on chunk #1.
+    // The units already billed on a chunk are EXCLUDED outright (#810), never re-priced: this
+    // function only ever ADDS what's missing (its contract above). Letting billChunkUnits price an
+    // already-billed unit prices that chunk STANDALONE (fullWin = null), which tops a #444-credited
+    // continuation — one billed at cheapest(whole series) − already-paid — back up to the full
+    // segment price, re-billing days the customer already paid for on the earlier invoice.
     series.forEach((cv) => {
       const cs = invCovStart(cv, r), ce = invCovEnd(cv, r);
-      const res = billChunkUnits(cv, r, cs, ce, cs, retroPricingOn(), 'rental', cv.contOf || null, null, false);
+      const missing = new Set(rentalUnits(r).filter((eu) => unitBilledRental(cv, r, eu.unitId) <= 0.005).map((eu) => eu.unitId));
+      if (!missing.size) return;
+      const res = billChunkUnits(cv, r, cs, ce, cs, retroPricingOn(), 'rental', cv.contOf || null, null, false, missing);
       if (res.count) reindex('invoices', cv);
     });
     return;
@@ -2694,7 +2838,7 @@ function isEmptyMockDraft(card, rec) {
   // An invoice LINKED to a rental is not abandoned (Jac bug 2026-07-06: adding a transport
   // address navigated → sweep deleted the attached-but-not-yet-billed mock invoice and cleared
   // r.invoiceId). Mirrors the rentals branch below, where a link (!rec.invoiceId) counts as content.
-  if (card === 'invoices') return !(rec.lineItems || []).length && !(Number(rec.amountPaid) || 0) && !(rec.rentalIds || []).length && !DATA.rentals.some((r) => r.invoiceId === rec.invoiceId);
+  if (card === 'invoices') return !invoiceCollectionsActive(rec) && !(rec.lineItems || []).length && !(Number(rec.amountPaid) || 0) && !(rec.rentalIds || []).length && !DATA.rentals.some((r) => r.invoiceId === rec.invoiceId);
   if (card === 'rentals')  return !(rentalUnits(rec) || []).length && !rec.customerId && !rec.startDate && !rec.invoiceId;
   return false;
 }
@@ -2934,7 +3078,7 @@ function cardFwd(card) {
 // → stays at 0. (Fresh opens don't call this, so they still start at the top.)
 function restoreJogScroll(card) {
   const c = document.querySelector(`.card[data-card="${card}"]:not([data-clone])`);   // §M8 wrap — the REAL card, never an edge clone
-  const b = scrollHostOf(c); if (!b) return;
+  const b = c && c.querySelector('.card-body'); if (!b) return;
   const y = scrollMemo[card + '|' + (c.dataset.view || 'list')];
   if (y) b.scrollTop = y;
 }
@@ -3398,7 +3542,7 @@ function pageDefaultSlice(tab) {
     case 'general': return { key: 'company', value: {} };
     case 'requirements': return { key: 'rentalRules', value: {} };
     case 'fields': return { key: 'customFields', value: { customers: [], units: [], rentals: [], invoices: [] } };
-    case 'inspections': return { key: 'inspections', value: Object.fromEntries([...new Set((DATA.categories || []).map((c) => inspFamilyKey(c)))].map((k) => [k, { required: false, items: (INSP_DEFAULTS[k] || []).map((i) => ({ ...i })) }])) };
+    case 'inspections': return { key: 'inspections', value: Object.fromEntries([...new Set((DATA.categories || []).map((c) => inspFamilyKey(c)))].map((k) => [k, { required: false, items: (INSP_DEFAULTS[k] || INSP_DEFAULTS[inspSeedKey(k)] || []).map((i) => ({ ...i })) }])) };
     case 'notifications': return { key: 'notifications', value: JSON.parse(JSON.stringify(NOTIF_DEFAULTS)) };
     default: return null;   // Logins / planned tabs have no resettable slice
   }
@@ -3453,6 +3597,9 @@ const customFieldsFor = (entity) => ((state.settings && state.settings.customFie
 // *Trailer* categories share one EXCEPT *Dump Trailer* (its own). Everything else
 // stays per-category (keyed by its own categoryId, so prior per-category configs are
 // unchanged). Empty = today's quick Pass/Fail only.
+// A *breaker* is deliberately NOT in the Jack Hammer family (Jac, 2026-08-11, #812): a
+// hydraulic breaker attachment for a skid/excavator inspects nothing like the electric
+// jackhammer tool, so it falls through to its own per-category key and gets its own list.
 function inspFamilyKey(cat) {
   const n = ((cat && cat.name) || '').toLowerCase();
   if (n.includes('excavator')) return 'fam:excavator';
@@ -3470,12 +3617,25 @@ function inspFamilyKey(cat) {
   if (n.includes('buggy')) return 'fam:buggy';
   if (n.includes('attachment')) return 'fam:attachment';
   if (n.includes('generator') || n.includes('genset')) return 'fam:generator';
-  if (n.includes('jack hammer') || n.includes('jackhammer') || n.includes('breaker')) return 'fam:jack-hammer';
+  if (n.includes('jack hammer') || n.includes('jackhammer')) return 'fam:jack-hammer';
   if (n.includes('trowel')) return 'fam:power-trowel';
   if (n.includes('sump')) return 'fam:sump-pump';
   if (n.includes('pump')) return 'fam:trash-pump';
   if (n.includes('concrete saw') || (n.includes('saw') && n.includes('walk'))) return 'fam:concrete-saw';
   return cat ? cat.categoryId : '';
+}
+// A category split OUT of a shared family starts life with a COPY of the family it left
+// (Jac, #812: the new breaker list "starts as the same as Jackhammer and I'll edit it in
+// settings"). Pure read-through: the source family is never written to, and the moment the
+// admin saves the split category's own list that saved config wins and the two are fully
+// independent. Item ids are kept identical so inspection records taken under the old shared
+// list still line up when they're re-opened.
+const INSP_SEED_FROM = [{ test: (n) => n.includes('breaker'), from: 'fam:jack-hammer' }];
+function inspSeedKey(key) {
+  const cat = IDX.category.get(key); if (!cat) return '';
+  const n = ((cat && cat.name) || '').toLowerCase();
+  const hit = INSP_SEED_FROM.find((s) => s.test(n));
+  return hit ? hit.from : '';
 }
 const INSP_FAM_LABELS = {
   'fam:excavator': 'Excavator', 'fam:trailer': 'Trailer', 'fam:trailer-dump': 'Dump Trailer',
@@ -3838,7 +3998,12 @@ const INSP_DEFAULTS = {
 };
 const inspKeyOfCat = (categoryId) => inspFamilyKey(IDX.category.get(categoryId));
 const inspFamilyLabel = (key) => INSP_FAM_LABELS[key] || (IDX.category.get(key) ? IDX.category.get(key).name : key);
-const inspCfgByKey = (key) => ((state.settings && state.settings.inspections) || {})[key] || null;
+const inspCfgByKey = (key) => {
+  const all = (state.settings && state.settings.inspections) || {};
+  if (all[key]) return all[key];
+  const seed = inspSeedKey(key);                       // split-out category → copy of the family it left
+  return (seed && all[seed]) ? JSON.parse(JSON.stringify(all[seed])) : null;
+};
 const inspectionCfg = (categoryId) => inspCfgByKey(inspKeyOfCat(categoryId));
 function checklistFor(unit) { const c = unit && inspectionCfg(unit.categoryId); return (c && Array.isArray(c.items) && c.items.length) ? c : null; }
 const checklistRequired = (unit) => { const c = checklistFor(unit); return !!(c && c.required); };
@@ -4080,8 +4245,18 @@ function membershipMetaHtml(c) {
   const graceN = (status === 'Past Due' && c.graceUntil) ? dayDiff(TODAY, parseISO(c.graceUntil)) : null;   // days left in the 7-day grace
   const graceFlag = (graceN != null && graceN >= 0) ? kvPills(badge(`⚠ Canceled in ${graceN} day${graceN === 1 ? '' : 's'}`, 'red')) : '';
   const paidUntil = (isMem && c.paidUntil) ? kv(yrFull(c.paidUntil), { sfx: c.prepaid ? 'prepaid through' : 'paid until' }) : '';
+  // #822 — the Active Member badge names WHEN the membership went live, so the office can see at a
+  // glance that it's a real, dated activation and not a grandfathered/legacy member.
+  const activated = (isMem && c.memberActivatedAt) ? kv(yrFull(c.memberActivatedAt), { sfx: 'activated' }) : '';
   const planBadges = c.paidCadence ? kvPills(`${badge('Paid ' + c.paidCadence, 'green')}${c.unlimitedTransport ? badge('Unlimited Transport', 'purple') : ''}${c.rentalProtection ? badge('Protected', 'blue') : ''}${c.autoRenew ? badge('Auto-Renew', 'navy') : ''}`) : '';
-  return `${stateBadge ? kvPills(stateBadge) : ''}${graceFlag}${paidUntil}${planBadges}${membershipEconomicsHtml(c)}`;
+  // #822 — Activate Membership: the cash/check counterpart to the card enrollment flow. Shown on the
+  // profile of a member-funnel customer who is NOT yet entitled, hidden for 'Pending' (a signed
+  // enrollment whose scheduled card charge hasn't run — activating there would double up on it).
+  // Same canMoney() gate the other lifecycle actions carry; the handler re-checks it.
+  const activateBtn = (!isMem && status !== 'Pending' && canMoney())
+    ? `<div class="kv pillrow">${actionPill('commit', 'Activate Membership', { js: 'js-mem-activate', h: 26, data: { rec: c.customerId } })}<span class="anno">annual dues paid by cash or check</span></div>`
+    : '';
+  return `${stateBadge ? kvPills(stateBadge) : ''}${graceFlag}${paidUntil}${activated}${planBadges}${activateBtn}${membershipEconomicsHtml(c)}`;
 }
 /* Lifecycle actions — re-homed into the agreements window (§3.7). MONEY-gate PRESERVED
    verbatim: Cancel / Pay-Cancellation are canMoney()-gated (same gate as the invoice
@@ -4670,14 +4845,18 @@ const BLOCK_TYPE_LABEL = { blacklist: 'Blacklisted', 'invoice-hold': 'Held — i
 // app.js ~L381) and self-clear — shown as a read-only badge, no lift control.
 function acctBlockFoot(c) {
   const b = accountBlock(c);
-  if (!b) return `<div class="ag-foot"><span class="sp"></span>${actionPill('danger', 'Block Account', { js: 'js-block-account', data: { rec: c.customerId }, h: 28 })}</div>`;
-  const stateBadge = badge(BLOCK_TYPE_LABEL[b.type] || b.type, 'red');
-  const lift = b.type === 'blacklist'
-    ? actionPill('danger', 'Lift Blacklist', { js: 'js-lift-blacklist', data: { rec: c.customerId }, h: 28 })
-    : b.type === 'no-card' || b.type === 'failed-payment'
-      ? `<span class="muted acct-microcopy">clears automatically</span>`
-      : actionPill('danger', 'Block Account', { js: 'js-block-account', data: { rec: c.customerId }, h: 28 });   // invoice-hold: still offer the picker to add/replace a manual block
-  return `<div class="ag-foot">${stateBadge}<span class="sp"></span>${lift}</div>`;
+  const blockType = isCustomerBlacklisted(c) ? 'blacklist' : (b && b.type);
+  if (!blockType) return `<div class="ag-foot"><span class="sp"></span>${actionPill('danger', 'Block Account', { js: 'js-block-account', data: { rec: c.customerId }, h: 28 })}</div>`;
+  const stateBadge = badge(BLOCK_TYPE_LABEL[blockType] || blockType, 'red');
+  const autoCopy = blockType === 'no-card' || blockType === 'failed-payment'
+    ? `<span class="muted acct-microcopy">clears automatically</span>`
+    : '';
+  const action = blockType === 'blacklist'
+    ? (customerHasActiveCollections(c)
+        ? `<span class="muted acct-microcopy">recall collections to lift</span>`
+        : actionPill('danger', 'Lift Blacklist', { js: 'js-lift-blacklist', data: { rec: c.customerId }, h: 28 }))
+    : actionPill('danger', 'Block Account', { js: 'js-block-account', data: { rec: c.customerId }, h: 28 });
+  return `<div class="ag-foot">${stateBadge}<span class="sp"></span>${autoCopy}${action}</div>`;
 }
 // T2.6 (2026-07-10) — the derived read-only stats the OLD account section's right column carried
 // (Total paid/Visits/Customer-for/Rents-every-N-days/rented categories), folded in here so retiring
@@ -4971,6 +5150,35 @@ async function membershipCancel(custId) {
   reindex('customers', c);
   logAction(c, cxl ? `Membership cancelled — Cancellation Invoice ${money(invoiceTotals(cxl).total)} (remaining term)` : 'Membership cancelled');
   render(); toast(cxl ? 'Membership cancelled — cancellation invoice on the account.' : 'Membership cancelled.');
+}
+/* Cash/check ACTIVATION (2026-08-25, issue #822) — the missing counterpart to the card path.
+   agreementSignCommit hard-refuses a membership without a card ("Add a card on file before
+   enrolling"), and it is the only route that stamps the member fields — so a customer who paid
+   their year in cash or by check could never become Active, and the §10.4 pricing gate
+   (isActiveMember, app.js ~L1076) kept quoting them retail tiers. This stamps the same fields
+   that path stamps, minus the charge.
+   MONEY IS NOT TOUCHED: no invoice is built, no card is charged, nothing is marked paid — the
+   office records the cash/check payment separately. This only flips the entitlement.
+   Two deliberate field choices:
+     • `prepaid` stays FALSE — that flag pins membershipStatus to 'Active' forever (it short-
+       circuits the paidUntil compare), so a cash membership would never lapse. The term rides
+       `paidUntil` instead, which expires on its own after MEMBERSHIP_MONTHS.
+     • `autoRenew` stays FALSE — there is no card to renew against, and it is what keeps
+       membershipBillingFlag's red 'No Billing' pulse off a legitimately cash-paid member. */
+function membershipActivateCash(custId) {
+  const c = IDX.customer.get(custId); if (!c) return;
+  if (isActiveMember(c)) return;                                   // already entitled — nothing to do
+  c.accountType = memberAccountType(c);                            // the pricing gate reads /Member/ off accountType
+  c.memberActivatedAt = TODAY_ISO;
+  c.paidCadence = 'Yearly';
+  c.commitmentStart = TODAY_ISO;
+  c.commitmentEnd = addMonthsISO(TODAY_ISO, MEMBERSHIP_MONTHS);
+  c.paidUntil = addMonthsISO(TODAY_ISO, MEMBERSHIP_MONTHS);
+  c.prepaid = false; c.graceUntil = ''; c.autoRenew = false;
+  markMembershipSigned(c, 'membership');                           // F3 — the terminal funnel stage, never set by hand
+  reindex('customers', c);
+  logAction(c, `Membership activated — annual dues paid by cash/check; member rates through ${c.paidUntil}`);
+  render(); toast('Membership active — member rates apply. ✓');
 }
 async function membershipReactivate(custId) {
   const c = IDX.customer.get(custId); if (!c) return;
@@ -5884,7 +6092,7 @@ const FLAG_COND = {
   },
   customers: {
     'unpaid-balance':    (c) => c.payStatus === 'Unpaid',
-    'blacklisted':       (c) => /Blacklist/i.test(c.accountType || ''),
+    'blacklisted':       (c) => isCustomerBlacklisted(c),
     'no-card':           (c) => cardFlag(c) === 'none' &&
       (DATA.rentals.some((r) => r.customerId === c.customerId && r.status !== 'Reserved') ||
        DATA.invoices.some((i) => i.customerId === c.customerId)),
@@ -7015,7 +7223,7 @@ function rowEl(card, rec) {
   const inner = rowInnerHTML(card, rec);
   let extra = '';
   if (card === 'units' && rec.fleetStatus !== 'Active') extra = ' fleet-dim';   // out of active inventory → dim (failed = gradient, not full red)
-  if (card === 'customers' && /Blacklist/i.test(rec.accountType || '')) extra += ' unavailable';   // §9 blacklisted → red
+  if (card === 'customers' && isCustomerBlacklisted(rec)) extra += ' unavailable';   // §9 blacklisted → red
   // §10 — under an active rental window, tint every unavailable unit/category red
   if (availWin && availUnavailable(card, rec)) extra += ' unavailable';
   if (card === 'calendar' && rec.done) extra += ' trip-done';   // Trips: a done run stays visible, dimmed (spec §2.2)
@@ -8409,10 +8617,12 @@ const DETAIL = {
     // Render every invoice pill (a fully-refunded one carries a ↩ + "re-bill" tip); then offer
     // +Invoice whenever no linked invoice actually holds a charge — so a refund (#378) OR a
     // $0-total credit slot (#414) restores the re-bill path.
+    const unlinkInvIds = [...new Set([...invs.map((iv) => iv.invoiceId), r.invoiceId].filter(Boolean))];
+    const unlinkOwnerFrozen = blacklistedOwnerEdgeWouldDisappear(r, unlinkInvIds);
     const invPill = (invs.length
       ? invs.map((iv, k) => { const refunded = invFullyRefunded(iv);
           const tip = refunded ? 'Refunded — use +Invoice to re-bill on a fresh invoice' : (invs.length > 1 ? 'Invoice ' + (k + 1) + ' of ' + invs.length + (iv.contOf ? ' — continuation (28-day cap)' : '') : '');
-          return `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(iv.invoiceId)}"${tip ? ` data-tip="${esc(tip)}"` : ''}>${refunded ? '↩ ' : ''}${CARD_ICON.invoices}${esc(invoiceShort(iv.invoiceId))}${k === 0 && paidForThis <= 0 ? `<span class="x" data-x="inv-remove" data-tip="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`; }).join('')
+          return `<span class="pill ref link" data-r="R2" data-pill-card="invoices" data-pill-rec="${esc(iv.invoiceId)}"${tip ? ` data-tip="${esc(tip)}"` : ''}>${refunded ? '↩ ' : ''}${CARD_ICON.invoices}${esc(invoiceShort(iv.invoiceId))}${k === 0 && paidForThis <= 0 && !invoiceCollectionsActive(iv) && !unlinkOwnerFrozen ? `<span class="x" data-x="inv-remove" data-tip="unlink — allowed while $0 is assigned to this rental; afterwards refund first">✕</span>` : ''}</span>`; }).join('')
       : '') + (invs.some(invHoldsCharge) ? '' : createInvBtn);
 
     /* Balance (paid / total) for the header right side — summed across the invoice series. */
@@ -8424,7 +8634,7 @@ const DETAIL = {
 
     /* Header: customer + PO left · status gate top-right, then invoice+balance below. */
     const custEl = cust
-      ? entityPill('customers', cust, { x: 'cust-swap' })
+      ? entityPill('customers', cust, isCustomerBlacklisted(rentalAccountCustomer(r)) ? {} : { x: 'cust-swap' })
       : addBtn('Customer', { link: true, js: 'js-quickadd-cust', h: 26, data: { card: 'rentals', rec: r.rentalId, slot: 'customer' } });
     const poField = efld('rentals', r, 'rentalId', 'po', 'Add PO', { fmt: (v) => 'PO ' + v });
     // F4 — Rental Protection advisory: when the account doesn't carry protection, every
@@ -8443,13 +8653,19 @@ const DETAIL = {
        reflects availability for the window live. A fragile (invoiced/out) rental stages
        its edits with an inline "Confirm new window" panel (below the grid, above Clear)
        carrying the money preview — the calendar stays editable, no blocking popup. */
-    if (!state.winEdit || state.winEdit.rentalId !== r.rentalId) {
+    const allocationFrozen = blacklistBlocksRentalAllocation(r);
+    const splitFrozen = blacklistBlocksRentalAllocation(r, { kind: 'split' });
+    if (allocationFrozen) {
+      if (state.winEdit?.rentalId === r.rentalId) state.winEdit = null;
+    } else if (!state.winEdit || state.winEdit.rentalId !== r.rentalId) {
       state.winEdit = { rentalId: r.rentalId, monthISO: firstOfMonthISO(r.startDate || TODAY_ISO), anchor: null };
       if (rentalFragile(r)) state.winEdit.staged = { rentalId: r.rentalId, startDate: r.startDate || '', endDate: r.endDate || '', startTime: r.startTime || '' };
     }
     // (the `.staged` class is no longer styled — the dim/pointer-block went away when the
     //  Confirm panel moved inline (2026-06-26), so we stop emitting the now-inert hook.)
-    const calHtml = `<div class="rdcal-edit" data-rec="${esc(r.rentalId)}" style="--rdcal-hl:var(--${stColor})">${winPickerEl(r)}</div>`;
+    const calHtml = allocationFrozen
+      ? `<div class="rdcal-edit" data-rec="${esc(r.rentalId)}" style="--rdcal-hl:var(--${stColor})"><div class="kv" style="justify-content:space-between"><span>${badge('Window locked', 'red')}</span><span class="derived">${esc(fmtWindow(r.startDate, r.endDate))}</span><span class="muted" style="font-size:0.6471rem">Lift or Recall the blacklist to rebook.</span></div></div>`
+      : `<div class="rdcal-edit" data-rec="${esc(r.rentalId)}" style="--rdcal-hl:var(--${stColor})">${winPickerEl(r)}</div>`;
 
     /* Duration label (shared across all unit rows). */
     const durLabel = hasWin
@@ -8469,7 +8685,7 @@ const DETAIL = {
           const noRates = !voided && catRatesUnset(IDX.category.get(u.categoryId))
             ? flagEl('No rates', 'yellow', { icon: CARD_ICON.categories, card: 'categories', recId: u.categoryId, alert: true, title: 'This category has no day / 7-day / 4-week rate — it bills $0. Set its rates before quoting.' })
             : '';
-          const splitBtn = multi ? `<button class="stall-split js-split-open" data-rec="${esc(r.rentalId)}" data-unit="${esc(u.unitId)}" data-tip="Give ${esc(u.name)} its own dates — splits to a separate rental on the same invoice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>dates</button>` : '';
+          const splitBtn = multi && !splitFrozen ? `<button class="stall-split js-split-open" data-rec="${esc(r.rentalId)}" data-unit="${esc(u.unitId)}" data-tip="Give ${esc(u.name)} its own dates — splits to a separate rental on the same invoice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>dates</button>` : '';
           return `<div class="stall rd-unit${voided ? ' voided' : ''}${lref.fully ? ' stall-refunded' : ''}">
             <div class="rd-unit-top">
               <div class="stall-id rd-unit-id">${entityPill('units', u, { x: 'unit-remove', xData: u.unitId })}${unitCat ? dPill(unitCat.name, 'orange', { card: 'categories', recId: u.categoryId, icon: CARD_ICON.categories }) : ''}${noRates}${multi ? unitStatusGate(r, eu) : ''}</div>
@@ -8546,6 +8762,20 @@ const DETAIL = {
     const gpsM = (gsUnit && gsUnit.live) ? gsUnit.machine : null;
     const gpsMapHref = (gpsM && gpsM.lat != null && gpsM.lng != null) ? `https://www.google.com/maps?q=${gpsM.lat},${gpsM.lng}` : '';
     const gpsSeen = gpsM ? gpsRelTime(gpsM.lastSeen) : '';
+    /* IMMOBILIZER (#820) — a plain SPEC FACT about the machine: is a theft immobilizer
+       fitted, and (optionally) what kind / installed when. DESCRIPTIVE ONLY — it neither
+       reads nor arms gpsShutdownControl's Hapn starter cut below, which stays the only
+       thing in the app that can actually immobilize a unit. No status registry backs a
+       yes/no spec fact, so the selected cell falls back to the ONE orange (wrangler-style
+       §3 "toggle active segment"; ledger #16) rather than borrowing Coverage's green/red —
+       a unit without an immobilizer is a fact, not a fault. The note line follows the
+       Coverage precedent (riders only show when insured): it renders when one is fitted,
+       or whenever a note already exists, so flipping to None never eats what was typed. */
+    const immob = !!u.immobilizer;
+    const immobCtl = segCtl([
+      { label: 'Has immobilizer', js: 'js-immob-toggle', data: { rec: u.unitId, val: '1' }, on: immob ? 'orange' : null },
+      { label: 'None', js: 'js-immob-toggle', data: { rec: u.unitId, val: '' }, on: immob ? null : 'orange' },
+    ]);
     const gpsBody = `<div class="fieldstack">
       ${kvPills((gsUnit ? statusPill('gpsStatus', gsUnit.status, { focal: true }) : badge('No GPS')) + (gpsMapped ? '' : addBtn('Connect GPS', { link: true, js: 'js-gps-connect', data: { rec: u.unitId } })))}
       ${gpsStale ? `<div class="kv" style="justify-content:center"><span class="muted" style="font-size:0.6471rem">Last known — live link down</span></div>` : ''}
@@ -8557,6 +8787,8 @@ const DETAIL = {
       ${gpsMapped ? `<div class="kv"><span class="v muted" style="font-size:0.6471rem">${esc(u.gpsProvider)} · ${esc(u.gpsDeviceId)}</span>${ghostPill('Reconnect', { js: 'js-gps-connect', data: { rec: u.unitId } })}</div>` : ''}
       ${efld('units', u, 'unitId', 'gpsType', 'GPS unit/type')}
       ${efld('units', u, 'unitId', 'gpsPlacement', 'Placement')}
+      <div class="kv">${immobCtl}</div>
+      ${(immob || u.immobilizerNote) ? efld('units', u, 'unitId', 'immobilizerNote', 'Type / install date') : ''}
       ${gpsShutdownControl(u, gpsM)}
       ${gpsMapped ? gpsFeedHtml(u) : ''}
     </div>`;
@@ -8948,13 +9180,14 @@ const DETAIL = {
     const t = invoiceTotals(i);
     const cust = IDX.customer.get(i.customerId);
     const locked = !!i.locked;   // pricing sealed (Option B) — line items frozen + tamper-checked
+    const collectionsFrozen = invoiceCollectionsActive(i);
     const subBy = (kind) => (i.lineItems || []).filter((l) => l.kind === kind).reduce((a, l) => a + (Number(l.amount) || 0), 0);
     // ONE section (Jac 2026-06-12): LEFT = actions · RIGHT = the line-item ledger.
     // line item: R7 hyperlink + amount + unlink ✕ — the redundant kind badge is GONE.
     const lines = (i.lineItems || []).map((li, idx) => {
       const ref = li.kind === 'rental' ? `data-pill-card="rentals" data-pill-rec="${esc(li.ref)}"`
         : li.kind === 'WO' ? `data-pill-card="workOrders" data-pill-rec="${esc(li.ref)}"` : '';
-      const x = (!locked && li.kind !== 'transport' && itemPaid(i, li, idx) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
+      const x = (!locked && !invoiceRentalLinkFrozen(i, li) && li.kind !== 'transport' && itemPaid(i, li, idx) <= 0) ? `<span class="x line-x" data-x="inv-line-remove" data-idx="${idx}">✕</span>` : '';
       const bal = itemPaid(i, li, idx);   // partial-payment item balance (when assigned)
       const refd = itemRefunded(i, li), fullyR = lineFullyRefunded(i, li);   // §19b per-line refund — strike a fully-refunded line, show the ↩ tally
       return `<div class="hitem inv-line${fullyR ? ' line-refunded' : ''}"><span ${ref} class="inv-line-link${fullyR ? ' struck' : ''}" data-r="R7">${esc(li.label)}</span><span class="spacer"></span>${bal > 0 && !fullyR ? `<span class="dvd c-green derived" data-r="R4" data-tip="paid on this line">${money2(bal)}✓</span>` : ''}${refd > 0.005 ? `<span class="dvd derived refund-chip" data-r="R4" data-tip="refunded on this line">↩${money2(refd)}</span>` : ''}<b class="derived${fullyR ? ' struck' : ''}">${money2(li.amount)}</b>${x}</div>`;
@@ -8963,7 +9196,7 @@ const DETAIL = {
     const kinds = ['rental', 'transport', 'parts', 'labor'].filter((k) => subBy(k) > 0);
     const subRows = kinds.length > 1 ? kinds.map((k) => ledgerRow(`${k[0].toUpperCase()}${k.slice(1)} subtotal`, money2(subBy(k)))).join('') : '';
     // LEFT — customer · PO · payment · the line-management row (adds / lock / unlock / form)
-    const custCell = cust ? refPill('customers', i.customerId, cust.name, locked ? {} : { x: 'inv-cust-remove' }) : (i.mock ? addBtn('Customer', { link: true, js: 'js-quickadd-cust', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer'));
+    const custCell = cust ? refPill('customers', i.customerId, cust.name, (locked || collectionsFrozen || isCustomerBlacklisted(cust)) ? {} : { x: 'inv-cust-remove' }) : (i.mock && !collectionsFrozen ? addBtn('Customer', { link: true, js: 'js-quickadd-cust', h: 26, data: { card: 'invoices', rec: i.invoiceId, slot: 'customer' } }) : badge('No customer'));
     const poCell = cust?.requiresPO && !i.po
       ? `<span class="req inline-edit" data-r="R6" data-edit="invoicePO" data-rec="${i.invoiceId}">PO #</span>`
       : `<span class="${i.po ? 'pill ghost' : 'add-field'} inline-edit" data-r="${i.po ? 'R18' : 'R5c'}" data-edit="invoicePO" data-rec="${i.invoiceId}"${i.po ? '' : ' style="height:26px"'}>${esc(i.po ? 'PO ' + i.po : '+PO')}</span>`;
@@ -9147,11 +9380,27 @@ const DETAIL = {
   },
 };
 
+/* Minutes-into-day from a nowClock() stamp ("5:44 PM" → 1064); -1 when absent/unparseable so
+   an undated entry sorts last within its day. Inverse of nowClock. */
+function clockMinutes(c) {
+  const m = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(String(c || '').trim());
+  if (!m) return -1;
+  return ((Number(m[1]) % 12) + (/PM/i.test(m[3]) ? 12 : 0)) * 60 + Number(m[2]);
+}
 /* History section (§0.6) — dotted separator + bg shift, pinned at bottom. */
 function historySection(card, rec, cs, chips) {
   // Timestamped actions taken this session (logAction) ride at the top, newest-first,
   // above the date-derived history. Single merge point → every card gets action history.
-  const acts = (rec.actions || []).slice().sort((a, b) => b.seq - a.seq).map((a) => {
+  // Sort on the REAL stamp (when + clock), not `seq`: actionSeq resets to 0 on every page load,
+  // so entries written in different sessions carry values from independent counters and
+  // interleaved at random — a log that read Jun 17, Jul 18, Jun 22, Jul 13 in production
+  // (audit 2026-07-18). `seq` stays as the tie-break so same-minute entries from one session
+  // keep their true order.
+  const acts = (rec.actions || []).slice().sort((a, b) =>
+    String(b.when || '').localeCompare(String(a.when || ''))
+    || (clockMinutes(b.clock) - clockMinutes(a.clock))
+    || ((b.seq || 0) - (a.seq || 0))
+  ).map((a) => {
     const when = fmtShortDate(a.when) + (a.clock ? ` · ${a.clock}` : '');
     return { when, text: a.text, by: a.by || '', search: `${when} ${a.text} ${a.by || ''}` };
   });
@@ -9468,13 +9717,8 @@ const memberIcon = (m) => (m === 'calendar' ? I.truck : m === 'sales' ? RING_ICO
 // Tab row count for a member (search-aware; mirrors the card's own count chip).
 function memberCount(member, session) {
   if (member === 'sales') return null;   // "coming soon" placeholder — no count chip
-  // Trips: every not-done TRIP, any date (Jac 2026-07-18). Two deliberate choices here:
-  //   • no date floor — an undone run from a past day is the MOST overdue work on the board, not
-  //     history. The old `ev.date >= TODAY_ISO` filter hid it: a yard with four never-logged runs
-  //     (oldest 78 days) still showed a badge of 4, counting only today-forward.
-  //   • counts trips, not raw stops — the card body renders tripsFor(), so once two stops are
-  //     doubled into one run the badge stays equal to the rows underneath it.
-  if (member === 'calendar') return tripsFor().filter((t) => !t.done).length;
+  // Trips: upcoming not-done only — a done or past run is history, not a pending count.
+  if (member === 'calendar') return dispatchEvents().filter((ev) => ev.date >= TODAY_ISO && !stopDone(ev)).length;
   try { let r = listFor(member, session); if (member === 'units') r = unitsVisible(r, session.cards.units); if (member === 'rentals') r = rentalsVisible(r, session, session.cards.rentals); return r.length; } catch { return 0; }
 }
 /** How many units NEED the crew — drives the red alert on the Units tab (the
@@ -11800,7 +12044,7 @@ function dispatchFocusStop(stopId) {
 function tripTownGo(stopId, day) {
   if (day) state.dispatchDay = day;
   state.dispFocusId = stopId;
-  if (!tripsMapOpen()) { _mapOpenSession = true; _dispMapFailed = false; }   // a collapsed panel opens for THIS session only (and retries a failed load) — never rewrites the remembered preference
+  if (!tripsMapOpen()) { tripsMapSetOpen(true); _dispMapFailed = false; }   // a collapsed panel opens (and retries a failed load)
   render();
   dispatchFocusStop(stopId);
 }
@@ -11814,24 +12058,8 @@ function tripTownGo(stopId, day) {
    (the key has Places, not Geocoding) and cached. Phase 2 (spec §2.1): the map rides a
    collapsible ~260px panel at the top of the Trips card — open by default everywhere,
    remembered per device; offline/#local shows the stamped MAP OFFLINE plate instead. */
-/* §2.1 map-panel state, in precedence order:
-   1. _mapOpenSession — a SESSION-ONLY override. Focusing a stop (tripTownGo) has to surface the
-      map, but that is a side effect of "show me this stop", not the driver saying "I want the map
-      open from now on". It used to call tripsMapSetOpen(true), which WROTE localStorage and
-      silently destroyed a deliberate collapse — one tap on a town undid it permanently (Jac
-      2026-07-18). The override lives for this page only; the explicit toggle button clears it.
-   2. the remembered per-device preference.
-   3. the default: open for everyone EXCEPT the driver role, whose landing card this is. The panel
-      is a fixed 260px inside a ~333px scroll region, so opening it by default left a driver
-      looking at one trip out of four; collapsed, three fit above the fold. Office/sales/mechanic
-      land on other cards and keep the map open as before. Read inside the try so a TDZ or storage
-      failure falls back to the old always-open behaviour. */
-let _mapOpenSession = null;
-const tripsMapOpen = () => {
-  if (_mapOpenSession !== null) return _mapOpenSession;
-  try { const v = localStorage.getItem('jactec.tripsMap'); return v == null ? currentRole !== 'driver' : v === '1'; } catch (e) { return true; }
-};
-const tripsMapSetOpen = (on) => { _mapOpenSession = null; try { localStorage.setItem('jactec.tripsMap', on ? '1' : '0'); } catch (e) {} };
+const tripsMapOpen = () => { try { const v = localStorage.getItem('jactec.tripsMap'); return v == null ? true : v === '1'; } catch (e) { return true; } };
+const tripsMapSetOpen = (on) => { try { localStorage.setItem('jactec.tripsMap', on ? '1' : '0'); } catch (e) {} };
 const isLocalDemo = () => (location.hash || '').toLowerCase().includes('local');
 let _dispMapFailed = false;   // a genuine Maps load failure → the panel flips to the plate (re-opening the panel retries)
 let _dispMap = null, _dispView = null, _dispMarkers = [], _dispRoute = null, _dispGeo = {}, _dispGeoPending = {};
@@ -13157,6 +13385,12 @@ function renderOverlay() {
   const o = state.overlay;
   if (o.kind !== _popDragKind) { _popDragKind = o.kind; _popDrag = { x: 0, y: 0 }; }   // a new popup opens centered; re-renders of the same one keep the dragged spot
   const overlay = el('div', 'overlay');
+  // A same-popup RE-RENDER is not an OPEN (#828). This function rebuilds the popup from scratch on
+  // every state change (root.innerHTML = '' above), so the ENTRY animation — sheetUp on a phone,
+  // plateIn on desktop — replays on every in-popup tap: the sheet drops to translateY(100%) and
+  // slides back up, which reads as the card collapsing and re-opening. Suppress it on a re-render,
+  // off the SAME kind signal the drag-spot line above and the scroll-restore line below already use.
+  if (o.kind === _ovLastKind) overlay.classList.add('is-rerender');
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) { if (overlayLocked()) { attnFlash('.rr-stars'); return; } closeOverlay(); } });
   if (buildPopupEl(o, overlay) === false) { state.overlay = null; return; }
   root.appendChild(overlay);
@@ -16007,6 +16241,9 @@ const WR_OPERATIONS = {
       const r = pick.rental;
       const invs = this._linked(r);
       if (!invs.length) return { issue: `rental ${r.rentalId} isn’t linked to an invoice` };
+      const inCollections = invs.find(invoiceCollectionsActive);
+      if (inCollections) return { issue: `${invoiceShort(inCollections.invoiceId)} is in Collections — Recall it before unlinking the rental` };
+      if (blacklistedOwnerEdgeWouldDisappear(r, invs.map((inv) => inv.invoiceId))) return { issue: `that invoice is the rental's last blacklisted customer link — Lift or Recall before unlinking it` };
       const paid = invs.find((inv) => rentalAllocated(inv, r.rentalId) > 0.005);
       if (paid) return { issue: `a payment is assigned to this rental on ${invoiceShort(paid.invoiceId)} — that has to be refunded first, which I can’t do` };
       return { summary: `unlink invoice ${invs.map((iv) => invoiceShort(iv.invoiceId)).join(', ')} from ${rentalUnitsLabel(r) || `rental ${r.rentalId}`} (frees it to re-bill)` };
@@ -16014,6 +16251,8 @@ const WR_OPERATIONS = {
     apply(p) {
       const pick = this._pick(p); if (pick.issue || !pick.rental) return null;
       const r = pick.rental; const invs = this._linked(r);
+      if (invs.some(invoiceCollectionsActive)) { toast('Blocked: a linked invoice is in Collections — recall it first (§7.7).'); return null; }
+      if (blacklistedOwnerEdgeWouldDisappear(r, invs.map((inv) => inv.invoiceId))) { toast('Blocked: that invoice is the rental’s last blacklisted customer link — Lift or Recall before unlinking it (§9).'); return null; }
       const label = invs.map((iv) => invoiceShort(iv.invoiceId)).join(', ') || invoiceShort(r.invoiceId);
       // FULL detach — drop the rental from every invoice's rentalIds series list AND clear the legacy
       // pointer, so rentalInvoices() (the chip / +Invoice source) stops returning it (#581).
@@ -16038,7 +16277,7 @@ const WR_OPERATIONS = {
       const cres = wrResolveCustomer(custRef);
       if (cres.many) return { issue: `more than one customer matches “${custRef}” — which one? (${cres.many.slice(0, 3).map((c) => c.name).join(', ')})` };
       if (!cres.rec) return { issue: `no customer matching “${custRef}”` };
-      if (/Blacklist/i.test(cres.rec.accountType || '')) return { issue: `${cres.rec.name} is blacklisted — can't be put on rent` };
+      if (isCustomerBlacklisted(cres.rec)) return { issue: `${cres.rec.name} is blacklisted — can't be put on rent` };
       const win = this._window(p);
       if (win.issue) return { issue: win.issue };
       const refs = (Array.isArray(p && p.unitIds) ? p.unitIds : Array.isArray(p && p.units) ? p.units : ((p && (p.unitId || p.unit)) ? [p.unitId || p.unit] : [])).filter(Boolean);
@@ -16698,7 +16937,11 @@ function boardSortRows(cols, rows, sort) {
 }
 function boardViewRecords(o, session) {
   const entity = boardEntity(o.card, session);
-  const cols = cardColumns(o.card, session);
+  // Columns must resolve off the ENTITY, not the raw saved card: a stale 'shop' board view
+  // (card retired 2026-07-07) has no CARD_COLUMNS entry, so passing o.card returned [] and the
+  // board rendered column-less — defeating the very fallback boardSegmentFor exists for. Records
+  // on the next line already use `entity`; this just makes the columns agree (audit 2026-07-18).
+  const cols = cardColumns(entity, session);
   let rows = (collection(entity) || []).filter((r) => boardMatches(cols, r, o.query));
   return boardSortRows(cols, rows, o.sort);
 }
@@ -16757,7 +17000,7 @@ function bvFmtNum(v) { return Number.isFinite(v) ? (Math.round(v * 100) / 100).t
 
 function boardViewTable(o, session) {
   const entity = boardEntity(o.card, session);
-  const cols = cardColumns(o.card, session);
+  const cols = cardColumns(entity, session);   // entity, not o.card — see boardViewRecords (stale 'shop' view)
   const byKey = Object.create(null); cols.forEach((c) => { byKey[c.key] = c; });
   const rows = boardViewRecords(o, session);
   if (!o.colOrder) o.colOrder = cols.map((c) => ({ kind: 'data', key: c.key }));   // unified, insertable column order
@@ -17185,12 +17428,6 @@ function setFocusedCard(cardId) {
    ════════════════════════════════════════════════════════════════════════ */
 let renderCount = 0;
 const scrollMemo = {};   // persistent scroll positions, keyed `card|view` (list vs which record)
-/* The element that ACTUALLY scrolls for a card. Trips/calendar nests its real scroll region
-   (.cal-scroll) inside a .card-body that is itself `overflow:hidden` (style.css §2.1), so
-   reading/writing scrollTop on .card-body was a silent no-op there — the card snapped back to
-   the top of the map on every render (e.g. after assigning a driver). Every other card has no
-   .cal-scroll and still resolves to .card-body exactly as before. */
-const scrollHostOf = (c) => (c && (c.querySelector('.cal-scroll') || c.querySelector('.card-body'))) || null;
 // §M6 — phone chrome reflow (Jac 2026-07-11): the global "Search everything…" bar is dropped
 // (CSS-hidden); the phone reads top→bottom as HEADER (logo/rings · card toggles · per-card
 // search) then a bottom DOCK stacking the item-tab rail ABOVE the tool bar:
@@ -17211,7 +17448,7 @@ function render() {
   // or editing a field doesn't dump you back at the top of a scrolled card (§0.6).
   const scrollOld = {};
   document.querySelectorAll('.card[data-card]:not([data-clone])').forEach((c) => {   // §M8 wrap — skip the edge clones (they'd clobber the memo with their scrollTop 0)
-    const b = scrollHostOf(c); if (!b) return;
+    const b = c.querySelector('.card-body'); if (!b) return;
     const v = c.dataset.view || 'list'; scrollOld[c.dataset.card] = v;
     scrollMemo[c.dataset.card + '|' + v] = b.scrollTop;   // remember where THIS view was scrolled
   });
@@ -17254,7 +17491,7 @@ function render() {
   // restore scroll by VIEW: same view → keep your spot; back to a list → return to the
   // row you left; opened a record → top of Standard view (a targeted link scrolls itself after).
   document.querySelectorAll('.card[data-card]:not([data-clone])').forEach((c) => {   // §M8 wrap — skip the edge clones
-    const b = scrollHostOf(c); if (!b) return;
+    const b = c.querySelector('.card-body'); if (!b) return;
     const cardId = c.dataset.card, v = c.dataset.view || 'list', key = cardId + '|' + v;
     if (v === scrollOld[cardId] || v === 'list') b.scrollTop = scrollMemo[key] || 0;
     else b.scrollTop = 0;
@@ -17320,7 +17557,7 @@ function renderResults() {
   refreshToday();
   const scrollOld = {};
   document.querySelectorAll('.card[data-card]').forEach((c) => {
-    const b = scrollHostOf(c); if (!b) return;
+    const b = c.querySelector('.card-body'); if (!b) return;
     const v = c.dataset.view || 'list'; scrollOld[c.dataset.card] = v;
     scrollMemo[c.dataset.card + '|' + v] = b.scrollTop;
   });
@@ -17350,7 +17587,7 @@ function renderResults() {
     if (bb) bb.replaceWith(bottomBarEl());
   }
   document.querySelectorAll('.card[data-card]').forEach((c) => {   // restore scroll by view (mirrors render())
-    const b = scrollHostOf(c); if (!b) return;
+    const b = c.querySelector('.card-body'); if (!b) return;
     const cardId = c.dataset.card, v = c.dataset.view || 'list', key = cardId + '|' + v;
     if (v === scrollOld[cardId] || v === 'list') b.scrollTop = scrollMemo[key] || 0;
     else b.scrollTop = 0;
@@ -17588,21 +17825,21 @@ const DROP_MATRIX = {
     // #552 audit item 11: rentalHasUnit() scans the WHOLE r.units[] (not just the
     // legacy-primary r.unitId), so a non-primary unit already linked to a multi-unit
     // rental no longer visually lights up as a valid drop target.
-    rentals: (u, r) => u.fleetStatus === 'Active' && !rentalHasUnit(r, u.unitId),                 // §9 — non-Active units aren't rentable
+    rentals: (u, r) => u.fleetStatus === 'Active' && !rentalHasUnit(r, u.unitId) && !isCustomerBlacklisted(rentalAccountCustomer(r)),   // §9 — non-Active units and blacklisted customers aren't rentable
     invoices: (u, i) => !i.locked && !!unbilledOpenWOForUnit(u.unitId),                           // §7.6 — needs a billable open WO
   },
   rentals: {
-    units: (r, u) => u.fleetStatus === 'Active' && !rentalHasUnit(r, u.unitId),
-    invoices: (r, i) => !i.locked && !r.invoiceId && (!i.customerId || !r.customerId || i.customerId === r.customerId),   // §7.5 — one invoice per rental + customer scoping
-    customers: (r, c) => r.customerId !== c.customerId && !/Blacklist/i.test(c.accountType || ''),                        // §9 blacklist
+    units: (r, u) => u.fleetStatus === 'Active' && !rentalHasUnit(r, u.unitId) && !isCustomerBlacklisted(rentalAccountCustomer(r)),
+    invoices: (r, i) => !i.locked && !invoiceCollectionsActive(i) && !r.invoiceId && !!r.customerId && !!i.customerId && i.customerId === r.customerId && !blacklistBlocksInvoiceLink(r, IDX.customer.get(i.customerId)),   // §7.5/§9 — fail-closed customer scoping
+    customers: (r, c) => r.customerId !== c.customerId && !isCustomerBlacklisted(c) && !isCustomerBlacklisted(rentalAccountCustomer(r)),             // §9 blacklist freezes both sides
   },
   customers: {
-    rentals: (c, r) => r.customerId !== c.customerId && !/Blacklist/i.test(c.accountType || ''),
-    invoices: (c, i) => i.customerId !== c.customerId && !i.locked && invoiceTotals(i).paid <= 0,  // §7.5 — paid/locked invoice freezes its customer
+    rentals: (c, r) => r.customerId !== c.customerId && !isCustomerBlacklisted(c) && !isCustomerBlacklisted(rentalAccountCustomer(r)),
+    invoices: (c, i) => i.customerId !== c.customerId && !i.locked && invoiceTotals(i).paid <= 0 && !invoiceCollectionsActive(i) && !isCustomerBlacklisted(IDX.customer.get(i.customerId)),  // §7.5/§7.7/§9 — authoritative blacklisted owner stays attached until Lift/Recall
   },
   invoices: {
-    rentals: (i, r) => !i.locked && !r.invoiceId && (!i.customerId || !r.customerId || i.customerId === r.customerId),
-    customers: (i, c) => i.customerId !== c.customerId && !i.locked && invoiceTotals(i).paid <= 0,
+    rentals: (i, r) => !i.locked && !invoiceCollectionsActive(i) && !r.invoiceId && !!r.customerId && !!i.customerId && i.customerId === r.customerId && !blacklistBlocksInvoiceLink(r, IDX.customer.get(i.customerId)),
+    customers: (i, c) => i.customerId !== c.customerId && !i.locked && invoiceTotals(i).paid <= 0 && !invoiceCollectionsActive(i) && !isCustomerBlacklisted(IDX.customer.get(i.customerId)),
     units: (i, u) => !i.locked && !!unbilledOpenWOForUnit(u.unitId),
     workOrders: (i, w) => woDroppableToInvoice(w, i),
   },
@@ -18112,13 +18349,7 @@ function dragFrameLoop() {
     if (!DRAG.active) return;
     const n = document.elementFromPoint(DRAG.point.x, DRAG.point.y);
     updateHot(n);
-    // Resolve the card-body under the pointer, then hand off to the element that ACTUALLY
-    // scrolls — same .cal-scroll-before-.card-body precedence as scrollHostOf(). Trips/calendar
-    // keeps its real scroll region nested inside a `overflow:hidden` .card-body (style.css §2.1),
-    // so writing scrollTop straight onto the .card-body silently auto-scrolled nothing there.
-    // Anchoring on .card-body (not .card) keeps every other card's behaviour bit-for-bit.
-    const host = n && n.closest ? n.closest('.card-body') : null;
-    const body = host && (host.querySelector('.cal-scroll') || host);
+    const body = n && n.closest ? n.closest('.card-body') : null;
     if (body) {
       const r = body.getBoundingClientRect();
       if (DRAG.point.y < r.top + EDGE) body.scrollTop -= Math.ceil((r.top + EDGE - DRAG.point.y) / 3);
@@ -18270,7 +18501,10 @@ function dispatchDrop(p, t) {
     const r = pair === 'rentals>invoices' ? p.rec : t.rec, inv = pair === 'rentals>invoices' ? t.rec : p.rec;
     if (inv.locked) { toast(`Blocked: invoice ${invoiceShort(inv.invoiceId)} is locked — unlock it first (§7.5).`); return; }
     if (!inv.customerId) { flashOr('[data-slot="customer"]', 'Blocked: the invoice needs a customer first (§7.5).'); return; }
-    if (r.customerId && inv.customerId !== r.customerId) { toast(`Blocked: that rental belongs to ${IDX.customer.get(r.customerId)?.name || 'another customer'}, not ${IDX.customer.get(inv.customerId)?.name || 'this invoice’s customer'} (§7.5).`); return; }
+    if (!r.customerId) { toast('Blocked: the rental needs a customer before it can be invoiced (§7.5).'); return; }
+    if (inv.customerId !== r.customerId) { toast(`Blocked: that rental belongs to ${IDX.customer.get(r.customerId)?.name || 'another customer'}, not ${IDX.customer.get(inv.customerId)?.name || 'this invoice’s customer'} (§7.5).`); return; }
+    const owner = IDX.customer.get(inv.customerId);
+    if (blacklistBlocksInvoiceLink(r, owner)) { toast(`Blocked: ${owner?.name || 'the invoice customer'} is blacklisted (§9).`); return; }
     addRentalLineToInvoice(inv.invoiceId, r.rentalId);
     if (r.invoiceId === inv.invoiceId) {                                 // the mutation toasts its own failures
       toast(`Rental ${fmtWindow(r.startDate, r.endDate)} → invoice ${invoiceShort(inv.invoiceId)}.`);
@@ -18481,6 +18715,7 @@ function onClick(e) {
   // closure round 2): the legacy js-mem-enroll button bypassed the signed-agreement gate
   // entirely (no signature/selfie/start-date check) — account-type can now ONLY change via
   // agreementSignCommit's inline sign=enroll flow.
+  if (closest('.js-mem-activate')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return membershipActivateCash(closest('.js-mem-activate').dataset.rec); }
   if (closest('.js-mem-cancel')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return membershipCancel(closest('.js-mem-cancel').dataset.rec); }
   if (closest('.js-mem-paycxl')) { e.stopPropagation(); if (!canMoney()) { toast('Membership billing is Office/Admin only.'); return; } return membershipReactivate(closest('.js-mem-paycxl').dataset.rec); }
   if (closest('.js-add-card')) {
@@ -18626,7 +18861,11 @@ function onClick(e) {
     const rec = closest('.js-lift-blacklist').dataset.rec;
     requireAdmin('Lifting a Blacklist needs Admin approval.', (approver) => {
       const c = IDX.customer.get(rec); if (!c) return;
-      delete c.block; reindex('customers', c); logAction(c, `Blacklist lifted (Admin approval${approver ? ' — ' + approver : ''})`);
+      const lifted = liftCustomerBlacklist(c, approver);
+      if (!lifted.ok) {
+        toast(lifted.reason === 'collections' ? 'Recall every active Collections invoice before lifting this blacklist.' : 'This account is not blacklisted.');
+        return;
+      }
       render(); toast('Blacklist lifted.');
     });
     return;
@@ -18699,6 +18938,9 @@ function onClick(e) {
   if (closest('.js-sales-schedule')) { e.stopPropagation(); return openOverlay({ kind: 'schedule', customerId: closest('.js-sales-schedule').dataset.rec }); }
   if (closest('.js-install-go')) { e.stopPropagation(); try { localStorage.setItem('jactec.installNudged', '1'); } catch (er) {} const ev = state._installEvt; closeOverlay(); if (ev) { ev.prompt(); } return; }
   if (closest('.js-install-later')) { e.stopPropagation(); try { localStorage.setItem('jactec.installNudged', '1'); } catch (er) {} closeOverlay(); return; }
+  // Immobilizer yes/no on the unit's GPS section (#820) — a spec fact, open to every role like
+  // gpsType/Placement beside it; it records to unit history and NEVER touches the starter cut.
+  if (closest('.js-immob-toggle')) { e.stopPropagation(); const b = closest('.js-immob-toggle'); const u = IDX.unit.get(b.dataset.rec); if (!u) return; const nv = b.dataset.val === '1'; if (!!u.immobilizer !== nv) { u.immobilizer = nv; logAction(u, nv ? 'Immobilizer: none → fitted' : 'Immobilizer: fitted → none'); reindex('units', u); } render(); return; }
   if (closest('.js-cov-toggle')) { e.stopPropagation(); const b = closest('.js-cov-toggle'); const doIt = () => { const u = IDX.unit.get(b.dataset.rec); if (!u) return; u.insurance = u.insurance || {}; const nv = b.dataset.val === '1'; if (!!u.insurance.covered !== nv) { u.insurance.covered = nv; logAction(u, nv ? 'Branded covered — yard equipment insurance ON' : 'Coverage dropped — yard equipment insurance OFF'); reindex('units', u); } render(); }; if (!adminUnlocked()) return requireAdmin('Equipment insurance is Owner-only.', doIt); return doIt(); }
   if (closest('.js-cov-type')) { e.stopPropagation(); const b = closest('.js-cov-type'); const doIt = () => { const u = IDX.unit.get(b.dataset.rec); if (!u) return; u.insurance = u.insurance || {}; const ts = new Set(u.insurance.types || []); const id = b.dataset.id; ts.has(id) ? ts.delete(id) : ts.add(id); u.insurance.types = [...ts]; logAction(u, `Coverage riders → ${u.insurance.types.join(', ') || 'none'}`); reindex('units', u); render(); }; if (!adminUnlocked()) return requireAdmin('Equipment insurance is Owner-only.', doIt); return doIt(); }
   if (closest('.js-col-queue')) { e.stopPropagation(); if (currentRole && roleTier(currentRole) < tierRank('manager')) { toast('Collections is Manager-tier and up.'); return; } return openOverlay({ kind: 'collectionsSend', invoiceId: closest('.js-col-queue').dataset.rec }); }
@@ -18746,7 +18988,7 @@ function onClick(e) {
     e.stopPropagation();
     if (!canMoney()) { toast('Voiding an invoice is Office/Admin only.'); return; }
     const inv = IDX.invoice.get(closest('.js-void-invoice').dataset.rec); if (!inv) return;
-    if (!invoiceVoidable(inv)) { toast('Can’t void — this invoice has a payment, a price lock, or is in collections. Refund / unlock first.'); return; }
+    if (!invoiceVoidable(inv)) { toast(invoiceWouldEraseBlacklistedOwner(inv) ? 'Can’t void — this invoice is a rental’s last blacklisted customer link. Lift or Recall first (§9).' : 'Can’t void — this invoice has a payment, a price lock, or is in collections. Refund / unlock first.'); return; }
     return voidInvoice(inv);
   }
   if (closest('.js-lock-invoice')) { e.stopPropagation(); return lockInvoiceFlow(closest('.js-lock-invoice').dataset.rec, true); }
@@ -19076,8 +19318,7 @@ function onClick(e) {
     e.stopPropagation();
     const s = activeSession(); if (s.cols) s.cols.left = 'units'; s.cards.units.mode = 'list';
     render(); attnFlash('.card[data-card="units"] .list');   // R19 — point AT the list
-    // §M3 — drag-to-link is retired on phones (long-press → R20 menu is the link path); phrase to match the device
-    toast(document.body.classList.contains('is-phone') ? 'Long-press a unit in the Units card to link it to this rental.' : 'Drag a unit from the Units card onto this rental.');
+    toast('Drag a unit from the Units card onto this rental.');
     return;
   }
   if (closest('.js-quickadd-cust')) {   // §quick-add hint — point AT the Customers search bar (no popup, Jac 2026-06-16)
@@ -19085,7 +19326,7 @@ function onClick(e) {
     const s = activeSession(); if (s.cols) s.cols.right = 'customers';
     const ccs = s.cards.customers; ccs.mode = 'list'; ccs.recId = null;
     render(); attnFlash('.card[data-card="customers"] .mini-searchwrap');   // R19 — guide them to the search
-    toast(document.body.classList.contains('is-phone') ? 'Type a name + phone in the Customers search and press Enter — then long-press the new customer to link it here.' : 'Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
+    toast('Type a name + phone in the Customers search and press Enter — then drag the new customer here.');
     return;
   }
   if (closest('.js-create-invoice')) { e.stopPropagation(); return createInvoiceForRental(closest('.js-create-invoice').dataset.rec); }
@@ -19111,9 +19352,9 @@ function onClick(e) {
     const b = closest('.js-add-line'); e.stopPropagation();
     const inv = IDX.invoice.get(b.dataset.rec);
     if (b.dataset.kind === 'Rental') {
-      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', document.body.classList.contains('is-phone') ? 'The invoice needs a customer first (§7.5) — long-press to link, or quick-add one.' : 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
+      if (inv && !inv.customerId) { flashOr('[data-slot="customer"]', 'The invoice needs a customer first (§7.5) — drag or quick-add one.'); return; }
       const s = activeSession(); if (s.cols) s.cols.middle = 'rentals'; s.cards.rentals.mode = 'list';
-      render(); attnFlash('.card[data-card="rentals"] .list'); toast(document.body.classList.contains('is-phone') ? 'Long-press a rental to link it to this invoice.' : 'Drag a rental onto this invoice.'); return;
+      render(); attnFlash('.card[data-card="rentals"] .list'); toast('Drag a rental onto this invoice.'); return;
     }
     if (b.dataset.kind === 'WO') {
       // Phase 4 (Jac) — open the invoice's LINKED unit(s) in a filtered Units list; the
@@ -19602,7 +19843,7 @@ function handlePillX(xEl) {
     if (eu && unitStatus(rec, eu) === 'On Rent' && (eu.startCapture || eu.fcCapture)) {
       toast(`Blocked: ${u?.name || 'that unit'} is On Rent with a logged capture — recover it (or mark No Show) before removing.`); return;
     }
-    removeUnitFromRental(rec, uid);
+    if (!removeUnitFromRental(rec, uid)) return;
     logAction(rec, `Unit − ${u?.name || uid}`);
     reindexDraft('rentals', rec);
     toast(rentalUnitIds(rec).length ? `${u?.name || 'Unit'} removed.` : 'Unit removed — drag one on.'); return render();
@@ -19610,7 +19851,8 @@ function handlePillX(xEl) {
     rec.unitId = null;
     toast('Unit removed.'); return render();
   } else if (kind === 'cust-swap') {
-    rec.customerId = null; toast('Customer removed — drag a replacement on (or quick-add one).'); return render();
+    if (!clearRentalCustomer(rec)) return;
+    toast('Customer removed — drag a replacement on (or quick-add one).'); return render();
   } else if (kind === 'inv-remove') {
     // Full detach of this rental from its invoice(s). A rental links TWO ways — the legacy r.invoiceId
     // pointer AND the invoice's rentalIds series list (what rentalInvoices() / this chip read) — so clear
@@ -19618,23 +19860,26 @@ function handlePillX(xEl) {
     // refuse while a payment is allocated to this rental on any linked invoice (§7.4).
     const linkedInvs = rentalInvoices(rec).slice(); const legacyInv = rec.invoiceId ? IDX.invoice.get(rec.invoiceId) : null;
     if (legacyInv && !linkedInvs.includes(legacyInv)) linkedInvs.push(legacyInv);
+    if (linkedInvs.some(invoiceCollectionsActive)) { toast('Blocked: a linked invoice is in Collections — recall it first (§7.7).'); return; }
+    if (blacklistedOwnerEdgeWouldDisappear(rec, linkedInvs.map((inv) => inv.invoiceId))) { toast('Blocked: that invoice is this rental’s last blacklisted customer link — Lift or Recall before unlinking it (§9).'); return; }
     if (linkedInvs.some((inv) => rentalAllocated(inv, rec.rentalId) > 0)) { toast('Blocked: a payment is assigned to this rental — refund it first to unlink (§7.4).'); return; }
     linkedInvs.forEach((inv) => { inv.rentalIds = (inv.rentalIds || []).filter((id) => id !== rec.rentalId); reindex('invoices', inv); });
     rec.invoiceId = null; reindex('rentals', rec); toast('Invoice unlinked.'); render();
   } else if (kind === 'inv-cust-remove') {
-    if (invoiceTotals(rec).paid > 0) { toast('Blocked: invoice has a payment — customer locked (§7.5).'); return; }
-    rec.customerId = null; toast('Customer removed — drag a replacement onto the invoice (or quick-add one).'); return render();
+    if (!clearInvoiceCustomer(rec)) return;
+    toast('Customer removed — drag a replacement onto the invoice (or quick-add one).'); return render();
   } else if (kind === 'inv-line-remove') {
     const idx = Number(xEl.dataset.idx);
     const li = rec.lineItems && rec.lineItems[idx];
     if (!li) return;
+    if (invoiceRentalLinkFrozen(rec, li)) { toast('Blocked: this rental belongs to a blacklisted customer — Lift or Recall before unlinking it (§9).'); return; }
     if (itemPaid(rec, li, idx) > 0) { toast('Blocked: payment is assigned to this line — refund first (§7.4).'); return; }
     const r2 = IDX.rental.get(li.ref);
     if (li.kind === 'rental' && r2 && rentalUnits(r2).length > 1) {
       // §20 multi-unit: this ✕ removes JUST this unit (its rental + transport line) and takes
       // it off the rental — siblings stay billed and the rental stays linked. removeUnitFromRental
       // re-syncs the invoice + relabels survivors; it already dropped this unit's lines.
-      removeUnitFromRental(r2, li.unitId);
+      if (!removeUnitFromRental(r2, li.unitId)) return;
     } else {
       rec.lineItems.splice(idx, 1);
       if (li.kind === 'rental') {
@@ -19890,7 +20135,7 @@ async function verifyTierOrPassword(minTier, pw) {
 /** Block on no-valid-card: Admin override unblocks this rental + logs it. */
 function cardOverrideRental(rentalId, val) {
   const r = IDX.rental.get(rentalId); if (!r) return;
-  const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
+  const cust = rentalAccountCustomer(r);
   requireAdmin(`${cust ? cust.name : 'This customer'} — ${cardGateReason(cust) || 'card gate'}. Booking is blocked.`, (approver) => {
     r.cardOverride = true;
     logAction(r, `Admin override${approver ? ' (' + approver + ')' : ''} — booked ${getStatus('rentalStatus', val).label} (${cardGateReason(cust) || 'card gate'})`);
@@ -19901,9 +20146,9 @@ function cardOverrideRental(rentalId, val) {
 /* Phase 3 (T3.3, spec D11/D14) — the account-level block gate, a DISTINCT axis from the card/
    agreement gate above. `no-card` is already covered there (Admin-tier, persistent override —
    STRICTER than D14's Manager-tier ask, so left untouched: never weaken an existing gate).
-   `blacklist` is a hard stop with NO override, checked inline at each call site (reactivating
-   the pre-existing, previously-dormant §9 `/Blacklist/i` check — nothing ever set that string
-   until Phase 3's blockPicker). That leaves `failed-payment` and `invoice-hold` uncovered by
+   `blacklist` is a hard stop with NO override, checked through isCustomerBlacklisted at each
+   call site so both the Phase-3 stored block and legacy accountType records stay blocked.
+   That leaves `failed-payment` and `invoice-hold` uncovered by
    anything today — this is their gate: a D14 per-action Manager override, verified the same way
    tierAuth does. Critically NON-PERSISTENT — `bypassAccountBlock` is a plain function-call
    argument threaded through the retry, never written to the record, so every future attempt
@@ -19917,6 +20162,37 @@ function accountBlockOverride(cust, onOk) {
   openOverlay({ kind: 'tierAuth', minTier: 'manager', custId: cust ? cust.customerId : null, azAction: 'rentalOverride',
     pwReason: `${cust ? cust.name : 'This customer'} — ${ab ? ab.reason : 'account block'}.`,
     step: 'pick', busy: false, error: '', onOk });
+}
+/* A blacklist blocks every prospective booking/out state, including the timeline's
+   End Rent / Off Rent shortcuts. It must not strand equipment that was already out:
+   only the forward On Rent → End Rent → Off Rent → Returned progression remains legal.
+   Once physical history reaches Returned it cannot be rewritten as a voided terminal. */
+const BLACKLIST_OUT_PROGRESS = ['On Rent', 'End Rent', 'Off Rent'];
+const BLACKLIST_PROSPECTIVE_STATUS = new Set(['Quote', ...BOOKING_STATUSES, 'End Rent', 'Off Rent']);
+function blacklistBlocksStatusTransition(cust, current, next) {
+  if (!isCustomerBlacklisted(cust)) return false;
+  const from = BLACKLIST_OUT_PROGRESS.indexOf(current), to = BLACKLIST_OUT_PROGRESS.indexOf(next);
+  if ((from >= 0 || current === 'Returned') && (next === 'Cancelled' || next === 'No Show')) return true;
+  if (next === 'Returned' && current !== 'Returned' && from < 0) return true;
+  if (!BLACKLIST_PROSPECTIVE_STATUS.has(next)) return false;
+  return from < 0 || to < 0 || to < from;
+}
+function blacklistBlocksRentalStatus(r, cust, next) {
+  const eus = rentalUnits(r);
+  const current = eus.length ? eus.map((eu) => unitStatus(r, eu)) : [r.status];
+  return current.some((status) => blacklistBlocksStatusTransition(cust, status, next));
+}
+/* Legacy/customerless invoice links must fail closed for NEW booking/out movement,
+   while an already-out unit may still move forward through recovery and return. */
+function missingCustomerBlocksStatusTransition(current, next) {
+  if (!BLACKLIST_PROSPECTIVE_STATUS.has(next)) return false;
+  const from = BLACKLIST_OUT_PROGRESS.indexOf(current), to = BLACKLIST_OUT_PROGRESS.indexOf(next);
+  return from < 0 || to < 0 || to < from;
+}
+function missingCustomerBlocksRentalStatus(r, next) {
+  const eus = rentalUnits(r);
+  const current = eus.length ? eus.map((eu) => unitStatus(r, eu)) : [r.status];
+  return current.some((status) => missingCustomerBlocksStatusTransition(status, next));
 }
 /* Admin "Rental Rules" (Settings → Rental Rules) — HARD-BLOCK On Rent until every
    requirement an admin marked Required is met. Pure + defensive: with no rules set
@@ -19940,10 +20216,11 @@ function rentalRuleBlock(r, cust, val) {
 function setRentalStatus(rentalId, val, opts = {}) {
   const r = IDX.rental.get(rentalId);
   if (!r) return;
-  const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
+  const cust = rentalAccountCustomer(r);
   // §9 hard gates
   if (val === 'On Rent' && !r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
-  if (['On Rent', 'Reserved'].includes(val) && cust && (accountBlock(cust)?.type === 'blacklist' || /Blacklist/i.test(cust.accountType || ''))) { toast('Blocked: customer is blacklisted (§9).'); return; }
+  if (!cust && (r.invoiceId || rentalInvoices(r).length) && missingCustomerBlocksRentalStatus(r, val)) { toast('Blocked: this invoiced rental needs a customer before booking or going On Rent (§9).'); return; }
+  if (blacklistBlocksRentalStatus(r, cust, val)) { toast('Blocked: customer is blacklisted (§9).'); return; }
   const _rb = rentalRuleBlock(r, cust, val); if (_rb) { flashOr('.js-add-card', _rb); return; }   // admin Rental Rules — hard block
   // §14 — a booking requires a valid card that is SIGNED for the current account
   // type; any unsigned card blocks. An Admin can override. (Charging is never gated.)
@@ -19980,9 +20257,10 @@ function setRentalStatus(rentalId, val, opts = {}) {
 function setUnitStatus(rentalId, unitId, val, opts = {}) {
   const r = IDX.rental.get(rentalId); if (!r) return;
   const eu = unitEntry(r, unitId); if (!eu) return;
-  const cust = r.customerId ? IDX.customer.get(r.customerId) : null;
+  const cust = rentalAccountCustomer(r);
   if (val === 'On Rent' && !r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
-  if (['On Rent', 'Reserved'].includes(val) && cust && (accountBlock(cust)?.type === 'blacklist' || /Blacklist/i.test(cust.accountType || ''))) { toast('Blocked: customer is blacklisted (§9).'); return; }
+  if (!cust && (r.invoiceId || rentalInvoices(r).length) && missingCustomerBlocksStatusTransition(unitStatus(r, eu), val)) { toast('Blocked: this invoiced rental needs a customer before booking or going On Rent (§9).'); return; }
+  if (blacklistBlocksStatusTransition(cust, unitStatus(r, eu), val)) { toast('Blocked: customer is blacklisted (§9).'); return; }
   { const _rb = rentalRuleBlock(r, cust, val); if (_rb) { toast(_rb); return; } }   // admin Rental Rules — hard block
   if (BOOKING_STATUSES.includes(val) && cardGateBlocked(cust) && !r.cardOverride) { toast(`${cust.name} — ${cardGateReason(cust)}. Admin override required.`); return; }
   // Phase 3 (T3.3) — account-block gate (failed-payment / invoice-hold); no-card + blacklist
@@ -20001,9 +20279,7 @@ function setUnitStatus(rentalId, unitId, val, opts = {}) {
   else if (wasVoided && r.invoiceId) { syncRentalLines(r); syncTransportLine(r); }   // un-void → restore the unit's billing (was silently un-billed)
   syncRentalPrimary(r);            // mirror the aggregate back onto r.status for back-compat readers
   reindex('rentals', r);
-  const unitLabel = IDX.unit.get(unitId)?.name || unitId;
-  logAction(r, `${unitLabel} → ${getStatus('rentalStatus', val).label}`);
-  toast(`${unitLabel} → ${getStatus('rentalStatus', val).label}`);   // confirm the per-unit move (mirrors setRentalStatus)
+  logAction(r, `${IDX.unit.get(unitId)?.name || unitId} → ${getStatus('rentalStatus', val).label}`);
   render();
   if (val === 'Returned') maybePromptReturnRating(r);   // all units back → rate the customer's experience
 }
@@ -20036,15 +20312,13 @@ function openUnitStatusDropdown(rentalId, unitId, anchorEl) {
 }
 /* §9 Field Call — a unit breaks mid-rental: flag the rental (red FC), fail the unit,
    and auto-open a Field-Call work order so the M.Tech can dispatch parts/swap. */
-function markFieldCall(rentalId, unitId) {
-  const r = IDX.rental.get(rentalId); if (!r) return;
-  const targetId = unitId || r.unitId;   // the unit that actually broke; primary is only the fallback (§20 multi-unit)
-  if (!targetId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
+function markFieldCall(rentalId) {
+  const r = IDX.rental.get(rentalId); if (!r || !r.unitId) { flashOr('[data-slot="unit"]', 'No unit on this rental.'); return; }
   r.fieldCall = true; reindex('rentals', r);
-  const u = IDX.unit.get(targetId);
+  const u = IDX.unit.get(r.unitId);
   if (u) { u.inspectionStatus = 'Failed'; reindex('units', u); logAction(u, `Field Call on rental ${r.rentalName || rentalId}`); }
   const id = 'WO-FC' + (state.seq++);
-  const wo = { woId: id, unitId: targetId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
+  const wo = { woId: id, unitId: r.unitId, customerId: r.customerId || null, woReport: 'Field Call — breakdown', woType: 'Field Call', description: `Field call raised on rental ${r.rentalName || rentalId}.`, phase: 'Part Needed?', billCustomer: 'No', date: TODAY_ISO, eta: '', unitHoursAtCreation: u?.currentHours || 0, assignedMechanic: '', laborHours: 0, lineItems: [], mock: true };
   DATA.workOrders.push(wo); IDX.wo.set(id, wo); reindex('workOrders', wo);
   logAction(r, 'Field Call marked — unit failed, work order opened');
   toast('Field Call logged — unit → Failed, work order opened.');
@@ -20080,7 +20354,7 @@ function setUnitCondition(unitId, val) {
   if (val === 'Fail') {
     u.condAt = TODAY_ISO; u.condClock = nowClock();   // stamp the condition change on either path
     const ar = activeRentalForUnit(unitId);
-    if (ar) return markFieldCall(ar.rentalId, unitId);   // on-rent breakdown → field call on THIS unit (truck roll + dispatch)
+    if (ar) return markFieldCall(ar.rentalId);        // on-rent breakdown → field call (truck roll + dispatch)
     const n = newInspectionForUnit(u); n.wash = n.wash || 'No';
     return setInspResult(n.inspectionId, 'Fail');     // yard bench fail: auto-WO + §12.8 photo/notes popup
   }
@@ -20228,13 +20502,17 @@ function yardCapture(rentalId, cap, unitId, opts = {}) {
   // (A scanned delivery/recovery is ADOPTED onto cur.* by adoptScanCaptures, so cur[key] is
   // already set here — no scan-specific gate branch needed; it reads as a normal capture.)
   const replace = !!cur[key] || (cap === 'fc' && !!r.fieldCall);
+  const currentStatus = unitId && cur !== r ? unitStatus(r, cur) : r.status;
+  const startBackfill = cap === 'start' && !replace && ['On Rent', 'End Rent', 'Off Rent', 'Returned'].includes(currentStatus);
   // §14 a first Start/Delivery moves the unit On Rent — run the §9 gates UP FRONT so a
   // blocked delivery never opens the camera (mirrors setRentalStatus/setUnitStatus so the
-  // driver is never made to record a video that would only then be rejected).
-  if (cap === 'start' && !replace) {
-    const gc = r.customerId ? IDX.customer.get(r.customerId) : null;
+  // driver is never made to record a video that would only then be rejected). An already-
+  // out status with missing evidence is a backfill, not a new delivery/acquisition.
+  if (cap === 'start' && !replace && !startBackfill) {
+    const gc = rentalAccountCustomer(r);
     if (!r.invoiceId) { flashOr('.js-create-invoice', 'Blocked: "On Rent" requires a linked invoice (§9).'); return; }
-    if (gc && (accountBlock(gc)?.type === 'blacklist' || /Blacklist/i.test(gc.accountType || ''))) { toast(`🔒 ${gc.name} — blacklisted. Delivery blocked.`); return; }
+    if (!gc) { toast('Blocked: this invoiced rental needs a customer before logging a delivery (§9).'); return; }
+    if (isCustomerBlacklisted(gc)) { toast(`🔒 ${gc.name} — blacklisted. Delivery blocked.`); return; }
     const rb = rentalRuleBlock(r, gc, 'On Rent'); if (rb) { flashOr('.js-add-card', rb); return; }
     if (cardGateBlocked(gc) && !r.cardOverride) { toast(`🔒 ${gc.name} — ${cardGateReason(gc)}. Sign the card before logging a delivery.`); return; }
     // Phase 3 (T3.3) — account-block gate (failed-payment / invoice-hold), same Manager-tier,
@@ -20275,6 +20553,8 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
   // Re-record → swap the video only; keep the status where it is and don't re-raise the FC.
   // (A scanned capture is already adopted onto tgt.* by adoptScanCaptures — a normal capture here.)
   const replace = !!tgt[key] || (cap === 'fc' && !!r.fieldCall);
+  const currentStatus = unitId && eu ? unitStatus(r, eu) : r.status;
+  const startBackfill = cap === 'start' && !replace && ['On Rent', 'End Rent', 'Off Rent', 'Returned'].includes(currentStatus);
   // The media NEVER rides the record (a Sheets cell caps at 50k chars) — the stamp
   // persists immediately; the video uploads to Drive and only its URL lands on the
   // stamp afterwards (uploadCapture backend action).
@@ -20292,14 +20572,14 @@ function commitYardCapture(rentalId, cap, unitId, dataUrl, opts = {}) {
     setRentalStatus(rentalId, val, { bypassAccountBlock: opts.bypassAccountBlock }); return r.status === val;
   };
   if (cap === 'start') {
-    if (!replace && !moveStatus('On Rent')) return;
+    if (!replace && !startBackfill && !moveStatus('On Rent')) return;
     setUnitCapture(r, eu, 'startCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}Start/Delivery video ${replace ? 're-captured' : 'captured'}`);
   } else if (cap === 'end') {
     if (!replace && !moveStatus('Returned')) return;
     setUnitCapture(r, eu, 'endCapture', stamp); logAction(r, `${uname ? uname + ' — ' : ''}End/Recovery video ${replace ? 're-captured' : 'captured'}`);
   } else if (cap === 'fc') {
     setUnitCapture(r, eu, 'fcCapture', stamp);
-    if (!replace) markFieldCall(rentalId, unitId);   // flag the captured unit, not just the primary (§20 multi-unit)
+    if (!replace) markFieldCall(rentalId);
   }
   uploadCaptureMedia(r, eu, cap, dataUrl);
   const session = activeSession(); if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
@@ -21044,8 +21324,8 @@ function openLogoMenu(anchorEl) {
 function switchUser() {
   document.querySelectorAll('.dropdown-menu').forEach((n) => n.remove());
   try { flushUserPrefsNow(); } catch (e) {}   // §cross-device-sync — push a pending prefs edit before the token is dropped
-  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true; devPwMode = false;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person. §dev-login: also drop dev-mode so the next user on a shared device returns to the default login, not the team-password screen.
-  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role'); sessionStorage.removeItem('jactec.devpw');
+  backendPassword = ''; currentRole = ''; currentPersonId = ''; state.userPrefs = null; booting = true;   // §cross-device-sync — drop the leaving person's identity + synced doc so nothing pushes under the next person
+  sessionStorage.removeItem('jactec.pw'); sessionStorage.removeItem('jactec.role');
   renderLogin();
 }
 // Settings (Admin-tier): loads the live config, then opens the editor. Below-Admin with
@@ -22511,10 +22791,14 @@ function startNewInvoice(customerId) {
 }
 
 function startNewRental(customerId) {
+  const cust = customerId ? IDX.customer.get(customerId) : null;
+  if (cust && isCustomerBlacklisted(cust)) {
+    toast(`Blocked: ${cust.name || 'this customer'} is blacklisted — Lift or Recall before creating a new Quote (§9).`);
+    return null;
+  }
   // Quotes PERSIST across sessions now — the id embeds a time salt so a reloaded
   // app's seq counter can never mint a colliding R-NEW id.
   const id = 'R-NEW' + Date.now().toString(36) + '-' + (state.seq++);
-  const cust = customerId ? IDX.customer.get(customerId) : null;
   const draft = { rentalId: id, customerId: customerId || null, unitId: null, categoryId: null, rentalName: cust ? `New Quote — ${cust.name}` : 'New Quote', startDate: '', endDate: '', startTime: '', status: 'Quote', transportType: 'Self', deliveryAddress: '', po: '', invoiceId: null, startHours: null, returnHours: null, notes: '', mock: true };
   DATA.rentals.push(draft); IDX.rental.set(id, draft); reindex('rentals', draft);
   logAction(draft, cust ? `Quote created for ${cust.name}` : 'Quote created');
@@ -22553,6 +22837,8 @@ function createInvoiceForRental(rentalId) {
   if (!r.customerId) { flashOr('[data-slot="customer"]', 'The Quote needs a customer first — drag one on (or quick-add).'); return; }
   if (!r.startDate || !r.endDate) { flashOr('.rdcal, .timeline, .statusbar.draftwin', 'Set the rental window first.'); return; }
   if (!rentalUnitIds(r).length) { flashOr('.stall-empty, [data-slot="unit"]', 'Add at least one unit before invoicing.'); return; }
+  const owner = rentalAccountCustomer(r);
+  if (blacklistBlocksInvoiceLink(r, owner)) { toast(`Blocked: ${owner?.name || 'the customer'} is blacklisted — Lift or Recall before billing this prospective rental (§9).`); return; }
   // Money-safe duplicate guard (Jac bug 2026-07-10 — Kerrigan): this mints a FRESH invoice
   // billed at the full window price with no credit for anything already paid — correct only
   // when the rental has never been invoiced. If a prior invoice already covers this rental
@@ -22590,11 +22876,20 @@ function createInvoiceForRental(rentalId) {
   if (session.anchor) setAnchor(session, session.anchor.card, session.anchor.recId, session.anchor.recType);
   openInvoice(id);
 }
+function reserveQuoteIfAllowed(r) {
+  if (!r || !r.startDate || !r.endDate || r.status !== 'Quote') return true;
+  const cust = rentalAccountCustomer(r);
+  if (isCustomerBlacklisted(cust)) { toast(`Blocked: ${cust.name} is blacklisted (§9).`); return false; }
+  r.status = 'Reserved';
+  return true;
+}
 function setDraftDate(rentalId, which, val) {
   const r = IDX.rental.get(rentalId); if (!r) return;
+  const nextWindow = { kind: 'window', startDate: which === 'start' ? val : r.startDate, endDate: which === 'end' ? val : r.endDate };
+  if (refuseBlacklistedRentalAllocation(r, nextWindow)) return false;
   if (which === 'start') r.startDate = val; else r.endDate = val;
   // a dated quote becomes Reserved (urgency display derives Today/Tomorrow); keep On Rent gated on invoice
-  if (r.startDate && r.endDate && r.status === 'Quote') r.status = 'Reserved';
+  reserveQuoteIfAllowed(r);
   logAction(r, `${which === 'start' ? 'Start' : 'End'} date → ${val ? fmtShortDate(val) : 'cleared'}`);   // #1 — was unlogged
   reanchorRender();
 }
@@ -22612,7 +22907,7 @@ let currentPersonId = '';   // §cross-device-sync — the logged-in person's st
 function nowClock() { const d = new Date(); let h = d.getHours(); const ap = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12; return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`; }
 function logAction(rec, text) { if (!rec) return; rec.actions = rec.actions || []; rec.actions.push({ when: TODAY_ISO, clock: nowClock(), text, by: currentUser || '', seq: actionSeq++ }); saveSoon(); }
 // Humanize a field key + format a value for an audit line ("Phone: (337)… → (337)…").
-const humanizeField = (f) => ({ po: 'PO', eta: 'ETA', 'insurance.policyRef': 'Policy #', 'insurance.effective': 'Coverage effective', 'insurance.expires': 'Coverage expires', 'insurance.insuredValue': 'Insured value', 'insurance.premium': 'Premium', accountNotes: 'Notes', assignedMechanic: 'Mechanic', gpsType: 'GPS type', gpsPlacement: 'GPS placement', purchasePrice: 'Purchase price', purchaseDate: 'Purchase date', trueCost: 'True cost', purchaseHours: 'Hours at purchase', currentHours: 'Hours', startHours: 'Start hours', returnHours: 'Return hours', rentalName: 'Name', woReport: 'Report', firstName: 'First name', lastName: 'Last name' }[f] || (f.charAt(0).toUpperCase() + f.slice(1).replace(/([A-Z])/g, ' $1')));
+const humanizeField = (f) => ({ po: 'PO', eta: 'ETA', 'insurance.policyRef': 'Policy #', 'insurance.effective': 'Coverage effective', 'insurance.expires': 'Coverage expires', 'insurance.insuredValue': 'Insured value', 'insurance.premium': 'Premium', accountNotes: 'Notes', assignedMechanic: 'Mechanic', gpsType: 'GPS type', gpsPlacement: 'GPS placement', immobilizerNote: 'Immobilizer note', purchasePrice: 'Purchase price', purchaseDate: 'Purchase date', trueCost: 'True cost', purchaseHours: 'Hours at purchase', currentHours: 'Hours', startHours: 'Start hours', returnHours: 'Return hours', rentalName: 'Name', woReport: 'Report', firstName: 'First name', lastName: 'Last name' }[f] || (f.charAt(0).toUpperCase() + f.slice(1).replace(/([A-Z])/g, ' $1')));
 const auditVal = (v) => { const s = String(v ?? '').trim(); return s ? (s.length > 28 ? s.slice(0, 28) + '…' : s) : '(empty)'; };
 /* Margin gate (units-fleet, Jac 2026-07-08): non-money roles never see dollar
    amounts in the History/audit log — a client-side DISPLAY redaction only (the raw
@@ -22694,10 +22989,12 @@ function winStagedChanged() {
 function winPickSave() {
   const wp = state.winEdit; if (!wp) return;
   const r = IDX.rental.get(wp.rentalId);
+  const nextWindow = wp.staged ? { kind: 'window', startDate: wp.staged.startDate, endDate: wp.staged.endDate } : null;
+  if (r && refuseBlacklistedRentalAllocation(r, nextWindow)) { state.winEdit = null; render(); return false; }
   if (r && wp.staged) {
     const prevEnd = r.endDate || '', prevStart = r.startDate || '';
     r.startDate = wp.staged.startDate; r.endDate = wp.staged.endDate; r.startTime = wp.staged.startTime;
-    if (r.startDate && r.endDate && r.status === 'Quote') r.status = 'Reserved';
+    reserveQuoteIfAllowed(r);
     logAction(r, `Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}`);
     const ext = billExtension(r, prevEnd, prevStart);   // bill the lengthened window (either end) across the ≤28-day invoice series
     // Un-void-by-RE-DATING restores billing (Jac bug 2026-07-06): a No-Show-stale unit's line
@@ -22712,9 +23009,6 @@ function winPickSave() {
       const newN = ext.newInvoices ? ` · ${ext.newInvoices} new invoice${ext.newInvoices > 1 ? 's' : ''}` : '';
       logAction(r, `Extension ${up ? 'billed' : 're-priced −'} (${basis}) — ${up ? '+' : '−'}${amt}${newN}`);
       toast(`Extension ${up ? 'billed +' : 're-priced − '}${amt} (${basis})${ext.newInvoices ? ` — opened ${ext.newInvoices} continuation invoice${ext.newInvoices > 1 ? 's' : ''} (28-day cap)` : ''}.`);
-    } else {
-      // a shrink or move (no billable extension) saved silently before — confirm it too
-      toast(`Rental window → ${r.startDate && r.endDate ? fmtShortDate(r.startDate) + '–' + fmtShortDate(r.endDate) : 'cleared'}.`);
     }
   }
   state.winEdit = null; render();
@@ -22757,6 +23051,7 @@ function exitAvailabilitySearch() {
 function winPickDay(iso) {
   const wp = state.winEdit; if (!wp) return;
   const r = IDX.rental.get(wp.rentalId); if (!r) return;
+  if (refuseBlacklistedRentalAllocation(r)) return false;
   const t = winTarget();                                 // staged (fragile) or the rental itself (live)
   const subject = winPickSubject();
   if (dayBlocked(subject, iso, r.rentalId) && !state.overbookOn) {   // §10 hard-block only while overbooking is OFF
@@ -22770,18 +23065,18 @@ function winPickDay(iso) {
     else { t.startDate = iso; t.endDate = a; }
     wp.anchor = null;
     if (!wp.staged) {                                    // live (non-fragile): commit status + availability now
-      if (t.startDate && t.endDate && r.status === 'Quote') r.status = 'Reserved';
+      reserveQuoteIfAllowed(r);
       enterAvailabilitySearch(r);                        // §10 push the "available" search onto Units + Categories
     }
   }
   reanchorRender();
 }
-function setWinTime(hhmm) { const wp = state.winEdit; if (!wp) return; const t = winTarget(); if (!t) return; t.startTime = to12(hhmm); reanchorRender(); }
-function winPickClear() { const wp = state.winEdit; if (!wp) return; const t = winTarget(); if (t) { t.startDate = ''; t.endDate = ''; wp.anchor = null; } if (!wp.staged) exitAvailabilitySearch(); reanchorRender(); }
+function setWinTime(hhmm) { const wp = state.winEdit; if (!wp) return; const r = IDX.rental.get(wp.rentalId); if (r && refuseBlacklistedRentalAllocation(r, { kind: 'time' })) return false; const t = winTarget(); if (!t) return; t.startTime = to12(hhmm); reanchorRender(); }
+function winPickClear() { const wp = state.winEdit; if (!wp) return; const r = IDX.rental.get(wp.rentalId); if (r && refuseBlacklistedRentalAllocation(r, { kind: 'window', startDate: '', endDate: '' })) return false; const t = winTarget(); if (t) { t.startDate = ''; t.endDate = ''; wp.anchor = null; } if (!wp.staged) exitAvailabilitySearch(); reanchorRender(); }
 /** §inline — Cancel the staged window edit on a fragile rental: revert the staged copy to
  *  the rental's real dates (the confirm card disappears, nothing is billed). */
 function winPickCancel() { const wp = state.winEdit; if (!wp || !wp.staged) return; const r = IDX.rental.get(wp.rentalId); if (!r) return; wp.staged = { rentalId: wp.rentalId, startDate: r.startDate || '', endDate: r.endDate || '', startTime: r.startTime || '' }; wp.anchor = null; reanchorRender(); }
-function winPickToday() { const wp = state.winEdit; if (!wp) return; wp.monthISO = firstOfMonthISO(TODAY_ISO); const t = winTarget(); if (t) { t.startDate = TODAY_ISO; t.endDate = ''; wp.anchor = TODAY_ISO; } reanchorRender(); }
+function winPickToday() { const wp = state.winEdit; if (!wp) return; const r = IDX.rental.get(wp.rentalId); if (r && refuseBlacklistedRentalAllocation(r, { kind: 'window', startDate: TODAY_ISO, endDate: '' })) return false; wp.monthISO = firstOfMonthISO(TODAY_ISO); const t = winTarget(); if (t) { t.startDate = TODAY_ISO; t.endDate = ''; wp.anchor = TODAY_ISO; } reanchorRender(); }
 
 /* ── R22 DATE PICKER — single date/datetime, reuses the .wp-* calendar styling.
    state.datepick = { field, withTime, monthISO }; writes state.overlay[field]
@@ -23139,12 +23434,17 @@ function unitTransportProto(r) {
   return u ? { transportType: u.transportType, deliveryAddress: u.deliveryAddress, recoveryAddress: u.recoveryAddress, transportMiles: u.transportMiles, transportDriveMin: u.transportDriveMin } : {};
 }
 function removeUnitFromRental(r, unitId, opts = {}) {
+  if (!opts.transfer && blacklistBlocksUnitRemoval(r, unitId)) {
+    toast(`Blocked: ${IDX.unit.get(unitId)?.name || 'that unit'} is already out for a blacklisted customer — recover and mark it Returned before removing (§9).`);
+    return false;
+  }
   const removed = IDX.unit.get(unitId);
   if (r.invoiceId) removeUnitInvoiceLine(r, unitId);   // drop this unit's rental + transport lines (keeps any PAID line — refund first)
   r.units = rentalUnits(r).filter((u) => u.unitId !== unitId);
   syncRentalPrimary(r);
   if (r.invoiceId) { syncTransportLine(r); healInvoiceLines(r); }   // relabel survivors (multi→single) + sweep any orphan
   if (!opts.silent) logAction(r, `Unit cleared: ${removed?.name || unitId}`);   // split passes silent (the Split entry is the single log)
+  return true;
 }
 /* §20 — dropping a unit on a rental ADDS it (a Rental is an EVENT); the §9 fleet
    gate, the "already on" guard, and the §10 overbooking gate all fire per unit. */
@@ -23153,6 +23453,8 @@ function linkUnitToRental(rentalId, unitId) {
   if (!r || !u) return null;
   if (u.fleetStatus !== 'Active') { toast(`Blocked: ${u.name} is ${u.fleetStatus} — not rentable (§9).`); return null; }   // the §9 fleet gate
   if (rentalHasUnit(r, unitId)) { toast(`${u.name} is already on this rental.`); return null; }
+  const cust = rentalAccountCustomer(r);
+  if (isCustomerBlacklisted(cust)) { toast(`Blocked: ${cust.name} is blacklisted (§9).`); return null; }
   // §10 overbooking gate — derived live via rentalsOverlappingUnit, never stored
   const conflicts = (r.startDate && r.endDate) ? rentalsOverlappingUnit(unitId, r.startDate, r.endDate, r.rentalId) : [];
   if (conflicts.length && !state.overbookOn) {
@@ -23171,8 +23473,14 @@ function linkUnitToRental(rentalId, unitId) {
 function linkCustomerToRental(rentalId, customerId) {
   const r = IDX.rental.get(rentalId), c = IDX.customer.get(customerId);
   if (!r || !c) return null;
-  if (/Blacklist/i.test(c.accountType || '')) { toast(`Blocked: ${c.name} is blacklisted (§9).`); return null; }
+  if (isCustomerBlacklisted(c)) { toast(`Blocked: ${c.name} is blacklisted (§9).`); return null; }
   if (r.customerId === customerId) { toast(`${c.name} is already on this rental.`); return null; }
+  const currentOwner = rentalAccountCustomer(r);
+  if (isCustomerBlacklisted(currentOwner)) { toast(`Blocked: ${currentOwner.name || 'the current customer'} is blacklisted (§9). Lift or Recall the blacklist before changing the rental customer.`); return null; }
+  const linkedInvs = rentalInvoices(r).slice(), legacyInv = r.invoiceId ? IDX.invoice.get(r.invoiceId) : null;
+  if (legacyInv && !linkedInvs.includes(legacyInv)) linkedInvs.push(legacyInv);
+  const mismatch = linkedInvs.find((inv) => inv.customerId && inv.customerId !== customerId);
+  if (mismatch) { toast(`Blocked: invoice ${invoiceShort(mismatch.invoiceId)} belongs to another customer (§7.5). Unlink it first.`); return null; }
   const prev = r.customerId ? IDX.customer.get(r.customerId) : null;
   r.customerId = customerId;
   logAction(r, `Customer → ${c.name}${prev ? ` (was ${prev.name})` : ''}`);
@@ -23186,6 +23494,7 @@ function linkCustomerToRental(rentalId, customerId) {
 function splitUnitToNewRental(rentalId, unitId, start, end) {
   const r = IDX.rental.get(rentalId), u = IDX.unit.get(unitId);
   if (!r || !u) return null;
+  if (refuseBlacklistedRentalAllocation(r, { kind: 'split' })) return null;
   if (rentalUnits(r).length < 2) { toast(`${u.name} is the only machine — change the rental's window instead.`); return null; }
   const eu0 = unitEntry(r, unitId);
   if (eu0 && unitVoided(r, eu0)) { toast(`${u.name} is ${unitStatus(r, eu0)} — nothing to split.`); return null; }   // a voided unit has no lines → would make an empty sibling
@@ -23202,7 +23511,7 @@ function splitUnitToNewRental(rentalId, unitId, start, end) {
     status: eu.status || r.status, transportType: eu.transportType || 'Self', deliveryAddress: eu.deliveryAddress || '',
     recoveryAddress: eu.recoveryAddress || '', invoiceId: r.invoiceId || null, po: '', notes: '', actions: [],
     units: [eu], mock: !!r.mock };
-  removeUnitFromRental(r, unitId, { silent: true });   // drops the unit + its OLD invoice lines (ref = rentalId)
+  if (!removeUnitFromRental(r, unitId, { silent: true, transfer: true })) return null;   // safe transfer: the same unit/status is preserved on sib below
   syncRentalPrimary(sib);
   DATA.rentals.push(sib); IDX.rental.set(nid, sib); reindex('rentals', sib);
   if (sib.invoiceId && inv) {                   // re-attach the unit's lines under the NEW ref, same invoice
@@ -23217,14 +23526,30 @@ function splitUnitToNewRental(rentalId, unitId, start, end) {
   toast(`${u.name} split to its own rental${sib.invoiceId ? ` on invoice ${invoiceShort(sib.invoiceId)}` : ''}.`);
   return sib;
 }
-/** Set an invoice's customer — guarded: ANY payment OR a locked invoice freezes
- *  it (§7.5 — the same tests as 'inv-cust-remove', applied on SET too). */
+/** Customer assignment is frozen once payment, pricing lock, a blacklist, or Collections
+ *  makes the invoice identity authoritative. Lift/Recall is the corresponding release path. */
+function invoiceCustomerChangeBlock(inv) {
+  if (invoiceCollectionsActive(inv)) return 'Blocked: invoice is in Collections — recall it first (§7.7).';
+  const owner = inv && inv.customerId ? IDX.customer.get(inv.customerId) : null;
+  if (isCustomerBlacklisted(owner)) return `Blocked: ${owner.name || 'the invoice customer'} is blacklisted — lift the blacklist before changing the invoice customer (§9).`;
+  if (invoiceTotals(inv).paid > 0) return 'Blocked: invoice has a payment — customer locked (§7.5).';
+  if (inv.locked) return 'Blocked: invoice pricing is locked — unlock it first (§7.5).';
+  return '';
+}
+function clearInvoiceCustomer(inv) {
+  if (!inv) return false;
+  const blocked = invoiceCustomerChangeBlock(inv);
+  if (blocked) { toast(blocked); return false; }
+  inv.customerId = null;
+  return true;
+}
+/** Set an invoice's customer — the same hard gate as removal, applied on SET too. */
 function setInvoiceCustomer(invoiceId, customerId) {
   const inv = IDX.invoice.get(invoiceId), c = IDX.customer.get(customerId);
   if (!inv || !c) return null;
   if (inv.customerId === customerId) { toast(`${c.name} is already on this invoice.`); return null; }
-  if (invoiceTotals(inv).paid > 0) { toast('Blocked: invoice has a payment — customer locked (§7.5).'); return null; }
-  if (inv.locked) { toast('Blocked: invoice pricing is locked — unlock it first (§7.5).'); return null; }
+  const blocked = invoiceCustomerChangeBlock(inv);
+  if (blocked) { toast(blocked); return null; }
   const prev = inv.customerId ? IDX.customer.get(inv.customerId) : null;
   inv.customerId = customerId;
   logAction(inv, `Customer → ${c.name}${prev ? ` (was ${prev.name})` : ''}`);
@@ -23279,6 +23604,12 @@ function billWOToInvoice(woId) {
 function addRentalLineToInvoice(invoiceId, rentalId) {
   const inv = IDX.invoice.get(invoiceId), r = IDX.rental.get(rentalId);
   if (!inv || !r) return;
+  if (!inv.customerId) { toast('Blocked: the invoice needs a customer first (§7.5).'); return; }
+  if (!r.customerId) { toast('Blocked: the rental needs a customer before it can be invoiced (§7.5).'); return; }
+  if (inv.customerId !== r.customerId) { toast('Blocked: the rental and invoice belong to different customers (§7.5).'); return; }
+  const owner = IDX.customer.get(inv.customerId);
+  if (blacklistBlocksInvoiceLink(r, owner)) { toast(`Blocked: ${owner?.name || 'the invoice customer'} is blacklisted (§9).`); return; }
+  if (invoiceCollectionsActive(inv)) { toast('Blocked: invoice is in Collections — recall it first (§7.7).'); return; }
   // a rental bills to ONE invoice — block double-billing onto a second (§7.5)
   if (r.invoiceId && r.invoiceId !== invoiceId) { toast(`Already on invoice ${invoiceShort(r.invoiceId)} — remove it there first.`); return; }
   if ((inv.lineItems || []).some((li) => li.kind === 'rental' && li.ref === rentalId)) { flashOr(`.inv-line-link[data-pill-rec="${rentalId}"]`, 'That rental is already on this invoice.'); return; }
@@ -23323,8 +23654,11 @@ function invoiceMergeable(i) {
    un-refunded, no ACH in flight, not already voided, not in collections. Same money-safety
    floor as invoiceMergeable (which DELETES a $0-paid bill) — voiding is strictly gentler: it
    keeps the record. No customer required (a customer-less draft can still be voided). */
+function invoiceWouldEraseBlacklistedOwner(i) {
+  return !!i && invoiceLinkedRentals(i).some((r) => blacklistedOwnerEdgeWouldDisappear(r, [i.invoiceId]));
+}
 function invoiceVoidable(i) {
-  return !!i && !i.voided && !i.locked && !i.refunded && !i.achProcessing && (Number(i.amountPaid) || 0) === 0 && !invoiceCollectionsActive(i);
+  return !!i && !i.voided && !i.locked && !i.refunded && !i.achProcessing && (Number(i.amountPaid) || 0) === 0 && !invoiceCollectionsActive(i) && !invoiceWouldEraseBlacklistedOwner(i);
 }
 /* Void an unpaid invoice: unlink every rental it holds (clearing the stale invoiced flag so the
    slot frees to re-invoice), then mark it Voided. NEVER touches a payment/allocation/lock/refund
@@ -23358,10 +23692,13 @@ function mergeInvoiceInto(keepId, absorbId) {
   // debt-stack audit trail back to every source invoice.
   const moved = (src.lineItems || []).map((li) => Object.assign({}, li, { lid: lineLid(), fromInv: li.fromInv || absorbId }));
   moved.forEach((li) => keep.lineItems.push(li));
-  // union rentalIds + relink the absorbed invoice's rentals to the keeper (§7.5: one invoice per rental)
-  (src.rentalIds || []).forEach((rid) => {
+  // Union BOTH modern rentalIds and legacy rental-side-only pointers, then relink every
+  // absorbed rental to the keeper. Otherwise deleting src can erase the only customer
+  // owner visible to a supported legacy customerless rental.
+  if (!Array.isArray(keep.rentalIds)) keep.rentalIds = [];
+  invoiceLinkedRentalIds(src).forEach((rid) => {
     if (!keep.rentalIds.includes(rid)) keep.rentalIds.push(rid);
-    const r = IDX.rental.get(rid); if (r && r.invoiceId === absorbId) r.invoiceId = keepId;
+    const r = IDX.rental.get(rid); if (r && r.invoiceId === absorbId) { r.invoiceId = keepId; reindex('rentals', r); }
   });
   if (!keep.po && src.po) keep.po = src.po;                 // carry a PO if the keeper has none
   const movedTotal = moved.reduce((a, li) => a + (Number(li.amount) || 0), 0);
@@ -23391,7 +23728,6 @@ function mergeInvoiceInto(keepId, absorbId) {
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzHahzgJqOYe9o4GKlRVGh-A7USRn1k4Dvyy4ajLh8EYCqVxofouM28qs8trNlObZw/exec';
 const PERSIST_KEYS = ['categories', 'units', 'customers', 'invoices', 'rentals', 'workOrders', 'inspections', 'vendors', 'parts', 'companyFiles', 'expenses', 'models'];
 let backendPassword = sessionStorage.getItem('jactec.pw') || '';
-let devPwMode = false;                    // §dev-login: Ctrl+Alt+P revealed the legacy team-password screen (NON-PROD hosts only). Never hardcodes a password — the value is typed at runtime. Restored from sessionStorage in the APP_ENV setup block; also tells backendCall to authenticate with the plain team `password` (legacy path) instead of a per-person sessionToken.
 let booting = true;                       // suppresses saves during initial load
 let saveTimer = null, saving = false, savePending = false;
 
@@ -23405,7 +23741,7 @@ function driveViewUrl(res) {
 async function backendCall(action, extra) {
   // text/plain avoids a CORS preflight that GAS web apps can't answer
   const payload = Object.assign({ action, password: backendPassword }, extra || {});
-  if (flagOn('phoneIdentity') && backendPassword && !devPwMode) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF. §dev-login: devPwMode skips the token and authenticates with the plain team `password` (the legacy path the backend still honors)
+  if (flagOn('phoneIdentity') && backendPassword) payload.sessionToken = backendPassword;   // per-person mode: the device/session token authorizes each call (backend prefers it over `password`); a no-op while the flag is OFF
   const res = await fetch(BACKEND_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
   // A backend error page (GAS 500/quota/auth HTML) is NOT JSON — res.json() throws, callers
   // catch it, and a real card/charge failure gets masked as a generic "Network error". Parse
@@ -23632,6 +23968,31 @@ async function gpsProviderDevices(provider) {
     case 'bouncie': return (await gpsFetch('/api/bouncie/vehicles'))?.vehicles || [];
     default: return [];
   }
+}
+
+/* Is ONE provider's own account link live on the GPS backend? Deere/Yanmar/Bouncie each
+   authenticate against the PROVIDER (Deere/Bouncie OAuth, Yanmar a session login — backend
+   handoff §1) and expose an `/api/<p>/status` probe carrying `authenticated`; Hapn is
+   server-to-server client-credentials with no such probe, so it answers null = unknown.
+   This is the same probe gpsFleetStatus already makes before its phase-2 machine lists —
+   pulled out here so the connect-wizard picker can tell a LAPSED PROVIDER LINK apart from
+   an unreachable backend instead of blaming both on the connection.
+   Returns true = linked · false = link lapsed · null = couldn't tell. */
+async function gpsProviderAuthed(provider) {
+  const p = String(provider || '').toLowerCase();
+  if (p !== 'deere' && p !== 'yanmar' && p !== 'bouncie') return null;
+  try { return (await gpsFetch(`/api/${p}/status`))?.authenticated === true; }
+  catch { return null; }   // the probe itself failed → genuinely a reachability problem
+}
+/* Pick the honest picker-load error off that probe (PURE — exposed on window.__rw). A
+   provider whose account link has lapsed IS reachable; saying "check the connection"
+   sends the operator to their router when the real fix is relinking that account on the
+   GPS service. Anything else (probe unknown, provider linked but the list call failed)
+   keeps the original reachability wording. */
+function gpsPickerError(provider, linked) {
+  return linked === false
+    ? `${provider} isn’t linked to the GPS backend right now — that account needs reconnecting on the GPS service. Not a connection problem on your end.`
+    : 'Couldn’t reach the GPS backend — check the connection and try again.';
 }
 
 /* ── BOUNCIE TRUCKS → UNITS (design note docs/superpowers/specs/2026-07-09-bouncie-
@@ -23866,11 +24227,19 @@ function gpsRawDeviceSub(provider, raw) {
    popup state. */
 async function gpsConnectLoadDevices(o) {
   o.devicesLoading = true; o.devicesError = ''; o.devices = null; renderOverlay();
+  const p = String(o.provider || '').toLowerCase();
   let list = [];
-  try { list = await gpsProviderDevices(String(o.provider || '').toLowerCase()); }
+  try { list = await gpsProviderDevices(p); }
   catch (e) {
     if (state.overlay !== o) return;
-    o.devicesLoading = false; o.devicesError = 'Couldn’t reach the GPS backend — check the connection and try again.';
+    // §two-phase — gpsFleetStatus probes /api/<p>/status and only pulls a machine list once
+    // it reports `authenticated`; this picker skipped that probe, so a provider whose OWN
+    // account link had lapsed (Yanmar's parked SmartAssist re-auth) surfaced as "couldn't
+    // reach the GPS backend" even while the very same gpsFetch was serving Hapn's list in
+    // this dialog. Ask the probe what actually broke before naming a cause.
+    const linked = await gpsProviderAuthed(p);
+    if (state.overlay !== o) return;
+    o.devicesLoading = false; o.devicesError = gpsPickerError(o.provider, linked);
     return renderOverlay();
   }
   if (state.overlay !== o) return;
@@ -25559,13 +25928,13 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { try { flushUserPrefsNow(); } catch (e) {} });
 function renderLogin(msg) {
   resetCommsRailForLogin();   // D8 — clock-in = an EMPTY rail; BEFORE the phoneIdentity branch so BOTH login screens clear (this reset used to sit below the early-return = dead code on the live path — Jac 2026-07-17)
-  if (flagOn('phoneIdentity') && !devPwMode) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path — OR the §dev-login reveal (Ctrl+Alt+P, non-prod only) even while the flag is ON
+  if (flagOn('phoneIdentity')) return renderPhoneLogin(msg);   // per-person login flow (Phase 2); the shared-password screen below is the flag-OFF path
   $('#app').innerHTML = `<div class="login-screen"><video id="login-video" class="login-video" src="assets/login-intro.mp4?v=20260708a" muted loop playsinline preload="auto" aria-hidden="true"></video><form class="login-box" id="login-form">
     <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
     <div class="login-plate">
       <img class="login-logo" src="assets/jac-rentals-logo.jpg" alt="Jac Rentals" />
       <div class="login-title">Rental Wrangler</div>
-      <div class="login-sub">${devPwMode ? 'Dev sign-in · ' + esc(APP_ENV) : 'JacRentals · Sulphur, LA'}</div>
+      <div class="login-sub">JacRentals · Sulphur, LA</div>
       <div class="login-field">
         <label class="login-lbl" for="login-name">Operator</label>
         <input id="login-name" class="login-input" placeholder="Your name" autocomplete="name" value="${esc(currentUser)}" />
@@ -26007,25 +26376,6 @@ const APP_SLOT = (() => {
 if (APP_ENV !== 'production') {
   document.title = (APP_SLOT ? 'Staging ' + APP_SLOT
     : APP_ENV === 'local' ? 'Local' : 'Staging') + ' · Rental Wrangler';
-}
-// ── §dev-login — Ctrl+Alt+P reveals the legacy team-password login on LOCALHOST ONLY (the dev /
-//    automation host), so a dev or an automated session can sign in without the SMS phone-identity
-//    flow. Gated by an ALLOWLIST (APP_ENV === 'local') — a security-review tightening: production
-//    AND the public staging mirror both stay phone + SMS only, and the listener isn't even
-//    registered off localhost (no fail-open on an unknown/future hostname). The password is TYPED at
-//    runtime — nothing is ever stored in the repo. devPwMode also flips backendCall to the plain
-//    `password` (legacy) auth the backend still honors, instead of a per-person sessionToken.
-//    e.code === 'KeyP' (not e.key) so macOS Option+P — which types 'π' — still triggers it. ──
-if (APP_ENV === 'local') {
-  try { if (sessionStorage.getItem('jactec.devpw') === '1') devPwMode = true; } catch (e) {}
-  document.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey && e.altKey) || e.code !== 'KeyP') return;
-    if (backendPassword) return;                    // already signed in — never flip the auth mode mid-session
-    e.preventDefault();
-    devPwMode = !devPwMode;
-    try { devPwMode ? sessionStorage.setItem('jactec.devpw', '1') : sessionStorage.removeItem('jactec.devpw'); } catch (e2) {}
-    renderLogin();                                  // we're on the login screen (not signed in) → re-render in the chosen mode
-  });
 }
 // The slot's identity color (theme-invariant --slot-N / --tan), read from the stylesheet so the
 // tokens stay the single source of truth for the runtime-drawn favicon.
@@ -26563,7 +26913,7 @@ function boot() {
       const v = (t.textContent || '').trim();
       if (v.startsWith('=')) {
         const session = activeSession(), entity = boardEntity(o.card, session);
-        const cols = cardColumns(o.card, session), recs = boardViewRecords(o, session);
+        const cols = cardColumns(entity, session), recs = boardViewRecords(o, session);   // entity, not o.card — see boardViewRecords (stale 'shop' view)
         const rec = t.dataset.row ? recs.find((r) => String(idOf(entity, r)) === t.dataset.row) || null : null;   // data-row cell → that row; scratch row → aggregate
         const r = bvCompute(v.slice(1), cols, recs, rec);
         t.dataset.raw = v; t.classList.add('bv-comp'); t.textContent = r.err ? 'ERR' : bvFmtNum(r.val);
@@ -26835,7 +27185,8 @@ function exposeTestApi() {
       dataCache, cacheValid, cacheDeviceOk, cacheTokenTag, cacheAppVer, cacheSnapshotEnvelope, CACHE_SCHEMA_VER, FEATURES,   // §instant-cache (spec 2026-07-16)
       recordDateMatch, dateTermHits, rowMatches,
       kpiFor, kpiRaw, kpiEval, legacyKpiPct, legacyKpiRaw, KPI_DEFAULTS, wrValidateKpi, roleRings,
-      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, pickFunnelStage, toggleFunnelMembership, rentalFunnelStage, funnelStageOf, inFunnel, inRental, hasRentalActivity, funnelTrackA, funnelTrackEquip, ensureFunnels, funnelMenuHtml, reachFunnelStage, toggleMemberLead, funnelCurrentStage, funnelLayerDate, funnelLayerNote, ensureFunnelLog, markMembershipSigned, funnelLayerAction, funnelScope, naUrgency, naOpenList, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
+      companyRevenueGoal, companyName, companyTagline, membershipPricing, membershipFee, membershipStatus, isActiveMember, rentalPrice, pickFunnelStage, toggleFunnelMembership, rentalFunnelStage, funnelStageOf, inFunnel, inRental, hasRentalActivity, funnelTrackA, funnelTrackEquip, ensureFunnels, funnelMenuHtml, reachFunnelStage, toggleMemberLead, funnelCurrentStage, funnelLayerDate, funnelLayerNote, ensureFunnelLog, markMembershipSigned, funnelLayerAction, funnelScope, naUrgency, naOpenList, rentalProtectionRate, rentalProtectionAmount, protectionLineItems, syncProtectionLine, membershipEconomics, membershipFeeRevenue, membershipMetaHtml, membershipActionsHtml, funnelSectionHtml, membershipCancel, membershipReactivate, membershipActivateCash, membershipCancellationInvoice, agreementSignCommit, addMonthsISO, acctBlockFoot, liftCustomerBlacklist, rentalAccountCustomer, clearRentalCustomer, clearInvoiceCustomer, invoiceRentalLinkFrozen, rentalRuleBlock, dueForCustomer, customFieldsFor, checklistFor, checklistRequired, inspFamilyKey, inspKeyOfCat, inspItemFails, inspItemUnanswered, inspItemType, inspEvidenceMissing, applySettings, getStatus, pageDefaultSlice, previewOverlayFor, WINDOW_CATALOG, unitCoverage, fleetInsuredValue, fleetPremiumMonthly, insuranceTypeCatalog, invoiceCollectionsActive, collectionsHasOtherActive, getEntityColor, getEntityFlags, isEmptyMockDraft, sweepEmptyDrafts, createInvoiceForRental, syncRentalLines, rentalLineItems, salePriceSuggest, salePricingCfg, categoryCostBasis, driverRoster, driverName, legDriverField, dispatchEvents, applyRoleLanding, topServiceForUnit, snoozeService, svcSnoozedUntil, unitServiceRows, recordServiceCompletion, sellUnit, categoryStats, gpsMatchFleet, gpsMatchScore, gpsMakeFamily, gpsDeviceFamily, gpsApplyMappings, gpsUndoMappings, gpsRoundupRows, gpsCanonProvider, gpsPickerError, gpsUtilRollup, gpsBounciePlan, gpsApplyBouncieTrucks, reindex, logAction, setRole: (r) => { currentRole = r || ''; render(); }, histText, canMoney,
+      reserveQuoteIfAllowed, winPickDay, winPickSave,
       tripsFor, tripTown, telHref, tripMatches, tripSort, stopDone, dispatchStopId, tripRowHTML: (t) => ROWS.calendar(t), yardCapture, openYardCamera, commitYardCapture, nextCategoryId, nextUnitId,
       tripsLS, tripMerge, tripSplit, assignTripDriver, tripLabel, assignStopDriver, tripSetTime,
       tripPushSoon, tripPushNow, loadTripsFromBackend, tripsSyncFooter, setBackendPassword: (pw) => { backendPassword = pw || ''; },   // §2.3 Phase 4 sync — the setter is test-only (mirrors setRole), letting logic-test.mjs exercise the online path via a mocked window.fetch, never a real backend
@@ -27708,7 +28059,7 @@ window.JT = {
   startNewRental, startNewInspection, startNewWorkOrder, startNewInvoice,
   createInvoiceForRental, addRentalLineToInvoice, addWOToInvoice, addCustomLine, addPartToWO,
   setInspWash, setInspResult, setDraftDate,
-  linkUnitToRental, linkCustomerToRental, setInvoiceCustomer, billWOToInvoiceExplicit,   // Wave 2: the surviving link paths
+  linkUnitToRental, linkCustomerToRental, clearRentalCustomer, setInvoiceCustomer, clearInvoiceCustomer, billWOToInvoiceExplicit,   // Wave 2: the surviving link paths
   billWOToInvoice, anchorRecord, startNewCustomer, startNewReceipt, openOverlay,
   addUnitToRental, removeUnitFromRental, syncTransportLine, syncRentalLines, healInvoiceLines,   // §20 sync + test harness
   removeUnitInvoiceLine, rentalLineItems, transportLineItems, splitUnitToNewRental, setUnitStatus, setRentalStatus,
