@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "mem-cash-cadence-835-1",
+      "label": "Wrangler #835 — cash activation keeps the member's own plan",
+      "feature": "mem-cash-cadence-835",
+      "branch": "claude/mem-cash-cadence-835",
+      "sha": "f5fbe97",
+      "when": "2026-08-28T16:42:44.078Z"
+    },
+    {
       "id": "mem-cash-activate-833-1",
       "label": "833 cash membership activation",
       "feature": "mem-cash-activate-833",
@@ -152,14 +160,6 @@
       "branch": "claude/rental-wrangler-ui-research-rhd74v",
       "sha": "32e298f",
       "when": "2026-07-21T15:57:31.694Z"
-    },
-    {
-      "id": "rental-wrangler-ui-research-rhd74v-2",
-      "label": "Redesign slice 2 · List Views element reshape",
-      "feature": "rental-wrangler-ui-research-rhd74v",
-      "branch": "claude/rental-wrangler-ui-research-rhd74v",
-      "sha": "f08f8ab",
-      "when": "2026-07-21T15:33:30.869Z"
     }
   ]
 }
