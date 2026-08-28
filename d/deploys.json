@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "mem-cash-activate-833-1",
+      "label": "833 cash membership activation",
+      "feature": "mem-cash-activate-833",
+      "branch": "claude/mem-cash-activate-833",
+      "sha": "5fb7b8f",
+      "when": "2026-08-28T15:20:14.429Z"
+    },
+    {
       "id": "fix-829-sync-1",
       "label": "829 boot-window save fix",
       "feature": "fix-829-sync",
@@ -152,14 +160,6 @@
       "branch": "claude/rental-wrangler-ui-research-rhd74v",
       "sha": "f08f8ab",
       "when": "2026-07-21T15:33:30.869Z"
-    },
-    {
-      "id": "rental-wrangler-ui-research-rhd74v-1",
-      "label": "Redesign slice 1 · palette on dv2",
-      "feature": "rental-wrangler-ui-research-rhd74v",
-      "branch": "claude/rental-wrangler-ui-research-rhd74v",
-      "sha": "dad8606",
-      "when": "2026-07-21T08:30:10.666Z"
     }
   ]
 }
