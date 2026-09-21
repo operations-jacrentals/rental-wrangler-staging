@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "fleet-dollar-util-1",
+      "label": "All-Fleet dollar utilization total (#837)",
+      "feature": "fleet-dollar-util",
+      "branch": "claude/fleet-dollar-util",
+      "sha": "a6739e5",
+      "when": "2026-09-21T15:46:54.751Z"
+    },
+    {
       "id": "mem-cash-cadence-835-1",
       "label": "Wrangler #835 — cash activation keeps the member's own plan",
       "feature": "mem-cash-cadence-835",
@@ -152,14 +160,6 @@
       "branch": "claude/rental-wrangler-ui-research-rhd74v",
       "sha": "e8bbaa3",
       "when": "2026-07-21T21:12:05.807Z"
-    },
-    {
-      "id": "rental-wrangler-ui-research-rhd74v-3",
-      "label": "slice 2b: unit names via unitPill + Ref icon plate",
-      "feature": "rental-wrangler-ui-research-rhd74v",
-      "branch": "claude/rental-wrangler-ui-research-rhd74v",
-      "sha": "32e298f",
-      "when": "2026-07-21T15:57:31.694Z"
     }
   ]
 }
