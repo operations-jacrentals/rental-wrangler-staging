@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "transport-rates-staging-1",
+      "label": "Transport rates: $4.00/mile, $35 fuel-fill charged once per order (Jac 2",
+      "feature": "transport-rates-staging",
+      "branch": "claude/transport-rates-staging",
+      "sha": "2ea562f",
+      "when": "2026-09-22T05:51:28.272Z"
+    },
+    {
       "id": "fleet-dollar-util-1",
       "label": "All-Fleet dollar utilization total (#837)",
       "feature": "fleet-dollar-util",
@@ -152,14 +160,6 @@
       "branch": "claude/rental-wrangler-ui-research-rhd74v",
       "sha": "51b4f5d",
       "when": "2026-07-21T21:21:35.684Z"
-    },
-    {
-      "id": "rental-wrangler-ui-research-rhd74v-4",
-      "label": "Step 1: inline-expand (reveal in list, height-capped)",
-      "feature": "rental-wrangler-ui-research-rhd74v",
-      "branch": "claude/rental-wrangler-ui-research-rhd74v",
-      "sha": "e8bbaa3",
-      "when": "2026-07-21T21:12:05.807Z"
     }
   ]
 }
