@@ -2,6 +2,14 @@
   "version": 1,
   "deploys": [
     {
+      "id": "wrangler-843-util-active-only-1",
+      "label": "Wrangler fix: utilization reports count only Active units (#843)",
+      "feature": "wrangler-843-util-active-only",
+      "branch": "claude/wrangler-843-util-active-only",
+      "sha": "a0318ae",
+      "when": "2026-09-24T14:05:16.235Z"
+    },
+    {
       "id": "transport-rates-staging-1",
       "label": "Transport rates: $4.00/mile, $35 fuel-fill charged once per order (Jac 2",
       "feature": "transport-rates-staging",
@@ -152,14 +160,6 @@
       "branch": "claude/rental-wrangler-ui-research-rhd74v",
       "sha": "42d5c7b",
       "when": "2026-07-22T03:43:17.212Z"
-    },
-    {
-      "id": "rental-wrangler-ui-research-rhd74v-5",
-      "label": "Step 1 fix: expanded item breaks out to full grid row",
-      "feature": "rental-wrangler-ui-research-rhd74v",
-      "branch": "claude/rental-wrangler-ui-research-rhd74v",
-      "sha": "51b4f5d",
-      "when": "2026-07-21T21:21:35.684Z"
     }
   ]
 }
